@@ -20,6 +20,14 @@ The persisted provider limits are:
 pub struct Settings {
     pub failover_max_attempts_per_provider: u32, // default 5, valid 1..=20
     pub failover_max_providers_to_try: u32,      // default 5, valid 1..=20
+    pub provider_failback_strategy: ProviderFailbackStrategy,
+}
+
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFailbackStrategy {
+    Disabled,
+    Aggressive,
+    Natural, // default and serde(other) fallback
 }
 ```
 
@@ -170,6 +178,27 @@ FailoverAttempt {
   triggers. Scan the entire prefix in latest-route order: a candidate whose
   planning snapshot is `CLOSED` becomes `Direct`, while an `OPEN` or
   `HALF_OPEN` candidate becomes `Probe` with that exact explicit trigger.
+- `provider_failback_strategy = "disabled"` disables automatic failback only
+  for an effectively bound, stable Session whose latest route has not changed.
+  After request eligibility and prefix checks, the planner must handle the
+  effective-unbound/new-session branch first and `route_changed` second. Only
+  then may `disabled` return `Stay { confirm_route: false,
+  not_triggered_provider_ids: [] }`, before compaction, aggressive-turn,
+  circuit/account recovery epochs, natural deadlines, or in-flight-follower
+  logic can create a target or observation. The decision creates no dispatch
+  intent or trigger reservation.
+- Disabled automatic failback never disables ordinary serial failover after the
+  current Provider fails, candidate selection for a new Session, all-open
+  recovery for an effectively unbound Session, or the complete ordered-prefix
+  check required by an explicit route change. Toggling the setting must not
+  clear circuit deadlines, recovery epochs, or Session state; changing back to
+  `natural` or `aggressive` reuses whatever state remains valid.
+- The cross-layer serialized values are exactly `"disabled"`, `"aggressive"`,
+  and `"natural"`. `natural` remains the default and unknown-value fallback.
+  Settings validation, patch persistence, generated bindings, and the UI radio
+  group must accept all three values without a schema version change. The
+  natural maximum-wait input is visible only for `natural`; disabled-mode copy
+  must state that failover and new-session routing remain active.
 - Natural failback eligibility is evaluated independently for every prefix
   candidate from its own circuit snapshot. A `CLOSED` candidate whose
   `recovery_epoch` is newer than the live session's captured baseline becomes
@@ -406,6 +435,9 @@ FailoverAttempt {
 | Latest route is `p1 -> ... -> p(X-1) -> current pX` under an explicit failback trigger | Plan the complete ordered prefix `p1 -> ... -> p(X-1)` with no fixed-length truncation |
 | Session-rotated input is `[pX, p1, p2, ..., p(X-1), tail...]` | Dispatch planned targets in latest-route order before `pX`, then preserve non-target relative order |
 | Explicit prefix contains `CLOSED` P1, `OPEN` P2, and `HALF_OPEN` P3 | Dispatch P1 direct, then P2/P3 as independent probes with the exact trigger; never mark P1 as a probe |
+| Stable bound Session uses `disabled` and its route is unchanged | Stay on the current Provider; create no target, reservation, or `not_triggered` observation even when automatic sources would otherwise trigger |
+| Effectively unbound Session uses `disabled` | Preserve ordinary selection and complete all-open `new_unbound_session` recovery behavior |
+| Stable bound Session uses `disabled` and its route changed | Preserve the complete ordered-prefix `route_changed` plan and existing reservation rules |
 | Natural P1 is not due while later P2 is due | Persist P1 `probe_result="not_triggered"`, continue scanning, and plan P2 |
 | Natural P1/P2 are both due | Plan both in route order using each candidate's own direct/probe mode and trigger |
 | N sessions hit due OPEN P1 while bound to P2 | One winner sends the P1 probe; every loser records `in_flight`, makes zero P1 calls in that request, and may continue to P2 |
@@ -465,6 +497,13 @@ FailoverAttempt {
 - Good: natural P1 is not due while P2 is due. P1 persists a structured
   `not_triggered` observation with zero calls, P2 gets the first network call,
   and P1 does not block it.
+- Good: a stable Session is bound to P3 with `disabled` and an unchanged route.
+  Even if P1 recovered and P2's natural deadline is due, planning produces no
+  P1/P2 target or observation; an ordinary P3 failure can still fall through
+  the normal candidate chain.
+- Base: `disabled` is selected but the Session has no effective binding, so the
+  planner preserves normal new-session selection and all-open recovery. A later
+  explicit route change still checks the complete higher-priority prefix.
 - Good: eight sessions are bound to P2 when due OPEN P1 is probed. One request
   calls P1 while seven record `in_flight` and finish on P2; after the winner
   closes P1, each of those seven sessions' next requests call P1 directly and
@@ -516,6 +555,9 @@ FailoverAttempt {
   current P3 before higher-priority P2, so P2 is starved by P3 success.
 - Bad: stopping natural scanning when P1 is not due. This loses P1's structured
   observation and can indefinitely starve a due P2.
+- Bad: returning disabled-mode `Stay` before effective-unbound or route-change
+  handling. That silently turns an automatic-failback preference into broken
+  recovery or stale explicit routing.
 - Bad: calling a one-target move-to-front helper repeatedly on session-rotated
   input. It can place current P3 between P1 and P2 instead of producing the
   stable target-first order.
@@ -557,6 +599,18 @@ FailoverAttempt {
   triggers across the full prefix. In a mixed snapshot, assert every `CLOSED`
   target is `Direct` and every `OPEN`/`HALF_OPEN` target is `Probe` with its
   exact trigger.
+- Planner-test `disabled` with a stable binding and unchanged route across all
+  automatic sources: both compaction flags, circuit and account recovery
+  epochs, natural/max-open deadlines, and in-flight-follower state. Assert
+  `Stay`, `confirm_route == false`, an empty observation list, and no target or
+  reservation. Separately assert that disabled effective-unbound all-open
+  recovery and disabled explicit route-change full-prefix planning are
+  unchanged.
+- Settings-test default and unknown values as `natural`, JSON and partial-patch
+  round trips for `disabled`, and generated TypeScript bindings containing all
+  three literals. Frontend-test selecting and persisting `disabled`, its stable
+  selected state and failover/new-session copy, invalid-value rejection, and
+  the natural maximum-wait input being hidden outside `natural`.
 - Planner-test natural eligibility independently: P1 not due plus P2 due must
   return P1 in `not_triggered_provider_ids` and P2 in `targets`. Cover the
   inverse, multiple due targets, `NaturalMaxWait`, `MaxOpenWait`, and a healthy
@@ -714,6 +768,29 @@ if !circuit.should_allow(bound_provider_id, created_at).allow {
 
 Keep selection responsible for preference and make the common gate the single
 authoritative owner of deny decisions and skipped attempts.
+
+Do not apply disabled automatic failback before recovery and explicit routing
+have had a chance to plan:
+
+```rust
+// Wrong: this also suppresses effective-unbound recovery and route changes.
+if input.strategy == ProviderFailbackStrategy::Disabled {
+    return stay();
+}
+plan_unbound_or_route_change(input)
+
+// Correct: preserve recovery and explicit routing, then suppress only the
+// stable-bound automatic sources without creating observations.
+if input.bound_provider_id.is_none() {
+    return plan_new_unbound_session(input);
+}
+if input.route_changed {
+    return plan_complete_prefix(input, ProbeTrigger::RouteChanged);
+}
+if input.strategy == ProviderFailbackStrategy::Disabled {
+    return stay_without_observations();
+}
+```
 
 Do not collapse account recovery into circuit state or cache its uncertain
 eligibility:

@@ -45,6 +45,7 @@ pub enum HomeUsagePeriod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderFailbackStrategy {
+    Disabled,
     Aggressive,
     #[default]
     #[serde(other)]

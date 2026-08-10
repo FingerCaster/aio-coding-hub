@@ -691,6 +691,7 @@ pub fn clear_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::ProviderFailbackStrategy;
     use crate::test_support::{clear_settings_cache, test_env_lock};
     use std::ffi::OsString;
 
@@ -738,9 +739,44 @@ mod tests {
         let (settings, _, _) = parse_settings_json(r#"{}"#).unwrap();
         assert_eq!(settings.preferred_port, DEFAULT_GATEWAY_PORT);
         assert_eq!(settings.log_retention_days, DEFAULT_LOG_RETENTION_DAYS);
+        assert_eq!(
+            settings.provider_failback_strategy,
+            ProviderFailbackStrategy::Natural
+        );
         assert!(settings.tray_enabled);
         assert!(!settings.auto_start);
         assert_eq!(settings.grok_proxy_preferences, None);
+    }
+
+    #[test]
+    fn parse_settings_json_round_trips_disabled_provider_failback_strategy() {
+        let (settings, _, _) =
+            parse_settings_json(r#"{"provider_failback_strategy":"disabled"}"#).unwrap();
+        assert_eq!(
+            settings.provider_failback_strategy,
+            ProviderFailbackStrategy::Disabled
+        );
+
+        let canonical = canonical_settings_json(&settings).unwrap();
+        assert_eq!(
+            canonical["provider_failback_strategy"],
+            serde_json::json!("disabled")
+        );
+        let reparsed: AppSettings = serde_json::from_value(canonical).unwrap();
+        assert_eq!(
+            reparsed.provider_failback_strategy,
+            ProviderFailbackStrategy::Disabled
+        );
+    }
+
+    #[test]
+    fn parse_settings_json_falls_back_to_natural_for_unknown_failback_strategy() {
+        let (settings, _, _) =
+            parse_settings_json(r#"{"provider_failback_strategy":"future"}"#).unwrap();
+        assert_eq!(
+            settings.provider_failback_strategy,
+            ProviderFailbackStrategy::Natural
+        );
     }
 
     #[test]

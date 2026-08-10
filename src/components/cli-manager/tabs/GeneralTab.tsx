@@ -585,14 +585,17 @@ export function CliManagerGeneralTab({
               <div className="divide-y divide-border">
                 <SettingsRow
                   label="回切策略"
-                  subtitle="自然回切在当前会话完成压缩后的下一轮优先检查；积极回切在同一会话的每一轮都检查更高优先级 Provider。"
+                  subtitle="选择已有稳定会话何时主动检查更高优先级 Provider；关闭自动回切不影响故障转移和新会话选路。"
                 >
                   <RadioGroup
                     name="provider-failback-strategy"
                     ariaLabel="回切策略"
                     value={providerFailbackStrategy}
                     onChange={(value) => {
-                      const next = value === "aggressive" ? "aggressive" : "natural";
+                      if (value !== "natural" && value !== "aggressive" && value !== "disabled") {
+                        return;
+                      }
+                      const next = value;
                       setProviderFailbackStrategy(next);
                       void onPersistCommonSettings({ provider_failback_strategy: next });
                     }}
@@ -608,6 +611,12 @@ export function CliManagerGeneralTab({
                         label: "积极回切",
                         description:
                           "当前会话每一轮都检查更高优先级 Provider；仍受试探最短间隔和单飞限制。",
+                      },
+                      {
+                        value: "disabled",
+                        label: "关闭自动回切",
+                        description:
+                          "已有稳定会话保持当前 Provider，不主动回到更高优先级；当前 Provider 失败后的故障转移和新会话选路仍然有效。",
                       },
                     ]}
                     disabled={commonSettingsDisabled}

@@ -124,6 +124,11 @@ pub(in crate::gateway::proxy::handler) fn plan_probe_with_account_usage(
 
     let explicit_trigger = if input.route_changed {
         Some(ProbeTrigger::RouteChanged)
+    } else if input.strategy == ProviderFailbackStrategy::Disabled {
+        return ProbePlannerDecision::Stay {
+            confirm_route: false,
+            not_triggered_provider_ids: Vec::new(),
+        };
     } else if input.codex_compaction_pending || input.compaction_generation_pending {
         Some(ProbeTrigger::NaturalCompaction)
     } else if input.strategy == ProviderFailbackStrategy::Aggressive {
@@ -489,6 +494,36 @@ mod tests {
     }
 
     #[test]
+    fn disabled_unbound_session_preserves_complete_all_open_recovery() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Open, Some(400))),
+            (2, snapshot(CircuitState::HalfOpen, Some(400))),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: None,
+                session_recovery_epoch_baseline: 0,
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Disabled,
+                compaction_generation_pending: true,
+                codex_compaction_pending: true,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![
+                    probe(1, ProbeTrigger::NewUnboundSession),
+                    probe(2, ProbeTrigger::NewUnboundSession),
+                ],
+                reservation_trigger: ProbeTrigger::NewUnboundSession,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
     fn invalid_stable_session_keeps_mixed_route_recovery_single_target() {
         let candidates = vec![
             (1, snapshot(CircuitState::Open, Some(400))),
@@ -684,6 +719,84 @@ mod tests {
                 not_triggered_provider_ids: Vec::new(),
             }
         );
+    }
+
+    #[test]
+    fn disabled_session_preserves_route_change_for_complete_prefix() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Open, None)),
+            (3, snapshot(CircuitState::HalfOpen, None)),
+            (4, snapshot(CircuitState::Closed, None)),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(4),
+                session_recovery_epoch_baseline: 0,
+                route_changed: true,
+                strategy: ProviderFailbackStrategy::Disabled,
+                compaction_generation_pending: true,
+                codex_compaction_pending: true,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![
+                    direct(1),
+                    probe(2, ProbeTrigger::RouteChanged),
+                    probe(3, ProbeTrigger::RouteChanged),
+                ],
+                reservation_trigger: ProbeTrigger::RouteChanged,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn disabled_stable_session_ignores_all_automatic_failback_sources() {
+        let mut max_open_due = snapshot(CircuitState::Open, Some(90));
+        max_open_due.open_until = Some(90);
+        let mut active_probe = snapshot(CircuitState::HalfOpen, Some(400));
+        active_probe.probe_in_flight = true;
+        let candidates = vec![
+            (1, recovered_snapshot(8)),
+            (2, snapshot(CircuitState::Closed, Some(90))),
+            (3, max_open_due),
+            (4, active_probe),
+            (5, snapshot(CircuitState::Closed, None)),
+        ];
+        let account_usage_epochs = vec![(2, 9)];
+
+        for (compaction_generation_pending, codex_compaction_pending) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            assert_eq!(
+                plan_probe_with_account_usage(
+                    ProbePlannerInput {
+                        ordered_candidates: &candidates,
+                        bound_provider_id: Some(5),
+                        session_recovery_epoch_baseline: 7,
+                        route_changed: false,
+                        strategy: ProviderFailbackStrategy::Disabled,
+                        compaction_generation_pending,
+                        codex_compaction_pending,
+                        request_eligible: true,
+                        now_unix: 100,
+                    },
+                    AccountUsageRecoveryInput {
+                        provider_recovery_epochs: &account_usage_epochs,
+                        blocked_provider_ids: &[],
+                        session_recovery_epoch_baseline: 8,
+                    },
+                ),
+                ProbePlannerDecision::Stay {
+                    confirm_route: false,
+                    not_triggered_provider_ids: Vec::new(),
+                }
+            );
+        }
     }
 
     #[test]

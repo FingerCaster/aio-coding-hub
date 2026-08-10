@@ -484,6 +484,40 @@ describe("cli-manager/GeneralTab", () => {
     expect(screen.getByRole("radio", { name: "积极回切" })).toBeChecked();
   });
 
+  it("persists disabled automatic failback without collapsing it to natural", () => {
+    const onPersistCommonSettings = vi.fn();
+    const setProviderFailbackStrategy = vi.fn();
+    renderTab(
+      <CliManagerGeneralTab
+        {...createDefaultTabProps({ onPersistCommonSettings })}
+        setProviderFailbackStrategy={setProviderFailbackStrategy}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /熔断与回切/ }));
+    fireEvent.click(screen.getByRole("radio", { name: "关闭自动回切" }));
+
+    expect(setProviderFailbackStrategy).toHaveBeenCalledWith("disabled");
+    expect(onPersistCommonSettings).toHaveBeenCalledWith({
+      provider_failback_strategy: "disabled",
+    });
+  });
+
+  it("explains disabled automatic failback and hides the natural-only max wait input", () => {
+    renderTab(
+      <CliManagerGeneralTab {...createDefaultTabProps()} providerFailbackStrategy="disabled" />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /熔断与回切/ }));
+    expect(screen.getByRole("radio", { name: "关闭自动回切" })).toBeChecked();
+    expect(
+      screen.getByText(/当前 Provider 失败后的故障转移和新会话选路仍然有效/)
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("spinbutton", { name: "自然模式最长回切等待" })
+    ).not.toBeInTheDocument();
+  });
+
   it("switches modes and keeps retry and rewrite persistence isolated", async () => {
     const upstreamRetryPolicy = {
       ...DEFAULT_UPSTREAM_RETRY_POLICY,

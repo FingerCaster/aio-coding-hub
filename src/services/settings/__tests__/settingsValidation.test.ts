@@ -26,6 +26,7 @@ describe("services/settings/settingsValidation", () => {
     ).toBeNull();
 
     expect(validateSettingsSetInput({ upstreamStreamIdleTimeoutSeconds: 60 })).toBeNull();
+    expect(validateSettingsSetInput({ providerFailbackStrategy: "disabled" })).toBeNull();
   });
 
   it("rejects numeric settings outside backend bounds before IPC", () => {
@@ -43,7 +44,7 @@ describe("services/settings/settingsValidation", () => {
       "自然模式最长试探等待必须 <= 86400"
     );
     expect(validateSettingsSetInput({ providerFailbackStrategy: "future" as any })).toContain(
-      "回切策略仅支持 natural 或 aggressive"
+      "回切策略仅支持 natural、aggressive 或 disabled"
     );
     expect(validateSettingsSetInput({ providerBaseUrlPingCacheTtlSeconds: 0 })).toContain(
       "Provider Base URL 探测缓存 TTL必须 >= 1"

@@ -4026,7 +4026,7 @@ export type ProviderExtensionValuesInput = {
   namespace: string;
   values: JsonValue;
 };
-export type ProviderFailbackStrategy = "aggressive" | "natural";
+export type ProviderFailbackStrategy = "disabled" | "aggressive" | "natural";
 export type ProviderLimitUsageRow = {
   cli_key: string;
   provider_id: number;

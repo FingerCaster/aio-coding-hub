@@ -2787,6 +2787,33 @@ mod tests {
     }
 
     #[test]
+    fn partial_patch_persists_disabled_provider_failback_strategy() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let result = tauri::async_runtime::block_on(settings_patch_impl_for_test(
+            handle.clone(),
+            SettingsPatch {
+                provider_failback_strategy: Some(settings::ProviderFailbackStrategy::Disabled),
+                ..SettingsPatch::default()
+            },
+        ))
+        .expect("persist disabled failback strategy");
+
+        assert_eq!(
+            result.settings.provider_failback_strategy,
+            settings::ProviderFailbackStrategy::Disabled
+        );
+        assert_eq!(
+            settings::read(&handle)
+                .expect("canonical settings after strategy patch")
+                .provider_failback_strategy,
+            settings::ProviderFailbackStrategy::Disabled
+        );
+    }
+
+    #[test]
     fn retry_policy_save_without_auto_start_intent_skips_owner_and_os_sync() {
         let _serial = crate::app::autostart::auto_start_test_serial_lock()
             .lock()

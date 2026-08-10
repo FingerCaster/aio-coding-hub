@@ -503,9 +503,10 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   if (
     input.providerFailbackStrategy != null &&
     input.providerFailbackStrategy !== "natural" &&
-    input.providerFailbackStrategy !== "aggressive"
+    input.providerFailbackStrategy !== "aggressive" &&
+    input.providerFailbackStrategy !== "disabled"
   ) {
-    return "回切策略仅支持 natural 或 aggressive";
+    return "回切策略仅支持 natural、aggressive 或 disabled";
   }
 
   const streamIdleMessage = validateUpstreamStreamIdleTimeout(

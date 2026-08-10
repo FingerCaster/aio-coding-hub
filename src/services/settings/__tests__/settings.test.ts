@@ -200,6 +200,17 @@ describe("services/settings/settings", () => {
     expect(
       Object.fromEntries(Object.entries(sentPatch).filter(([, value]) => value !== null))
     ).toEqual({ providerCooldownSeconds: 99 });
+
+    vi.mocked(tauriInvoke).mockClear();
+    await settingsPatch(current, { provider_failback_strategy: "disabled" });
+    const strategyCalls = vi.mocked(tauriInvoke).mock.calls;
+    const strategyPatch = strategyCalls[strategyCalls.length - 1]?.[1]?.patch as Record<
+      string,
+      unknown
+    >;
+    expect(
+      Object.fromEntries(Object.entries(strategyPatch).filter(([, value]) => value !== null))
+    ).toEqual({ providerFailbackStrategy: "disabled" });
   });
 
   it("never forwards update_channel through the ordinary settings writer", async () => {
@@ -314,7 +325,7 @@ describe("services/settings/settings", () => {
         ...required,
         providerFailbackStrategy: "future",
       } as any)
-    ).rejects.toThrow("回切策略仅支持 natural 或 aggressive");
+    ).rejects.toThrow("回切策略仅支持 natural、aggressive 或 disabled");
 
     await expect(
       settingsSet({

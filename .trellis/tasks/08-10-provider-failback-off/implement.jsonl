@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md", "reason": "保持关闭自动回切与正常故障转移、显式路由变化、无绑定和全 Open 恢复的边界"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md", "reason": "保持 provider_failback_strategy 的字段所有权、持久化与回滚契约"}
+{"file": ".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md", "reason": "证明新增策略不改变 Provider 重试和请求 attempt budget"}
+{"file": ".trellis/tasks/archive/2026-08/08-03-circuit-breaker-probe-failback/design.md", "reason": "复用原始回切状态机、trigger 顺序和兼容边界"}

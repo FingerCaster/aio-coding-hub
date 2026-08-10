@@ -1,0 +1,28 @@
+{
+  "id": "provider-failback-off",
+  "name": "provider-failback-off",
+  "title": "新增关闭自动回切策略",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-10",
+  "completedAt": null,
+  "branch": "FingerCaster/provider-failback-off",
+  "base_branch": "origin/main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "description": "新增可持久化的关闭自动回切策略，同时保留故障转移、新会话选路、显式路由变更与全熔断恢复。"
+  }
+}
