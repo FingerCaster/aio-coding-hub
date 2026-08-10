@@ -222,6 +222,16 @@ impl CodexTerminalFirewall {
         };
 
         if let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(text) {
+            let completion = is_completion_frame(&event_name, &data);
+            if self.strict_complete {
+                if completion && !is_valid_completion_frame(&data) {
+                    return FrameDecision::FailClosed("invalid_completed");
+                }
+                if self.completion_forwarded {
+                    return FrameDecision::FailClosed("semantic_frame_after_completed");
+                }
+            }
+
             if let Some(evidence) = usage::classify_codex_stream_internal_error(
                 &event_name,
                 &data,
@@ -238,15 +248,6 @@ impl CodexTerminalFirewall {
                 };
             }
 
-            let completion = is_completion_frame(&event_name, &data);
-            if self.strict_complete {
-                if completion && !is_valid_completion_frame(&data) {
-                    return FrameDecision::FailClosed("invalid_completed");
-                }
-                if self.completion_forwarded {
-                    return FrameDecision::FailClosed("semantic_frame_after_completed");
-                }
-            }
             return FrameDecision::Forward { completion };
         }
 
@@ -373,6 +374,18 @@ mod tests {
         );
         assert_eq!(
             validate_complete_codex_sse(semantic_after_completed.as_bytes(), &[]),
+            Err("semantic_frame_after_completed")
+        );
+        let terminal_after_completed = format!(
+            "{completed}{}data: [DONE]\n\n",
+            frame(
+                "response.failed",
+                r#"{"type":"response.failed","response":{"error":{"code":"server_error","message":"late"}}}"#,
+                "\n",
+            )
+        );
+        assert_eq!(
+            validate_complete_codex_sse(terminal_after_completed.as_bytes(), &[]),
             Err("semantic_frame_after_completed")
         );
     }

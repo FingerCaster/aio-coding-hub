@@ -816,7 +816,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
 
     let failed_usage = response_rule_body
         .as_deref()
-        .or_else(|| abort_body_bytes.as_deref())
+        .or(abort_body_bytes.as_deref())
         .and_then(|body| usage::parse_usage_from_json_or_sse_bytes(ctx.cli_key.as_str(), body));
     observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, failed_usage.as_ref(), None);
 

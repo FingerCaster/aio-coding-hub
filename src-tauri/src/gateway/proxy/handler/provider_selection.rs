@@ -158,6 +158,7 @@ pub(super) fn resolve_session_bound_provider_id(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::gateway::proxy) fn resolve_session_bound_provider_id_without_circuit(
     session: &session_manager::SessionManager,
     cli_key: &str,
