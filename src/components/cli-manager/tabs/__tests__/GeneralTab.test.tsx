@@ -390,7 +390,7 @@ describe("cli-manager/GeneralTab", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
-    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 200 流内部错误规则" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
     const guardInput = screen.getByRole("spinbutton", { name: "流内部错误观察窗口" });
     fireEvent.change(guardInput, { target: { value: "750" } });
     expect(setStreamInternalErrorGuardMs).toHaveBeenCalledWith(750);

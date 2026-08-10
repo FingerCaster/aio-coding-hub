@@ -5528,7 +5528,8 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn managed_codex_alias_disabled_incomplete_sse_forwards_and_keeps_route_observation() {
+    async fn managed_codex_retry_disabled_incomplete_sse_is_sanitized_and_keeps_route_observation()
+    {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -5571,13 +5572,15 @@ INSERT INTO codex_managed_profiles(
             .expect("request");
 
         let response = router.oneshot(request).await.expect("route response");
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body");
         let body_text = String::from_utf8_lossy(&body);
-        assert!(body_text.contains("response.incomplete"));
-        assert!(body_text.contains("resp-managed-incomplete"));
+        assert!(!body_text.contains("response.incomplete"));
+        assert!(!body_text.contains("resp-managed-incomplete"));
+        let payload: Value = serde_json::from_slice(&body).expect("gateway error JSON");
+        assert_eq!(payload["error_code"], "GW_FAKE_200");
 
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(502));
@@ -5589,17 +5592,14 @@ INSERT INTO codex_managed_profiles(
             "grok-4.5",
         );
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
-        assert_eq!(
-            attempts[0].get("outcome").and_then(Value::as_str),
-            Some("stream_error: code=GW_FAKE_200")
-        );
+        assert_eq!(attempts[0]["decision"], "abort");
         assert_eq!(
             attempts[0]["stream_internal_error"]["classification"],
-            "disabled"
+            "unknown"
         );
         assert_eq!(
             attempts[0]["stream_internal_error"]["disposition"],
-            "forwarded_after_commit"
+            "sanitized_before_commit"
         );
         assert_no_additional_terminal_request_log(&mut log_rx).await;
 
@@ -13137,7 +13137,7 @@ INSERT INTO codex_managed_profiles(
         assert_eq!(attempts[0]["decision"].as_str(), Some("retry"));
         assert_eq!(
             attempts[0]["stream_internal_error"]["classification"].as_str(),
-            Some("retryable")
+            Some("transient_capacity")
         );
         assert_eq!(
             attempts[0]["stream_internal_error"]["message"].as_str(),
@@ -13220,7 +13220,7 @@ INSERT INTO codex_managed_profiles(
         assert_eq!(attempts.len(), 2);
         assert_eq!(
             attempts[0]["stream_internal_error"]["classification"].as_str(),
-            Some("retryable")
+            Some("transient_capacity")
         );
         assert_eq!(attempts[1]["outcome"].as_str(), Some("success"));
 
@@ -13228,7 +13228,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_responses_unknown_stream_error_is_forwarded_and_logged() {
+    async fn codex_responses_unknown_stream_error_is_sanitized_before_commit() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -13244,7 +13244,7 @@ INSERT INTO codex_managed_profiles(
 
         let unknown_body = concat!(
             "event: response.error\n",
-            "data: {\"type\":\"response.error\",\"error\":{\"message\":\"quota exhausted\",\"type\":\"insufficient_quota\"}}\n\n"
+            "data: {\"type\":\"response.error\",\"error\":{\"message\":\"SYNTHETIC_UPSTREAM_SCREENSHOT_ERROR\",\"type\":\"vendor_oddity\"}}\n\n"
         );
         let (base_url, upstream_task) = spawn_sse_upstream(unknown_body).await;
         let db_dir = tempfile::tempdir().expect("db dir");
@@ -13267,12 +13267,15 @@ INSERT INTO codex_managed_profiles(
             .expect("request");
 
         let response = router.oneshot(request).await.expect("route response");
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body");
-        let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("quota exhausted"));
+        let client_body = String::from_utf8_lossy(&body);
+        assert!(!client_body.contains("SYNTHETIC_UPSTREAM_SCREENSHOT_ERROR"));
+        assert!(!client_body.contains("vendor_oddity"));
+        let payload: Value = serde_json::from_slice(&body).expect("gateway error JSON");
+        assert_eq!(payload["error_code"], "GW_FAKE_200");
 
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(502));
@@ -13280,7 +13283,7 @@ INSERT INTO codex_managed_profiles(
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         assert_eq!(
             attempts[0]["stream_internal_error"]["message"],
-            "quota exhausted"
+            "SYNTHETIC_UPSTREAM_SCREENSHOT_ERROR"
         );
         assert_eq!(
             attempts[0]["stream_internal_error"]["classification"],
@@ -13288,14 +13291,156 @@ INSERT INTO codex_managed_profiles(
         );
         assert_eq!(
             attempts[0]["stream_internal_error"]["disposition"],
-            "forwarded_after_commit"
+            "sanitized_before_commit"
         );
 
         upstream_task.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_capacity_code_is_intercepted_and_hidden_when_stream_retries_are_disabled() {
+    async fn codex_responses_post_commit_terminal_frame_is_dropped_by_relay_firewall() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let visible = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"SYNTHETIC_VISIBLE_OUTPUT\"}\n\n"
+        );
+        let terminal = concat!(
+            "event: response.failed\r\n",
+            "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_error\",\"message\":\"SYNTHETIC_TERMINAL_SECRET\"}}\r\n\r\n"
+        );
+        let (base_url, upstream_task) =
+            spawn_delayed_chunked_sse_upstream(visible, terminal, Duration::from_millis(600)).await;
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-post-commit-firewall.sqlite"))
+            .expect("init test db");
+        insert_codex_provider_with_priority(&db, "Post Commit Firewall Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-post-commit-firewall","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("SYNTHETIC_VISIBLE_OUTPUT"));
+        assert!(!body.contains("SYNTHETIC_TERMINAL_SECRET"));
+        assert!(!body.contains("response.failed"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.error_code.as_deref(), Some("GW_FAKE_200"));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["message"],
+            "SYNTHETIC_TERMINAL_SECRET"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["classification"],
+            "transient_provider"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["disposition"],
+            "dropped_after_commit"
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_responses_post_commit_passthrough_exception_preserves_terminal_frame() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.enable_response_fixer = false;
+        app_settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords = vec!["SYNTHETIC_PASSTHROUGH_TICKET".to_string()];
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let visible = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"SYNTHETIC_VISIBLE_BEFORE_PASSTHROUGH\"}\n\n"
+        );
+        let terminal = concat!(
+            "event: response.failed\r\n",
+            "data: {\"type\":\"response.failed\",\"error\":{\"code\":\"vendor_oddity\",\"message\":\"SYNTHETIC_PASSTHROUGH_TICKET\"}}\r\n\r\n"
+        );
+        let (base_url, upstream_task) =
+            spawn_delayed_chunked_sse_upstream(visible, terminal, Duration::from_millis(600)).await;
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-post-commit-passthrough.sqlite"))
+            .expect("init test db");
+        insert_codex_provider_with_priority(&db, "Post Commit Passthrough Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-post-commit-passthrough","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("SYNTHETIC_VISIBLE_BEFORE_PASSTHROUGH"));
+        assert!(body.contains(terminal));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.error_code.as_deref(), Some("GW_FAKE_200"));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["message"],
+            "SYNTHETIC_PASSTHROUGH_TICKET"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["classification"],
+            "unknown"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["disposition"],
+            "passthrough_exception"
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_capacity_code_is_raw_passthrough_when_terminal_firewall_is_disabled() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -13355,32 +13500,17 @@ INSERT INTO codex_managed_profiles(
             .expect("request");
 
         let response = router.oneshot(request).await.expect("route response");
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body");
-        let client_body = String::from_utf8_lossy(&body).to_ascii_lowercase();
-        for signal in [
-            "selected model is at capacity",
-            "server_is_overloaded",
-            "slow_down",
-            "capacity",
-            "overload",
-        ] {
-            assert!(
-                !client_body.contains(signal),
-                "client body leaked capacity signal {signal}: {client_body}"
-            );
-        }
-        let payload: Value = serde_json::from_slice(&body).expect("json body");
-        assert_eq!(
-            payload.get("error_code").and_then(Value::as_str),
-            Some("GW_FAKE_200")
-        );
+        let client_body = String::from_utf8_lossy(&body);
+        assert!(client_body.contains("SERVER_IS_OVERLOADED"));
+        assert!(client_body.contains("temporary upstream failure"));
 
         let log = recv_terminal_request_log(&mut log_rx).await;
-        assert_eq!(log.status, Some(502));
-        assert_eq!(log.error_code.as_deref(), Some("GW_FAKE_200"));
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
         assert_eq!(attempts.len(), 1);
@@ -13389,17 +13519,12 @@ INSERT INTO codex_managed_profiles(
             Some(provider_id)
         );
         assert_eq!(
-            attempts[0].get("error_category").and_then(Value::as_str),
-            Some("PROVIDER_ERROR")
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("success")
         );
-        assert_eq!(
-            attempts[0].get("error_code").and_then(Value::as_str),
-            Some("GW_FAKE_200")
-        );
-        assert_eq!(
-            attempts[0].get("decision").and_then(Value::as_str),
-            Some("switch")
-        );
+        assert!(attempts[0]["error_category"].is_null());
+        assert!(attempts[0]["error_code"].is_null());
+        assert_eq!(attempts[0]["decision"], "success");
         assert_eq!(
             attempts[0]["stream_internal_error"]["classification"],
             "disabled"
@@ -13410,10 +13535,13 @@ INSERT INTO codex_managed_profiles(
         );
         assert_eq!(
             attempts[0]["stream_internal_error"]["disposition"],
-            "switch_provider"
+            "disabled_passthrough"
         );
-        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 1);
-        assert_eq!(session.get_bound_provider("codex", session_id, 0), None);
+        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, 0),
+            Some(provider_id)
+        );
 
         fake_200_task.abort();
     }
@@ -13430,11 +13558,6 @@ INSERT INTO codex_managed_profiles(
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
         app_settings.upstream_retry_policy.max_retries = 0;
-        app_settings
-            .upstream_retry_policy
-            .stream_internal_errors
-            .retry_keywords
-            .push("quota exhausted".to_string());
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -13494,7 +13617,8 @@ INSERT INTO codex_managed_profiles(
             .expect("response body");
         let payload: Value = serde_json::from_slice(&body).expect("json body");
         let payload_error_code = payload.get("error_code").and_then(Value::as_str);
-        assert!(payload_error_code.is_some());
+        assert_eq!(payload_error_code, Some("GW_FAKE_200"));
+        assert!(!String::from_utf8_lossy(&body).contains("quota exhausted"));
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.error_code.as_deref(), payload_error_code);
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
@@ -13511,9 +13635,14 @@ INSERT INTO codex_managed_profiles(
         );
         assert_eq!(
             attempt.get("decision").and_then(Value::as_str),
-            Some("switch")
+            Some("abort")
         );
-        assert_eq!(attempt.get("circuit_failure_count"), Some(&Value::Null));
+        assert_eq!(attempt["stream_internal_error"]["classification"], "quota");
+        assert_eq!(
+            attempt["stream_internal_error"]["disposition"],
+            "sanitized_before_commit"
+        );
+        assert_eq!(attempt.get("circuit_failure_count"), Some(&Value::from(0)));
         assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 0);
         assert_eq!(session.get_bound_provider("codex", session_id, 0), None);
 

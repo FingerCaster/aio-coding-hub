@@ -632,8 +632,6 @@ fn sse_usage_tracker_drops_oversized_event_data() {
 
 #[test]
 fn codex_stream_internal_error_classifier_accepts_only_exact_terminal_types() {
-    let retry = vec!["selected model is at capacity".to_string()];
-    let non_retry = vec!["policy".to_string()];
     for event_type in [
         "error",
         "response.error",
@@ -648,14 +646,15 @@ fn codex_stream_internal_error_classifier_accepts_only_exact_terminal_types() {
             "message",
             &data,
             true,
-            &retry,
-            &non_retry,
+            &[],
+            &[],
+            false,
             "buffered_before_commit",
         )
         .expect("terminal type should classify");
         assert_eq!(evidence.event_type, event_type);
         assert_eq!(evidence.error_type, None);
-        assert_eq!(evidence.classification, "retryable");
+        assert_eq!(evidence.classification, "transient_capacity");
     }
 
     let top_level_error_type = serde_json::json!({
@@ -666,8 +665,9 @@ fn codex_stream_internal_error_classifier_accepts_only_exact_terminal_types() {
         "response.failed",
         &top_level_error_type,
         true,
-        &retry,
-        &non_retry,
+        &[],
+        &[],
+        false,
         "buffered_before_commit",
     )
     .expect("terminal event name should classify");
@@ -682,15 +682,16 @@ fn codex_stream_internal_error_classifier_accepts_only_exact_terminal_types() {
         "message",
         &unrelated,
         true,
-        &retry,
-        &non_retry,
+        &[],
+        &[],
+        false,
         "buffered_before_commit",
     )
     .is_none());
 }
 
 #[test]
-fn codex_capacity_interception_is_independent_from_retry_policy_enablement() {
+fn codex_capacity_recognition_requires_a_terminal_shape() {
     let data = serde_json::json!({
         "type": "response.failed",
         "response": {
@@ -713,38 +714,91 @@ fn codex_capacity_interception_is_independent_from_retry_policy_enablement() {
 }
 
 #[test]
-fn codex_stream_internal_error_positive_keyword_wins_and_disabled_policy_is_observable() {
+fn codex_stream_internal_error_structured_priority_and_exceptions_are_safe() {
     let data = serde_json::json!({
         "type": "response.failed",
-        "error": {"message": "Selected model is at capacity due to policy"}
+        "error": {"code": "odd_failure", "message": "ticket-123"}
     });
-    let retry = vec!["selected model is at capacity".to_string()];
-    let non_retry = vec!["policy".to_string()];
-    let retryable = classify_codex_stream_internal_error(
+    let passthrough = vec!["ticket-123".to_string()];
+    let passthrough_evidence = classify_codex_stream_internal_error(
         "",
         &data,
         true,
-        &retry,
-        &non_retry,
+        &passthrough,
+        &[],
+        false,
         "buffered_before_commit",
     )
     .expect("terminal error");
-    assert_eq!(retryable.classification, "retryable");
-    assert_eq!(
-        retryable.matched_keyword.as_deref(),
-        Some("selected model is at capacity")
-    );
+    assert_eq!(passthrough_evidence.classification, "unknown");
+    assert_eq!(passthrough_evidence.disposition, "passthrough_exception");
+
+    for (code, classification) in [
+        ("invalid_api_key ticket-123", "auth"),
+        ("invalid_request_error ticket-123", "invalid_request"),
+        ("insufficient_quota ticket-123", "quota"),
+        ("content_policy_violation ticket-123", "policy"),
+        ("server_is_overloaded ticket-123", "transient_capacity"),
+        ("server_error ticket-123", "transient_provider"),
+    ] {
+        let evidence = classify_codex_stream_internal_error(
+            "response.failed",
+            &serde_json::json!({"error": {"code": code}}),
+            true,
+            &passthrough,
+            &[],
+            false,
+            "buffered_before_commit",
+        )
+        .expect("structured terminal error");
+        assert_eq!(evidence.classification, classification);
+        if matches!(classification, "policy" | "transient_provider") {
+            assert_eq!(evidence.disposition, "passthrough_exception");
+        } else {
+            assert_eq!(evidence.disposition, "buffered_before_commit");
+        }
+    }
+
+    let legacy = vec!["vendor-odd".to_string()];
+    let legacy_unknown = classify_codex_stream_internal_error(
+        "response.failed",
+        &serde_json::json!({"error": {"message": "vendor-odd"}}),
+        true,
+        &[],
+        &legacy,
+        true,
+        "buffered_before_commit",
+    )
+    .expect("legacy unknown terminal error");
+    assert_eq!(legacy_unknown.classification, "unknown");
+    assert_eq!(legacy_unknown.disposition, "legacy_retry_override");
+    assert!(legacy_unknown.is_retryable());
+
+    let legacy_hard = classify_codex_stream_internal_error(
+        "response.failed",
+        &serde_json::json!({"error": {"message": "invalid_api_key vendor-odd"}}),
+        true,
+        &[],
+        &legacy,
+        true,
+        "buffered_before_commit",
+    )
+    .expect("legacy hard terminal error");
+    assert_eq!(legacy_hard.classification, "auth");
+    assert!(!legacy_hard.is_retryable());
 
     let disabled = classify_codex_stream_internal_error(
         "",
         &data,
         false,
-        &retry,
-        &non_retry,
+        &passthrough,
+        &legacy,
+        true,
         "forwarded_after_commit",
     )
     .expect("disabled terminal error remains observable");
     assert_eq!(disabled.classification, "disabled");
+    assert_eq!(disabled.disposition, "disabled_passthrough");
     assert!(disabled.matched_keyword.is_none());
 }
 
@@ -770,6 +824,7 @@ fn codex_stream_internal_error_evidence_redacts_secrets_and_bounds_unicode() {
         true,
         &[],
         &[],
+        false,
         "forwarded_after_commit",
     )
     .expect("terminal error");
@@ -809,9 +864,8 @@ fn codex_reasoning_summary_counts_as_meaningful_output() {
 
 #[test]
 fn sse_usage_tracker_keeps_post_commit_stream_internal_error_evidence() {
-    let retry = vec!["selected model is at capacity".to_string()];
     let mut tracker =
-        SseUsageTracker::new("codex").with_stream_internal_error_classifier(true, &retry, &[]);
+        SseUsageTracker::new("codex").with_stream_internal_error_classifier(true, &[], &[], false);
     tracker.ingest_chunk(
         b"event: response.failed\ndata: {\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n",
     );
@@ -819,6 +873,23 @@ fn sse_usage_tracker_keeps_post_commit_stream_internal_error_evidence() {
     let evidence = tracker
         .stream_internal_error_evidence()
         .expect("stream evidence");
-    assert_eq!(evidence.classification, "retryable");
+    assert_eq!(evidence.classification, "transient_capacity");
     assert_eq!(evidence.disposition, "forwarded_after_commit");
+}
+
+#[test]
+fn disabled_stream_firewall_tracker_is_evidence_only() {
+    let mut tracker =
+        SseUsageTracker::new("codex").with_stream_internal_error_classifier(false, &[], &[], false);
+    tracker.ingest_chunk(
+        b"event: response.failed\ndata: {\"type\":\"response.failed\",\"error\":{\"code\":\"server_is_overloaded\"}}\n\n",
+    );
+
+    let evidence = tracker
+        .stream_internal_error_evidence()
+        .expect("disabled stream evidence");
+    assert_eq!(evidence.classification, "disabled");
+    assert_eq!(evidence.disposition, "disabled_passthrough");
+    assert!(!tracker.terminal_error_seen());
+    assert!(!tracker.fake_200_detected());
 }

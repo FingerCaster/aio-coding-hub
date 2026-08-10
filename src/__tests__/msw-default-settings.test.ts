@@ -6,7 +6,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 58,
+      schema_version: 60,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -56,8 +56,8 @@ describe("MSW defaults", () => {
         transport_errors: ["connect", "timeout", "read"],
         stream_internal_errors: {
           enabled: true,
-          retry_keywords: [],
-          non_retry_keywords: [],
+          passthrough_keywords: ["high-risk cyber"],
+          legacy_retry_keywords: [],
         },
       },
       model_routing_policy: { enabled: false, rules: [] },

@@ -23,7 +23,7 @@ pub(in crate::gateway) mod provider_router;
 mod request_body;
 mod request_context;
 mod request_end;
-mod sse;
+pub(in crate::gateway) mod sse;
 pub(in crate::gateway) mod status_override;
 mod types;
 pub(in crate::gateway) mod upstream_client_error_rules;

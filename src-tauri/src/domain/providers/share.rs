@@ -29,6 +29,7 @@ const PROVIDER_SHARE_KIND: &str = "aio-coding-hub.provider-share";
 const PROVIDER_SHARE_SCHEMA_VERSION_V1: u32 = 1;
 const PROVIDER_SHARE_SCHEMA_VERSION_V2: u32 = 2;
 const PROVIDER_SHARE_SCHEMA_VERSION_V3: u32 = 3;
+const PROVIDER_SHARE_SCHEMA_VERSION_V4: u32 = 4;
 const DEFAULT_OAUTH_REFRESH_LEAD_SECONDS: i64 = 3600;
 const MAX_PROVIDER_NAME_CHARS: usize = 256;
 const MAX_AUTH_SECRET_BYTES: usize = 256 * 1024;
@@ -86,9 +87,10 @@ struct ProviderShareConfiguration<RetryPolicy> {
 
 type ProviderShareEnvelopeV1 = ProviderShareEnvelope<ProviderShareRetryPolicyV1>;
 type ProviderShareEnvelopeWireV2 = ProviderShareEnvelope<ProviderShareRetryPolicyV2>;
-pub(crate) type ProviderShareEnvelopeV3 = ProviderShareEnvelope<ProviderShareRetryPolicyV2>;
-type ProviderShareProviderV3 = ProviderShareProvider<ProviderShareRetryPolicyV2>;
-type ProviderShareConfigurationV3 = ProviderShareConfiguration<ProviderShareRetryPolicyV2>;
+type ProviderShareEnvelopeWireV3 = ProviderShareEnvelope<ProviderShareRetryPolicyV2>;
+pub(crate) type ProviderShareEnvelopeV4 = ProviderShareEnvelope<ProviderShareRetryPolicyV4>;
+type ProviderShareProviderV4 = ProviderShareProvider<ProviderShareRetryPolicyV4>;
+type ProviderShareConfigurationV4 = ProviderShareConfiguration<ProviderShareRetryPolicyV4>;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -169,6 +171,27 @@ pub(crate) struct ProviderShareRetryPolicyV2 {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct ProviderShareRetryPolicyV4 {
+    enabled: bool,
+    http_rules: Vec<ProviderShareHttpRetryRuleV2>,
+    transport_errors: Vec<crate::settings::UpstreamTransportRetryKind>,
+    stream_internal_errors: ProviderShareStreamInternalErrorPolicyV4,
+    max_retries: u32,
+    backoff_ms: u32,
+    counts_toward_circuit_breaker: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderShareStreamInternalErrorPolicyV4 {
+    enabled: bool,
+    passthrough_keywords: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    legacy_retry_keywords: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderShareHttpRetryRuleV2 {
     enabled: bool,
     status_code: u16,
@@ -212,6 +235,24 @@ impl From<crate::settings::UpstreamRetryPolicy> for ProviderShareRetryPolicyV2 {
     }
 }
 
+impl From<crate::settings::UpstreamRetryPolicy> for ProviderShareRetryPolicyV4 {
+    fn from(value: crate::settings::UpstreamRetryPolicy) -> Self {
+        Self {
+            enabled: value.enabled,
+            http_rules: value.http_rules.into_iter().map(Into::into).collect(),
+            transport_errors: value.transport_errors,
+            stream_internal_errors: ProviderShareStreamInternalErrorPolicyV4 {
+                enabled: value.stream_internal_errors.enabled,
+                passthrough_keywords: value.stream_internal_errors.passthrough_keywords,
+                legacy_retry_keywords: value.stream_internal_errors.legacy_retry_keywords,
+            },
+            max_retries: value.max_retries,
+            backoff_ms: value.backoff_ms,
+            counts_toward_circuit_breaker: value.counts_toward_circuit_breaker,
+        }
+    }
+}
+
 impl From<ProviderShareRetryPolicyV1> for crate::settings::UpstreamRetryPolicy {
     fn from(value: ProviderShareRetryPolicyV1) -> Self {
         Self {
@@ -237,6 +278,24 @@ impl From<ProviderShareRetryPolicyV2> for crate::settings::UpstreamRetryPolicy {
             http_rules: value.http_rules.into_iter().map(Into::into).collect(),
             transport_errors: value.transport_errors,
             stream_internal_errors: value.stream_internal_errors,
+            max_retries: value.max_retries,
+            backoff_ms: value.backoff_ms,
+            counts_toward_circuit_breaker: value.counts_toward_circuit_breaker,
+        }
+    }
+}
+
+impl From<ProviderShareRetryPolicyV4> for crate::settings::UpstreamRetryPolicy {
+    fn from(value: ProviderShareRetryPolicyV4) -> Self {
+        Self {
+            enabled: value.enabled,
+            http_rules: value.http_rules.into_iter().map(Into::into).collect(),
+            transport_errors: value.transport_errors,
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: value.stream_internal_errors.enabled,
+                passthrough_keywords: value.stream_internal_errors.passthrough_keywords,
+                legacy_retry_keywords: value.stream_internal_errors.legacy_retry_keywords,
+            },
             max_retries: value.max_retries,
             backoff_ms: value.backoff_ms,
             counts_toward_circuit_breaker: value.counts_toward_circuit_breaker,
@@ -518,7 +577,7 @@ fn validate_oauth_token_uri(value: Option<&str>) -> AppResult<()> {
     Ok(())
 }
 
-fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV3) -> AppResult<()> {
+fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV4) -> AppResult<()> {
     let bridge_type = provider
         .configuration
         .bridge_type
@@ -546,11 +605,11 @@ fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV3) -> App
     Ok(())
 }
 
-fn normalize_provider_share_v3(
-    mut envelope: ProviderShareEnvelopeV3,
-) -> AppResult<ProviderShareEnvelopeV3> {
+fn normalize_provider_share_v4(
+    mut envelope: ProviderShareEnvelopeV4,
+) -> AppResult<ProviderShareEnvelopeV4> {
     if envelope.kind != PROVIDER_SHARE_KIND
-        || envelope.schema_version != PROVIDER_SHARE_SCHEMA_VERSION_V3
+        || envelope.schema_version != PROVIDER_SHARE_SCHEMA_VERSION_V4
     {
         return Err(provider_share_schema_error());
     }
@@ -794,7 +853,7 @@ fn legacy_share_declares_model_routing_policy(bytes: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV3> {
+pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV4> {
     if bytes.is_empty() {
         return Err(AppError::new(
             "SEC_INVALID_INPUT",
@@ -831,10 +890,10 @@ pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvel
             {
                 return Err(provider_share_schema_error());
             }
-            let envelope = envelope.map_retry_policy(PROVIDER_SHARE_SCHEMA_VERSION_V3, |policy| {
-                ProviderShareRetryPolicyV2::from(crate::settings::UpstreamRetryPolicy::from(policy))
+            let envelope = envelope.map_retry_policy(PROVIDER_SHARE_SCHEMA_VERSION_V4, |policy| {
+                ProviderShareRetryPolicyV4::from(crate::settings::UpstreamRetryPolicy::from(policy))
             });
-            normalize_provider_share_v3(envelope)
+            normalize_provider_share_v4(envelope)
         }
         PROVIDER_SHARE_SCHEMA_VERSION_V2 => {
             if legacy_share_declares_model_routing_policy(bytes) {
@@ -847,14 +906,31 @@ pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvel
             {
                 return Err(provider_share_schema_error());
             }
-            normalize_provider_share_v3(
-                envelope.map_retry_policy(PROVIDER_SHARE_SCHEMA_VERSION_V3, |policy| policy),
-            )
+            normalize_provider_share_v4(envelope.map_retry_policy(
+                PROVIDER_SHARE_SCHEMA_VERSION_V4,
+                |policy| {
+                    ProviderShareRetryPolicyV4::from(crate::settings::UpstreamRetryPolicy::from(
+                        policy,
+                    ))
+                },
+            ))
         }
         PROVIDER_SHARE_SCHEMA_VERSION_V3 => {
-            let envelope: ProviderShareEnvelopeV3 =
+            let envelope: ProviderShareEnvelopeWireV3 =
                 serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
-            normalize_provider_share_v3(envelope)
+            normalize_provider_share_v4(envelope.map_retry_policy(
+                PROVIDER_SHARE_SCHEMA_VERSION_V4,
+                |policy| {
+                    ProviderShareRetryPolicyV4::from(crate::settings::UpstreamRetryPolicy::from(
+                        policy,
+                    ))
+                },
+            ))
+        }
+        PROVIDER_SHARE_SCHEMA_VERSION_V4 => {
+            let envelope: ProviderShareEnvelopeV4 =
+                serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
+            normalize_provider_share_v4(envelope)
         }
         _ => Err(AppError::new(
             "SEC_INVALID_INPUT",
@@ -863,10 +939,10 @@ pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvel
     }
 }
 
-pub(crate) fn serialize_provider_share_v3(
-    envelope: &ProviderShareEnvelopeV3,
+pub(crate) fn serialize_provider_share_v4(
+    envelope: &ProviderShareEnvelopeV4,
 ) -> AppResult<Vec<u8>> {
-    let envelope = normalize_provider_share_v3(envelope.clone())?;
+    let envelope = normalize_provider_share_v4(envelope.clone())?;
     let mut writer = CappedJsonWriter::new();
     serde_json::to_writer_pretty(&mut writer, &envelope).map_err(|error| {
         if error.is_io() {
@@ -1083,10 +1159,10 @@ ORDER BY extension_values.plugin_id ASC, extension_values.namespace ASC
     Ok(extensions)
 }
 
-pub(crate) fn export_provider_share_v3(
+pub(crate) fn export_provider_share_v4(
     db: &db::Db,
     provider_id: i64,
-) -> AppResult<ProviderShareEnvelopeV3> {
+) -> AppResult<ProviderShareEnvelopeV4> {
     if provider_id <= 0 {
         return Err(AppError::new("SEC_INVALID_INPUT", "provider_id is invalid"));
     }
@@ -1141,14 +1217,14 @@ pub(crate) fn export_provider_share_v3(
     tx.commit()
         .map_err(|error| db_err!("failed to finish provider share snapshot: {error}"))?;
 
-    normalize_provider_share_v3(ProviderShareEnvelopeV3 {
+    normalize_provider_share_v4(ProviderShareEnvelopeV4 {
         kind: PROVIDER_SHARE_KIND.to_string(),
-        schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V3,
-        provider: ProviderShareProviderV3 {
+        schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V4,
+        provider: ProviderShareProviderV4 {
             cli_key: row.cli_key.clone(),
             name: row.name,
             enabled: row.enabled,
-            configuration: ProviderShareConfigurationV3 {
+            configuration: ProviderShareConfigurationV4 {
                 base_urls: base_urls_from_row(&row.base_url, &row.base_urls_json),
                 base_url_mode,
                 priority: row.priority,
@@ -1366,7 +1442,7 @@ fn extension_preview(
     })
 }
 
-fn credential_status(provider: &ProviderShareProviderV3) -> ProviderShareCredentialStatus {
+fn credential_status(provider: &ProviderShareProviderV4) -> ProviderShareCredentialStatus {
     if provider.configuration.bridge_type.as_deref() == Some(CX2CC_BRIDGE_TYPE) {
         return ProviderShareCredentialStatus::NotRequired;
     }
@@ -1412,9 +1488,9 @@ fn credential_status(provider: &ProviderShareProviderV3) -> ProviderShareCredent
 
 pub(crate) fn preview_provider_share(
     db: &db::Db,
-    envelope: &ProviderShareEnvelopeV3,
+    envelope: &ProviderShareEnvelopeV4,
 ) -> AppResult<ProviderSharePreviewDraft> {
-    let envelope = normalize_provider_share_v3(envelope.clone())?;
+    let envelope = normalize_provider_share_v4(envelope.clone())?;
     let mut conn = db.open_connection()?;
     let tx = conn
         .transaction()
@@ -1514,11 +1590,11 @@ fn authentication_db_fields(
 
 pub(crate) fn import_provider_share(
     db: &db::Db,
-    envelope: &ProviderShareEnvelopeV3,
+    envelope: &ProviderShareEnvelopeV4,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary> {
-    let envelope = normalize_provider_share_v3(envelope.clone())?;
+    let envelope = normalize_provider_share_v4(envelope.clone())?;
     let provider = &envelope.provider;
     let mut conn = db.open_connection()?;
     let tx = conn
@@ -1788,15 +1864,15 @@ mod tests {
         }
     }
 
-    fn minimal_share() -> ProviderShareEnvelopeV3 {
-        ProviderShareEnvelopeV3 {
+    fn minimal_share() -> ProviderShareEnvelopeV4 {
+        ProviderShareEnvelopeV4 {
             kind: PROVIDER_SHARE_KIND.to_string(),
-            schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V3,
-            provider: ProviderShareProviderV3 {
+            schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V4,
+            provider: ProviderShareProviderV4 {
                 cli_key: "claude".to_string(),
                 name: "测试供应商".to_string(),
                 enabled: true,
-                configuration: ProviderShareConfigurationV3 {
+                configuration: ProviderShareConfigurationV4 {
                     base_urls: vec!["https://example.invalid/v1".to_string()],
                     base_url_mode: ProviderBaseUrlMode::Order,
                     priority: 100,
@@ -1922,7 +1998,7 @@ mod tests {
         name: &str,
         plugin_id: &str,
         plugin_version: &str,
-    ) -> ProviderShareEnvelopeV3 {
+    ) -> ProviderShareEnvelopeV4 {
         let mut share = minimal_share();
         share.provider.name = name.to_string();
         share.provider.extensions.push(ProviderShareExtensionV1 {
@@ -1935,11 +2011,11 @@ mod tests {
     }
 
     #[test]
-    fn strict_v3_round_trip_is_deterministic_and_newline_terminated() {
+    fn strict_v4_round_trip_is_deterministic_and_newline_terminated() {
         let share = minimal_share();
-        let first = serialize_provider_share_v3(&share).expect("serialize");
+        let first = serialize_provider_share_v4(&share).expect("serialize");
         let parsed = parse_provider_share(&first).expect("parse");
-        let second = serialize_provider_share_v3(&parsed).expect("serialize again");
+        let second = serialize_provider_share_v4(&parsed).expect("serialize again");
 
         assert_eq!(first, second);
         assert!(first.ends_with(b"\n"));
@@ -1951,7 +2027,7 @@ mod tests {
         share.provider.cli_key = "codex".to_string();
         share.provider.configuration.bridge_type = Some("codex_to_anthropic_messages".to_string());
 
-        let error = match normalize_provider_share_v3(share) {
+        let error = match normalize_provider_share_v4(share) {
             Ok(_) => panic!("legacy translation share must fail"),
             Err(error) => error,
         };
@@ -1970,7 +2046,7 @@ mod tests {
             .exact
             .insert("requested".to_string(), "effective".to_string());
 
-        let normalized = normalize_provider_share_v3(share).expect("normalize legacy mapping");
+        let normalized = normalize_provider_share_v4(share).expect("normalize legacy mapping");
         assert!(normalized
             .provider
             .configuration
@@ -1995,10 +2071,10 @@ mod tests {
             values: confirmed_custom_account_usage_values(),
         });
 
-        let normalized = normalize_provider_share_v3(share).expect("normalize custom share");
+        let normalized = normalize_provider_share_v4(share).expect("normalize custom share");
         assert_eq!(normalized.provider.extensions.len(), 1);
         assert_portable_custom_account_usage_is_disabled(&normalized.provider.extensions[0].values);
-        let serialized = serialize_provider_share_v3(&normalized).expect("serialize custom share");
+        let serialized = serialize_provider_share_v4(&normalized).expect("serialize custom share");
         let serialized = std::str::from_utf8(&serialized).expect("custom share utf8");
         for local_value in [
             "customScript",
@@ -2024,7 +2100,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v1_reads_legacy_statuses_and_reexports_canonical_v3_rules() {
+    fn strict_v1_reads_legacy_statuses_and_reexports_canonical_v4_rules() {
         let mut value = serde_json::to_value(minimal_share()).expect("serialize fixture");
         value["schema_version"] = serde_json::json!(1);
         value["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
@@ -2046,13 +2122,51 @@ mod tests {
         assert_eq!(policy.http_rules.len(), 2);
         assert_eq!(policy.http_rules[0].status_code, 429);
         assert!(!policy.enabled);
+        assert_eq!(
+            policy.stream_internal_errors.passthrough_keywords,
+            vec!["high-risk cyber"]
+        );
 
-        let exported = serialize_provider_share_v3(&parsed).expect("serialize v3");
-        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("parse v3");
-        assert_eq!(exported["schema_version"], 3);
+        let exported = serialize_provider_share_v4(&parsed).expect("serialize v4");
+        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("parse v4");
+        assert_eq!(exported["schema_version"], 4);
         let retry = &exported["provider"]["configuration"]["upstream_retry_policy_override"];
         assert!(retry.get("status_codes").is_none());
         assert_eq!(retry["http_rules"][1]["status_code"], 502);
+        assert_eq!(
+            retry["stream_internal_errors"]["passthrough_keywords"],
+            serde_json::json!(["high-risk cyber"])
+        );
+    }
+
+    #[test]
+    fn strict_v2_and_v3_missing_stream_policy_use_cyber_default() {
+        for schema_version in [2, 3] {
+            let mut value = serde_json::to_value(minimal_share()).expect("serialize fixture");
+            value["schema_version"] = serde_json::json!(schema_version);
+            value["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+                "enabled": true,
+                "http_rules": [],
+                "transport_errors": ["timeout"],
+                "max_retries": 1,
+                "backoff_ms": 100,
+                "counts_toward_circuit_breaker": false
+            });
+
+            let parsed = parse_provider_share(value.to_string().as_bytes())
+                .unwrap_or_else(|error| panic!("parse v{schema_version}: {error}"));
+            let policy = parsed
+                .provider
+                .configuration
+                .upstream_retry_policy_override
+                .as_ref()
+                .expect("retry policy");
+            assert_eq!(
+                policy.stream_internal_errors.passthrough_keywords,
+                vec!["high-risk cyber"],
+                "schema v{schema_version}"
+            );
+        }
     }
 
     #[test]
@@ -2085,6 +2199,57 @@ mod tests {
     }
 
     #[test]
+    fn strict_v3_migrates_legacy_stream_keywords_and_v4_rejects_them() {
+        let mut legacy = serde_json::to_value(minimal_share()).expect("serialize fixture");
+        legacy["schema_version"] = serde_json::json!(3);
+        legacy["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [],
+            "transport_errors": ["timeout"],
+            "stream_internal_errors": {
+                "enabled": false,
+                "retry_keywords": ["vendor retry"],
+                "non_retry_keywords": ["vendor passthrough"]
+            },
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+
+        let parsed = parse_provider_share(legacy.to_string().as_bytes()).expect("parse v3");
+        let policy = parsed
+            .provider
+            .configuration
+            .upstream_retry_policy_override
+            .as_ref()
+            .expect("retry override");
+        assert!(!policy.stream_internal_errors.enabled);
+        assert_eq!(
+            policy.stream_internal_errors.passthrough_keywords,
+            vec!["vendor passthrough"]
+        );
+        assert_eq!(
+            policy.stream_internal_errors.legacy_retry_keywords,
+            vec!["vendor retry"]
+        );
+
+        let exported = serialize_provider_share_v4(&parsed).expect("serialize v4");
+        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("v4 json");
+        let stream = &exported["provider"]["configuration"]["upstream_retry_policy_override"]
+            ["stream_internal_errors"];
+        assert_eq!(exported["schema_version"], 4);
+        assert!(stream.get("retry_keywords").is_none());
+        assert!(stream.get("non_retry_keywords").is_none());
+        assert_eq!(stream["passthrough_keywords"][0], "vendor passthrough");
+        assert_eq!(stream["legacy_retry_keywords"][0], "vendor retry");
+
+        let mut invalid_v4 = exported;
+        invalid_v4["provider"]["configuration"]["upstream_retry_policy_override"]
+            ["stream_internal_errors"]["retry_keywords"] = serde_json::json!(["must reject"]);
+        assert!(parse_provider_share(invalid_v4.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
     fn legacy_v1_and_v2_reject_model_routing_policy_field() {
         for schema_version in [
             PROVIDER_SHARE_SCHEMA_VERSION_V1,
@@ -2100,7 +2265,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v3_preserves_explicit_model_routing_override() {
+    fn strict_v4_preserves_explicit_model_routing_override() {
         let mut share = minimal_share();
         share.provider.configuration.model_routing_policy_override =
             Some(crate::settings::ModelRoutingPolicy {
@@ -2112,8 +2277,8 @@ mod tests {
                 }],
             });
 
-        let bytes = serialize_provider_share_v3(&share).expect("serialize v3");
-        let parsed = parse_provider_share(&bytes).expect("parse v3");
+        let bytes = serialize_provider_share_v4(&share).expect("serialize v4");
+        let parsed = parse_provider_share(&bytes).expect("parse v4");
         let policy = parsed
             .provider
             .configuration
@@ -2129,9 +2294,9 @@ mod tests {
     }
 
     #[test]
-    fn strict_v3_preserves_inherit_and_disabled_model_routing_states() {
+    fn strict_v4_preserves_inherit_and_disabled_model_routing_states() {
         let inherit = parse_provider_share(
-            &serialize_provider_share_v3(&minimal_share()).expect("serialize inherit"),
+            &serialize_provider_share_v4(&minimal_share()).expect("serialize inherit"),
         )
         .expect("parse inherit");
         assert!(inherit
@@ -2146,7 +2311,7 @@ mod tests {
             .configuration
             .model_routing_policy_override = Some(crate::settings::ModelRoutingPolicy::default());
         let disabled = parse_provider_share(
-            &serialize_provider_share_v3(&disabled).expect("serialize disabled"),
+            &serialize_provider_share_v4(&disabled).expect("serialize disabled"),
         )
         .expect("parse disabled");
         assert!(disabled
@@ -2157,8 +2322,8 @@ mod tests {
     }
 
     #[test]
-    fn strict_v3_rejects_unknown_root_and_nested_fields() {
-        let bytes = serialize_provider_share_v3(&minimal_share()).expect("serialize");
+    fn strict_v4_rejects_unknown_root_and_nested_fields() {
+        let bytes = serialize_provider_share_v4(&minimal_share()).expect("serialize");
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         value["unknown"] = serde_json::json!(true);
         assert!(parse_provider_share(value.to_string().as_bytes()).is_err());
@@ -2169,8 +2334,59 @@ mod tests {
     }
 
     #[test]
-    fn strict_v3_requires_complete_retry_rules_and_rejects_rule_extensions() {
-        let bytes = serialize_provider_share_v3(&minimal_share()).expect("serialize");
+    fn strict_v4_requires_complete_retry_rules_and_rejects_rule_extensions() {
+        let bytes = serialize_provider_share_v4(&minimal_share()).expect("serialize");
+        let mut explicit_empty_passthrough: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("json");
+        explicit_empty_passthrough["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [],
+            "transport_errors": [],
+            "stream_internal_errors": {
+                "enabled": true,
+                "passthrough_keywords": []
+            },
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        let explicit_empty =
+            parse_provider_share(explicit_empty_passthrough.to_string().as_bytes())
+                .expect("v4 explicit empty passthrough");
+        assert!(explicit_empty
+            .provider
+            .configuration
+            .upstream_retry_policy_override
+            .is_some_and(|policy| policy
+                .stream_internal_errors
+                .passthrough_keywords
+                .is_empty()));
+
+        let mut missing_stream_policy: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("json");
+        missing_stream_policy["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [],
+            "transport_errors": [],
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        assert!(parse_provider_share(missing_stream_policy.to_string().as_bytes()).is_err());
+
+        let mut missing_passthrough: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("json");
+        missing_passthrough["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [],
+            "transport_errors": [],
+            "stream_internal_errors": { "enabled": true },
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        assert!(parse_provider_share(missing_passthrough.to_string().as_bytes()).is_err());
+
         let mut missing_status: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         missing_status["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
             "enabled": true,
@@ -2207,9 +2423,9 @@ mod tests {
 
     #[test]
     fn strict_parser_rejects_future_version_and_oversized_content() {
-        let bytes = serialize_provider_share_v3(&minimal_share()).expect("serialize");
+        let bytes = serialize_provider_share_v4(&minimal_share()).expect("serialize");
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-        value["schema_version"] = serde_json::json!(4);
+        value["schema_version"] = serde_json::json!(5);
         let error = parse_provider_share(value.to_string().as_bytes())
             .err()
             .expect("future version must fail");
@@ -2224,7 +2440,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v3_rejects_oauth_provider_type_from_another_cli() {
+    fn strict_v4_rejects_oauth_provider_type_from_another_cli() {
         let mut share = minimal_share();
         let codex_provider_type = crate::gateway::oauth::registry::global_registry()
             .get_by_cli_key("codex")
@@ -2244,7 +2460,7 @@ mod tests {
             refresh_lead_seconds: DEFAULT_OAUTH_REFRESH_LEAD_SECONDS,
         };
 
-        let error = normalize_provider_share_v3(share)
+        let error = normalize_provider_share_v4(share)
             .err()
             .expect("cross-CLI oauth provider type must fail");
         assert!(error
@@ -2457,7 +2673,7 @@ mod tests {
         );
         assert_eq!(stored.oauth_refresh_lead_s, 7_200);
 
-        let exported = export_provider_share_v3(&db, imported.id).expect("export oauth");
+        let exported = export_provider_share_v4(&db, imported.id).expect("export oauth");
         assert!(!exported.provider.enabled);
         let ProviderShareAuthenticationV1::Oauth {
             provider_type: exported_provider_type,
@@ -2510,7 +2726,7 @@ mod tests {
         )
         .expect("mark provider as referenced");
         drop(conn);
-        let error = export_provider_share_v3(&db, referenced.id)
+        let error = export_provider_share_v4(&db, referenced.id)
             .err()
             .expect("referenced provider export must fail");
         assert_eq!(
@@ -2547,7 +2763,7 @@ mod tests {
         .expect("import standalone cx2cc");
         assert_eq!(standalone.source_provider_id, None);
         assert_eq!(standalone.bridge_type.as_deref(), Some(CX2CC_BRIDGE_TYPE));
-        let exported = export_provider_share_v3(&db, standalone.id).expect("export cx2cc");
+        let exported = export_provider_share_v4(&db, standalone.id).expect("export cx2cc");
         assert_eq!(
             exported.provider.configuration.bridge_type.as_deref(),
             Some(CX2CC_BRIDGE_TYPE)
@@ -2792,8 +3008,8 @@ mod tests {
             transport_errors: vec![crate::settings::UpstreamTransportRetryKind::Timeout],
             stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
                 enabled: true,
-                retry_keywords: vec!["synthetic capacity".to_string()],
-                non_retry_keywords: vec!["synthetic policy".to_string()],
+                passthrough_keywords: vec!["synthetic policy".to_string()],
+                legacy_retry_keywords: vec!["synthetic capacity".to_string()],
             },
             max_retries: 2,
             backoff_ms: 321,
@@ -2811,12 +3027,12 @@ mod tests {
         input.model_routing_policy_override_specified = true;
         let source = super::super::queries::upsert(&source_db, input).expect("create source");
 
-        let exported = export_provider_share_v3(&source_db, source.id).expect("export");
+        let exported = export_provider_share_v4(&source_db, source.id).expect("export");
         assert_eq!(
             exported.provider.extensions[0].values["routeGateEnabled"],
             false
         );
-        let bytes = serialize_provider_share_v3(&exported).expect("serialize");
+        let bytes = serialize_provider_share_v4(&exported).expect("serialize");
         let serialized = std::str::from_utf8(&bytes).expect("utf8");
         assert!(serialized.contains("SYNTHETIC_API_KEY"));
         assert!(!serialized.contains("SYNTHETIC_ACCOUNT_SECRET"));
@@ -2833,7 +3049,7 @@ mod tests {
         }
         let parsed = parse_provider_share(&bytes).expect("parse");
         assert_eq!(
-            serialize_provider_share_v3(&parsed).expect("serialize parsed"),
+            serialize_provider_share_v4(&parsed).expect("serialize parsed"),
             bytes
         );
 
@@ -2885,8 +3101,8 @@ mod tests {
                 transport_errors: vec![crate::settings::UpstreamTransportRetryKind::Timeout],
                 stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
                     enabled: true,
-                    retry_keywords: vec!["synthetic capacity".to_string()],
-                    non_retry_keywords: vec!["synthetic policy".to_string()],
+                    passthrough_keywords: vec!["synthetic policy".to_string()],
+                    legacy_retry_keywords: vec!["synthetic capacity".to_string()],
                 },
                 max_retries: 2,
                 backoff_ms: 321,
@@ -2948,13 +3164,13 @@ WHERE provider_id = ?2 AND plugin_id = ?3 AND namespace = ?4
         )
         .expect("replace source account usage config");
         drop(conn);
-        let custom_export = export_provider_share_v3(&source_db, source.id)
+        let custom_export = export_provider_share_v4(&source_db, source.id)
             .expect("export provider with custom account usage");
         assert_eq!(custom_export.provider.extensions.len(), 1);
         assert_portable_custom_account_usage_is_disabled(
             &custom_export.provider.extensions[0].values,
         );
-        let custom_bytes = serialize_provider_share_v3(&custom_export).expect("serialize custom");
+        let custom_bytes = serialize_provider_share_v4(&custom_export).expect("serialize custom");
         let custom_text = std::str::from_utf8(&custom_bytes).expect("custom share utf8");
         for local_value in [
             "customScript",

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 /// Find the byte offset immediately after the first complete SSE event,
 /// terminated by `\n\n` or `\r\n\r\n`.
-pub(in crate::gateway::proxy) fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
+pub(in crate::gateway) fn find_sse_event_end(buffer: &[u8]) -> Option<usize> {
     let mut i = 0;
     while i < buffer.len() {
         if buffer[i] == b'\n' {
@@ -29,7 +29,7 @@ pub(in crate::gateway::proxy) fn find_sse_event_end(buffer: &[u8]) -> Option<usi
 /// Supports both `event: xxx\ndata: {...}\n\n` and `data: {...}\n\n` formats.
 /// In the latter case, the event type is inferred from the `type` field of the
 /// JSON data.
-pub(in crate::gateway::proxy) fn parse_sse_frame(frame: &str) -> Option<(String, Value)> {
+pub(in crate::gateway) fn parse_sse_frame(frame: &str) -> Option<(String, Value)> {
     let mut event_type = None;
     let mut data_parts: Vec<&str> = Vec::new();
 

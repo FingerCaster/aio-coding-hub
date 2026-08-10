@@ -13,6 +13,7 @@ export const MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS = 16;
 export const MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS = 512;
 export const MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES = 10;
 export const MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS = 60_000;
+export const DEFAULT_CYBER_PASSTHROUGH_KEYWORD = "high-risk cyber";
 
 export function createUpstreamHttpRetryRule(statusCode = 500): UpstreamHttpRetryRule {
   return {
@@ -36,8 +37,8 @@ export const DEFAULT_UPSTREAM_RETRY_POLICY: UpstreamRetryPolicy = {
   transport_errors: ["connect", "timeout", "read"],
   stream_internal_errors: {
     enabled: true,
-    retry_keywords: [],
-    non_retry_keywords: [],
+    passthrough_keywords: [DEFAULT_CYBER_PASSTHROUGH_KEYWORD],
+    legacy_retry_keywords: [],
   },
   max_retries: 1,
   backoff_ms: 100,
@@ -69,13 +70,13 @@ export function cloneUpstreamRetryPolicy(
     transport_errors: [...source.transport_errors],
     stream_internal_errors: {
       ...(source.stream_internal_errors ?? DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors),
-      retry_keywords: [
-        ...(source.stream_internal_errors?.retry_keywords ??
-          DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors.retry_keywords),
+      passthrough_keywords: [
+        ...(source.stream_internal_errors?.passthrough_keywords ??
+          DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors.passthrough_keywords),
       ],
-      non_retry_keywords: [
-        ...(source.stream_internal_errors?.non_retry_keywords ??
-          DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors.non_retry_keywords),
+      legacy_retry_keywords: [
+        ...(source.stream_internal_errors?.legacy_retry_keywords ??
+          DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors.legacy_retry_keywords),
       ],
     },
   };
@@ -165,8 +166,8 @@ export function validateUpstreamRetryPolicy(policy: UpstreamRetryPolicy) {
     return "流内部错误重试配置无效";
   }
   for (const [field, label] of [
-    [streamPolicy.retry_keywords, "重试关键词"],
-    [streamPolicy.non_retry_keywords, "不重试关键词"],
+    [streamPolicy.passthrough_keywords, "透传例外"],
+    [streamPolicy.legacy_retry_keywords, "旧版兼容重试词"],
   ] as const) {
     if (!Array.isArray(field)) return `流内部错误${label}必须是列表`;
     if (field.length > MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS) {

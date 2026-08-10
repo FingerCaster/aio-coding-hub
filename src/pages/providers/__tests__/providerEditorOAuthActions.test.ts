@@ -168,8 +168,8 @@ function makeCtx(overrides: Partial<OAuthActionContext> = {}) {
       transport_errors: ["connect", "timeout", "read"],
       stream_internal_errors: {
         enabled: true,
-        retry_keywords: ["selected model is at capacity"],
-        non_retry_keywords: ["policy", "safety"],
+        passthrough_keywords: ["vendor passthrough"],
+        legacy_retry_keywords: ["selected model is at capacity"],
       },
       max_retries: 2,
       backoff_ms: 1000,

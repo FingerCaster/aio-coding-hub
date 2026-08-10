@@ -193,9 +193,9 @@ pricing. An effort-only route retains the actual final model as its cost basis.
 
 - Settings 56 -> 57 adds a disabled global policy.
 - SQLite 44 -> 45 adds the nullable Provider column; old rows inherit global.
-- Provider share v3 preserves inherit/enabled/disabled. V1/v2 readers reject an
-  injected routing field, then canonicalize legitimate legacy payloads to
-  `None`; new exports are strict v3.
+- Provider share v3-v4 preserves inherit/enabled/disabled. V1/v2 readers reject
+  an injected routing field, then canonicalize legitimate legacy payloads to
+  `None`; current exports are strict v4.
 - Config bundle v4 preserves global and Provider policies. V1-v3 import clears
   both, even if a crafted payload injects them.
 

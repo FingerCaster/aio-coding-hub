@@ -9,7 +9,62 @@ use std::sync::LazyLock;
 const STREAM_INTERNAL_ERROR_MESSAGE_MAX_CHARS: usize = 2_048;
 const STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS: usize = 512;
 const CODEX_CAPACITY_MESSAGE: &str = "selected model is at capacity";
-const CODEX_CAPACITY_ERROR_CODES: [&str; 2] = ["server_is_overloaded", "slow_down"];
+const CODEX_CAPACITY_ERROR_CODES: [&str; 4] = [
+    "server_is_overloaded",
+    "slow_down",
+    "service_unavailable_error",
+    "model_at_capacity",
+];
+const STREAM_HARD_AUTH_SIGNALS: [&str; 10] = [
+    "authentication_error",
+    "invalid_api_key",
+    "unauthorized",
+    "permission_denied",
+    "access_denied",
+    "forbidden",
+    "invalid_token",
+    "expired_token",
+    "bearer ",
+    "api key",
+];
+const STREAM_HARD_INVALID_REQUEST_SIGNALS: [&str; 8] = [
+    "invalid_request_error",
+    "invalid_request",
+    "invalid_argument",
+    "bad_request",
+    "validation_error",
+    "model_not_found",
+    "unsupported_model",
+    "unsupported_parameter",
+];
+const STREAM_HARD_QUOTA_SIGNALS: [&str; 6] = [
+    "insufficient_quota",
+    "quota_exceeded",
+    "billing_hard_limit_reached",
+    "billing_limit",
+    "credit_balance_too_low",
+    "usage_limit_reached",
+];
+const STREAM_HARD_POLICY_SIGNALS: [&str; 8] = [
+    "policy_violation",
+    "content_policy_violation",
+    "content policy",
+    "content_filter",
+    "safety_error",
+    "safety_violation",
+    "high_risk_cyber",
+    "high-risk cyber",
+];
+const STREAM_TRANSIENT_PROVIDER_SIGNALS: [&str; 8] = [
+    "server_error",
+    "internal_server_error",
+    "service_unavailable",
+    "temporarily_unavailable",
+    "upstream_timeout",
+    "timeout_error",
+    "rate_limit_error",
+    "rate_limit_exceeded",
+];
 
 static STREAM_ERROR_BEARER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(\bbearer\s+)([^\s,;\"']+)"#).expect("valid stream-error bearer regex")
@@ -39,7 +94,18 @@ pub struct StreamInternalErrorEvidence {
 
 impl StreamInternalErrorEvidence {
     pub fn is_retryable(&self) -> bool {
-        self.classification == "retryable"
+        matches!(
+            self.classification.as_str(),
+            "transient_capacity" | "transient_provider"
+        ) || self.disposition == "legacy_retry_override"
+    }
+
+    pub fn is_passthrough_exception(&self) -> bool {
+        self.disposition == "passthrough_exception"
+    }
+
+    pub fn is_legacy_retry_override(&self) -> bool {
+        self.disposition == "legacy_retry_override"
     }
 
     pub fn set_disposition(&mut self, disposition: &str) {
@@ -48,28 +114,14 @@ impl StreamInternalErrorEvidence {
         self.disposition = disposition;
         self.truncated |= truncated;
     }
-
-    pub fn contains_codex_capacity_signal(&self) -> bool {
-        [
-            Some(self.event_type.as_str()),
-            self.error_type.as_deref(),
-            self.error_code.as_deref(),
-            self.message.as_deref(),
-            Some(self.classification.as_str()),
-            self.matched_keyword.as_deref(),
-            Some(self.disposition.as_str()),
-        ]
-        .into_iter()
-        .flatten()
-        .any(contains_codex_capacity_signal)
-    }
 }
 
 #[derive(Debug, Clone)]
 struct StreamInternalErrorClassifier {
     enabled: bool,
-    retry_keywords: Vec<String>,
-    non_retry_keywords: Vec<String>,
+    passthrough_keywords: Vec<String>,
+    legacy_retry_keywords: Vec<String>,
+    allow_legacy_retry: bool,
 }
 
 fn normalize_stream_error_message(value: &str) -> String {
@@ -106,7 +158,25 @@ fn stream_terminal_type(event_name: &str, data: &Value) -> Option<String> {
     {
         return Some(event_type.trim().to_ascii_lowercase());
     }
-    is_codex_stream_terminal_type(event_name).then(|| event_name.trim().to_ascii_lowercase())
+    if is_codex_stream_terminal_type(event_name) {
+        return Some(event_name.trim().to_ascii_lowercase());
+    }
+
+    let status = data
+        .get("status")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            data.get("response")
+                .and_then(|response| response.get("status"))
+                .and_then(Value::as_str)
+        })?
+        .trim()
+        .to_ascii_lowercase();
+    match status.as_str() {
+        "error" | "failed" => Some("response.failed".to_string()),
+        "incomplete" => Some("response.incomplete".to_string()),
+        _ => None,
+    }
 }
 
 fn stream_error_fields<'a>(data: &'a Value, field: &str) -> [Option<&'a str>; 3] {
@@ -183,51 +253,100 @@ pub fn is_codex_capacity_stream_internal_error(event_name: &str, data: &Value) -
         ]
         .into_iter()
         .flatten()
-        .any(|value| value.to_ascii_lowercase().contains(CODEX_CAPACITY_MESSAGE))
+        .any(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains(CODEX_CAPACITY_MESSAGE)
+                || value.contains("overload")
+                || value.contains("at capacity")
+                || value.contains("service_unavailable_error")
+        })
+}
+
+fn searchable_stream_error_text(event_name: &str, data: &Value) -> String {
+    [
+        Some(event_name),
+        data.get("type").and_then(Value::as_str),
+        stream_error_field(data, "type"),
+        stream_error_field(data, "code"),
+        stream_error_message(data),
+        data.get("status").and_then(Value::as_str),
+        data.get("response")
+            .and_then(|response| response.get("status"))
+            .and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n")
+    .to_lowercase()
+}
+
+fn contains_any_signal(searchable: &str, signals: &[&str]) -> bool {
+    signals.iter().any(|signal| searchable.contains(signal))
+}
+
+fn stream_error_classification(event_name: &str, data: &Value, searchable: &str) -> &'static str {
+    if contains_any_signal(searchable, &STREAM_HARD_AUTH_SIGNALS) {
+        "auth"
+    } else if contains_any_signal(searchable, &STREAM_HARD_INVALID_REQUEST_SIGNALS) {
+        "invalid_request"
+    } else if contains_any_signal(searchable, &STREAM_HARD_QUOTA_SIGNALS) {
+        "quota"
+    } else if contains_any_signal(searchable, &STREAM_HARD_POLICY_SIGNALS) {
+        "policy"
+    } else if is_codex_capacity_stream_internal_error(event_name, data) {
+        "transient_capacity"
+    } else if contains_any_signal(searchable, &STREAM_TRANSIENT_PROVIDER_SIGNALS) {
+        "transient_provider"
+    } else {
+        "unknown"
+    }
+}
+
+fn matching_literal_keyword<'a>(searchable: &str, keywords: &'a [String]) -> Option<&'a str> {
+    keywords.iter().find_map(|keyword| {
+        let trimmed = keyword.trim();
+        (!trimmed.is_empty() && searchable.contains(&trimmed.to_lowercase())).then_some(trimmed)
+    })
 }
 
 pub fn classify_codex_stream_internal_error(
     event_name: &str,
     data: &Value,
     enabled: bool,
-    retry_keywords: &[String],
-    non_retry_keywords: &[String],
+    passthrough_keywords: &[String],
+    legacy_retry_keywords: &[String],
+    allow_legacy_retry: bool,
     disposition: &str,
 ) -> Option<StreamInternalErrorEvidence> {
     let event_type = stream_terminal_type(event_name, data)?;
     let raw_error_type = stream_error_field(data, "type");
     let raw_error_code = stream_error_field(data, "code");
     let raw_message = stream_error_message(data);
-    let raw_data_type = data.get("type").and_then(Value::as_str);
-    let searchable = [
-        Some(event_name),
-        raw_data_type,
-        raw_error_type,
-        raw_error_code,
-        raw_message,
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join("\n")
-    .to_lowercase();
-
-    let retry_match = retry_keywords
-        .iter()
-        .find(|keyword| !keyword.trim().is_empty() && searchable.contains(&keyword.to_lowercase()));
-    let non_retry_match = non_retry_keywords
-        .iter()
-        .find(|keyword| !keyword.trim().is_empty() && searchable.contains(&keyword.to_lowercase()));
-    let (classification, matched_keyword) = if !enabled {
-        ("disabled", None)
-    } else if let Some(keyword) = retry_match {
-        ("retryable", Some(keyword.as_str()))
-    } else if is_codex_capacity_stream_internal_error(event_name, data) {
-        ("retryable", None)
-    } else if let Some(keyword) = non_retry_match {
-        ("non_retryable", Some(keyword.as_str()))
+    let searchable = searchable_stream_error_text(event_name, data);
+    let classification = if enabled {
+        stream_error_classification(event_name, data, &searchable)
     } else {
-        ("unknown", None)
+        "disabled"
+    };
+    let passthrough_match = enabled
+        .then(|| matching_literal_keyword(&searchable, passthrough_keywords))
+        .flatten()
+        .filter(|_| {
+            classification != "transient_capacity"
+                && !matches!(classification, "quota" | "auth" | "invalid_request")
+        });
+    let legacy_retry_match = (enabled && allow_legacy_retry && classification == "unknown")
+        .then(|| matching_literal_keyword(&searchable, legacy_retry_keywords))
+        .flatten();
+    let (matched_keyword, disposition) = if !enabled {
+        (None, "disabled_passthrough")
+    } else if let Some(keyword) = passthrough_match {
+        (Some(keyword), "passthrough_exception")
+    } else if let Some(keyword) = legacy_retry_match {
+        (Some(keyword), "legacy_retry_override")
+    } else {
+        (None, disposition)
     };
 
     let mut truncated = false;
@@ -1051,19 +1170,27 @@ impl SseUsageTracker {
     pub fn with_stream_internal_error_classifier(
         mut self,
         enabled: bool,
-        retry_keywords: &[String],
-        non_retry_keywords: &[String],
+        passthrough_keywords: &[String],
+        legacy_retry_keywords: &[String],
+        allow_legacy_retry: bool,
     ) -> Self {
         self.stream_internal_error_classifier = Some(StreamInternalErrorClassifier {
             enabled,
-            retry_keywords: retry_keywords.to_vec(),
-            non_retry_keywords: non_retry_keywords.to_vec(),
+            passthrough_keywords: passthrough_keywords.to_vec(),
+            legacy_retry_keywords: legacy_retry_keywords.to_vec(),
+            allow_legacy_retry,
         });
         self
     }
 
     pub fn stream_internal_error_evidence(&self) -> Option<&StreamInternalErrorEvidence> {
         self.stream_internal_error_evidence.as_ref()
+    }
+
+    pub fn set_stream_internal_error_disposition(&mut self, disposition: &str) {
+        if let Some(evidence) = self.stream_internal_error_evidence.as_mut() {
+            evidence.set_disposition(disposition);
+        }
     }
 
     #[cfg(test)]
@@ -1227,6 +1354,11 @@ impl SseUsageTracker {
     }
 
     fn ingest_event(&mut self, event: &[u8], data: &Value) {
+        let terminal_actions_enabled = self
+            .stream_internal_error_classifier
+            .as_ref()
+            .map(|classifier| classifier.enabled)
+            .unwrap_or(true);
         if self.stream_internal_error_evidence.is_none() {
             if let (Some(classifier), Ok(event_name)) = (
                 self.stream_internal_error_classifier.as_ref(),
@@ -1236,13 +1368,15 @@ impl SseUsageTracker {
                     event_name,
                     data,
                     classifier.enabled,
-                    &classifier.retry_keywords,
-                    &classifier.non_retry_keywords,
+                    &classifier.passthrough_keywords,
+                    &classifier.legacy_retry_keywords,
+                    classifier.allow_legacy_retry,
                     "forwarded_after_commit",
                 );
             }
         }
-        if self.stream_internal_error_classifier.is_some()
+        if terminal_actions_enabled
+            && self.stream_internal_error_classifier.is_some()
             && stream_terminal_type(std::str::from_utf8(event).unwrap_or_default(), data).is_some()
         {
             self.terminal_error_seen = true;
@@ -1256,7 +1390,7 @@ impl SseUsageTracker {
         if is_completion_event_name(event) {
             self.completion_seen = true;
         }
-        if is_terminal_error_event_name(event) {
+        if terminal_actions_enabled && is_terminal_error_event_name(event) {
             self.terminal_error_seen = true;
             // Fake 200: upstream returned HTTP 200 but body contains an error event.
             // Detect patterns: SSE `event: error` with a JSON body containing "error" object
@@ -1272,7 +1406,7 @@ impl SseUsageTracker {
             if is_completion_event_type(event_type) {
                 self.completion_seen = true;
             }
-            if is_terminal_error_event_type(event_type) {
+            if terminal_actions_enabled && is_terminal_error_event_type(event_type) {
                 self.terminal_error_seen = true;
                 // Also detect fake 200 from data.type == "error" with an error object
                 if data.get("error").is_some() {
@@ -1294,7 +1428,7 @@ impl SseUsageTracker {
             if is_completion_status(status) {
                 self.completion_seen = true;
             }
-            if is_terminal_error_status(status) {
+            if terminal_actions_enabled && is_terminal_error_status(status) {
                 self.terminal_error_seen = true;
             }
         }
@@ -1500,6 +1634,10 @@ mod capacity_alias_tests {
                 "type": "error",
                 "code": "server_is_overloaded"
             }),
+            serde_json::json!({
+                "type": "response.failed",
+                "error": {"code": "model_at_capacity"}
+            }),
         ];
 
         for data in cases {
@@ -1510,10 +1648,11 @@ mod capacity_alias_tests {
                 true,
                 &[],
                 &[],
+                false,
                 "buffered_before_commit",
             )
             .expect("terminal capacity error should classify");
-            assert_eq!(evidence.classification, "retryable");
+            assert_eq!(evidence.classification, "transient_capacity");
             assert!(evidence.matched_keyword.is_none());
         }
 
@@ -1535,7 +1674,7 @@ mod capacity_alias_tests {
                 "code": "server_is_overloaded"
             })
         ));
-        assert!(!is_codex_capacity_stream_internal_error(
+        assert!(is_codex_capacity_stream_internal_error(
             "response.failed",
             &serde_json::json!({
                 "type": "response.failed",

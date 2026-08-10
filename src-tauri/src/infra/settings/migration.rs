@@ -275,12 +275,12 @@ pub fn normalize_upstream_retry_policy_for_write(
         .retain(|kind| seen_transport_errors.insert(*kind));
 
     normalize_stream_internal_error_keywords_for_write(
-        "retry_keywords",
-        &mut policy.stream_internal_errors.retry_keywords,
+        "passthrough_keywords",
+        &mut policy.stream_internal_errors.passthrough_keywords,
     )?;
     normalize_stream_internal_error_keywords_for_write(
-        "non_retry_keywords",
-        &mut policy.stream_internal_errors.non_retry_keywords,
+        "legacy_retry_keywords",
+        &mut policy.stream_internal_errors.legacy_retry_keywords,
     )?;
 
     if policy.max_retries > MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES {
@@ -359,8 +359,12 @@ pub fn sanitize_upstream_retry_policy(policy: &mut UpstreamRetryPolicy) -> bool 
     policy
         .transport_errors
         .truncate(MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS);
-    sanitize_stream_internal_error_keywords(&mut policy.stream_internal_errors.retry_keywords);
-    sanitize_stream_internal_error_keywords(&mut policy.stream_internal_errors.non_retry_keywords);
+    sanitize_stream_internal_error_keywords(
+        &mut policy.stream_internal_errors.passthrough_keywords,
+    );
+    sanitize_stream_internal_error_keywords(
+        &mut policy.stream_internal_errors.legacy_retry_keywords,
+    );
     policy.max_retries = policy
         .max_retries
         .min(MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES);
@@ -1476,6 +1480,32 @@ fn migrate_add_update_channel(settings: &mut AppSettings, schema_version_present
     }
     changed
 }
+
+fn migrate_add_stream_terminal_firewall(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    let mut changed = migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_STREAM_TERMINAL_FIREWALL,
+    );
+    changed |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
+    changed
+}
+
+fn migrate_stream_terminal_firewall_legacy_fields(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    let mut changed = migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_MIGRATE_STREAM_TERMINAL_FIREWALL,
+    );
+    changed |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
+    changed
+}
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -1519,6 +1549,8 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_stream_internal_error_retry,
     migrate_add_model_routing_policy,
     migrate_add_update_channel,
+    migrate_add_stream_terminal_firewall,
+    migrate_stream_terminal_firewall_legacy_fields,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -2333,8 +2365,8 @@ mod tests {
             transport_errors: vec![],
             stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
                 enabled: true,
-                retry_keywords: vec![" LIMIT ".to_string(), "limit".to_string()],
-                non_retry_keywords: vec![" POLICY\n ".to_string()],
+                passthrough_keywords: vec![" POLICY\n ".to_string()],
+                legacy_retry_keywords: vec![" LIMIT ".to_string(), "limit".to_string()],
             },
             max_retries: 999,
             backoff_ms: 999_999,
@@ -2348,9 +2380,12 @@ mod tests {
         assert!(!policy.http_rules[1].enabled);
         assert!(policy.enabled);
         assert!(policy.transport_errors.is_empty());
-        assert_eq!(policy.stream_internal_errors.retry_keywords, vec!["LIMIT"]);
         assert_eq!(
-            policy.stream_internal_errors.non_retry_keywords,
+            policy.stream_internal_errors.legacy_retry_keywords,
+            vec!["LIMIT"]
+        );
+        assert_eq!(
+            policy.stream_internal_errors.passthrough_keywords,
             vec!["POLICY"]
         );
         assert_eq!(policy.max_retries, MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES);
@@ -2442,8 +2477,8 @@ mod tests {
             transport_errors: Vec::new(),
             stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
                 enabled: true,
-                retry_keywords: vec![" Capacity ".to_string(), "capacity".to_string()],
-                non_retry_keywords: vec![" Policy ".to_string(), "POLICY".to_string()],
+                passthrough_keywords: vec![" Policy ".to_string(), "POLICY".to_string()],
+                legacy_retry_keywords: vec![" Capacity ".to_string(), "capacity".to_string()],
             },
             ..Default::default()
         };
@@ -2451,11 +2486,11 @@ mod tests {
         assert_eq!(policy.http_rules[0].body_contains, vec!["quota"]);
         assert_eq!(policy.http_rules[0].description, "Temporary quota");
         assert_eq!(
-            policy.stream_internal_errors.retry_keywords,
+            policy.stream_internal_errors.legacy_retry_keywords,
             vec!["Capacity"]
         );
         assert_eq!(
-            policy.stream_internal_errors.non_retry_keywords,
+            policy.stream_internal_errors.passthrough_keywords,
             vec!["Policy"]
         );
     }
@@ -2475,6 +2510,48 @@ mod tests {
         assert!(repair_settings(&mut settings, true, &raw).unwrap());
         assert_eq!(settings.update_releases_url, DEFAULT_UPDATE_RELEASES_URL);
         assert_eq!(settings.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn repair_settings_migrates_stream_terminal_firewall_fields_and_preserves_disabled() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_MODEL_ROUTING_POLICY,
+            "upstream_retry_policy": {
+                "stream_internal_errors": {
+                    "enabled": false,
+                    "retry_keywords": [" vendor retry "],
+                    "non_retry_keywords": [" vendor passthrough "]
+                }
+            }
+        });
+        let mut settings: AppSettings =
+            serde_json::from_value(raw.clone()).expect("deserialize legacy settings");
+
+        assert!(repair_settings(&mut settings, true, &raw).unwrap());
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_MIGRATE_STREAM_TERMINAL_FIREWALL
+        );
+        assert!(
+            !settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .enabled
+        );
+        assert_eq!(
+            settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .legacy_retry_keywords,
+            vec!["vendor retry"]
+        );
+        assert_eq!(
+            settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords,
+            vec!["vendor passthrough"]
+        );
     }
 
     #[test]
