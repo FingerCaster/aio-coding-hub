@@ -2,6 +2,7 @@ use crate::gateway::events::GatewayAttemptEvent;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::RwLock;
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveRequestStart {
@@ -52,12 +53,36 @@ struct ActiveRequestEntry {
     infinite_retry_attempt: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ActiveRequestRegistry {
     entries: RwLock<HashMap<String, ActiveRequestEntry>>,
+    gateway_shutdown: watch::Sender<bool>,
+}
+
+impl Default for ActiveRequestRegistry {
+    fn default() -> Self {
+        let (gateway_shutdown, _receiver) = watch::channel(false);
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            gateway_shutdown,
+        }
+    }
 }
 
 impl ActiveRequestRegistry {
+    pub(crate) fn subscribe_gateway_shutdown(&self) -> watch::Receiver<bool> {
+        self.gateway_shutdown.subscribe()
+    }
+
+    pub(crate) fn request_gateway_shutdown(&self) {
+        self.gateway_shutdown.send_replace(true);
+    }
+
+    #[cfg(test)]
+    fn gateway_shutdown_requested(&self) -> bool {
+        *self.gateway_shutdown.borrow()
+    }
+
     pub(crate) fn register(&self, start: ActiveRequestStart) {
         let last_activity_ms = start.created_at_ms.max(0);
         let infinite_retry_phase = start
@@ -290,6 +315,23 @@ mod tests {
         assert_eq!(removed.len(), 2);
         assert!(removed.iter().any(|row| row.current_attempt.is_some()));
         assert!(registry.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn registry_gateway_shutdown_notifies_existing_and_late_subscribers() {
+        let registry = ActiveRequestRegistry::default();
+        let mut existing = registry.subscribe_gateway_shutdown();
+        assert!(!registry.gateway_shutdown_requested());
+
+        registry.request_gateway_shutdown();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), existing.changed())
+            .await
+            .expect("existing subscriber should be notified")
+            .expect("shutdown sender should remain alive");
+        assert!(*existing.borrow());
+        assert!(registry.gateway_shutdown_requested());
+        assert!(*registry.subscribe_gateway_shutdown().borrow());
     }
 
     #[test]

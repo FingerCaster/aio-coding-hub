@@ -72,12 +72,14 @@ mod tests {
         let recent_errors = Arc::new(Mutex::new(RecentErrorCache::default()));
         let runtime = GatewayRuntime::for_tests(&rt, session, recent_errors);
         let active_requests = runtime.active_requests.clone();
+        let shutdown = active_requests.subscribe_gateway_shutdown();
         active_requests.register(active_request_start("trace-runtime-active"));
 
         assert_eq!(active_requests.snapshot().len(), 1);
         let _handles = runtime.into_handles();
 
         assert!(active_requests.snapshot().is_empty());
+        assert!(*shutdown.borrow());
     }
 
     #[test]
@@ -334,6 +336,7 @@ impl GatewayRuntime {
     }
 
     pub(super) fn into_handles(self) -> GatewayRuntimeHandles {
+        self.active_requests.request_gateway_shutdown();
         self.active_requests
             .finish_all(ActiveRequestFinishReason::GatewayStopped);
         let (

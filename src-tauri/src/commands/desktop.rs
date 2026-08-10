@@ -331,6 +331,10 @@ fn updater_release_tag(
     Ok(format!("{RELEASE_TAG_PREFIX}{version}"))
 }
 
+fn updater_version_is_prerelease(version: &str) -> bool {
+    version.contains("-beta.")
+}
+
 fn object_has_exact_keys(
     object: &serde_json::Map<String, serde_json::Value>,
     expected: &[&str],
@@ -1134,7 +1138,7 @@ pub(crate) async fn desktop_updater_check(
             let metadata = DesktopUpdaterMetadata {
                 rid: 0,
                 channel: canonical_channel,
-                is_prerelease: update.version.contains('-'),
+                is_prerelease: updater_version_is_prerelease(&update.version),
                 current_version: update.current_version.clone(),
                 version: update.version.clone(),
                 date: update.date.map(|value| value.to_string()),
@@ -1284,8 +1288,8 @@ mod tests {
         discard_typed_resource, discard_typed_resources_where, ensure_desktop_open_path_allowed,
         ensure_fresh_beta_candidate, ensure_update_channel, ensure_update_channel_state,
         normalize_existing_path, take_typed_resource, updater_candidate_identity_from_parts,
-        validate_beta_updater_manifest, BETA_UPDATER_ENDPOINT, RELEASES_BASE_URL,
-        UPDATER_ERROR_CANDIDATE_STALE, UPDATER_ERROR_CHANNEL_CHANGED,
+        updater_version_is_prerelease, validate_beta_updater_manifest, BETA_UPDATER_ENDPOINT,
+        RELEASES_BASE_URL, UPDATER_ERROR_CANDIDATE_STALE, UPDATER_ERROR_CHANNEL_CHANGED,
         UPDATER_ERROR_MANIFEST_INVALID, UPDATER_ERROR_RESOURCE_CLOSED,
         UPDATER_ERROR_RESOURCE_INVALID,
     };
@@ -1455,6 +1459,13 @@ mod tests {
             BETA_UPDATER_ENDPOINT
         );
         assert_eq!(endpoint.query(), Some("aioCheck=123456"));
+    }
+
+    #[test]
+    fn updater_prerelease_flag_only_recognizes_beta_versions() {
+        assert!(updater_version_is_prerelease("0.60.41-beta.2"));
+        assert!(!updater_version_is_prerelease("0.60.41"));
+        assert!(!updater_version_is_prerelease("0.60.41-preview.2"));
     }
 
     #[test]

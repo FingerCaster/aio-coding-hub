@@ -1181,7 +1181,7 @@ jobs:
                 snapshot.state.selected_version,
               ) <= 0
             ) {
-              core.info(
+              core.notice(
                 `Stable ${process.env.RELEASE_VERSION} does not advance Beta pointer ${snapshot.state.selected_version}.`,
               );
               return;

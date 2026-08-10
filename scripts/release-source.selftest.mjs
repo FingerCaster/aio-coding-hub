@@ -90,6 +90,13 @@ assertImmediateFetchHeadPeel("promote-release");
 assertImmediateFetchHeadPeel("publish");
 assertImmediateFetchHeadPeel("publish-release-channel");
 
+const releaseChannelJob = workflowJobBlock("publish-release-channel");
+assert.ok(
+  releaseChannelJob.includes("core.notice(") &&
+    releaseChannelJob.includes("does not advance Beta pointer"),
+  "stable releases that do not advance the Beta pointer must emit an Actions notice"
+);
+
 const manualJob = workflowJobBlock("release-please");
 const tagMutationIndex = manualJob.indexOf('"repos/$GITHUB_REPOSITORY/git/refs"');
 const releaseMutationIndex = manualJob.indexOf('"repos/$GITHUB_REPOSITORY/releases"');

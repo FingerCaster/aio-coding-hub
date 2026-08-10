@@ -14,6 +14,7 @@ const ACTIVITY_FLUSH_INTERVAL_MS: i64 = 30_000;
 pub(in crate::gateway) enum StreamTerminalOrigin {
     Unclassified,
     NormalEof,
+    ProtocolTerminal,
     CompletionDelivered,
     UpstreamReadError,
     IdleTimeout,
@@ -30,6 +31,7 @@ impl StreamTerminalOrigin {
         match self {
             Self::Unclassified => "unclassified",
             Self::NormalEof => "normal_eof",
+            Self::ProtocolTerminal => "protocol_terminal",
             Self::CompletionDelivered => "completion_delivered",
             Self::UpstreamReadError => "upstream_read_error",
             Self::IdleTimeout => "idle_timeout",
@@ -72,6 +74,7 @@ impl StreamTerminalEvidence {
     pub(in crate::gateway) fn trusted_probe_success(self) -> bool {
         let trusted_terminal = match self.origin {
             StreamTerminalOrigin::NormalEof => self.normal_eof && self.completion_seen,
+            StreamTerminalOrigin::ProtocolTerminal => self.completion_seen && self.usage_seen,
             StreamTerminalOrigin::CompletionDelivered => self.completion_seen && self.usage_seen,
             _ => false,
         };
@@ -263,6 +266,26 @@ mod tests {
             false,
             true,
             true,
+        )
+        .trusted_probe_success());
+    }
+
+    #[test]
+    fn protocol_terminal_is_trusted_without_claiming_transport_eof() {
+        assert!(StreamTerminalEvidence::new(
+            StreamTerminalOrigin::ProtocolTerminal,
+            true,
+            false,
+            true,
+            false,
+        )
+        .trusted_probe_success());
+        assert!(!StreamTerminalEvidence::new(
+            StreamTerminalOrigin::ProtocolTerminal,
+            true,
+            true,
+            false,
+            false,
         )
         .trusted_probe_success());
     }

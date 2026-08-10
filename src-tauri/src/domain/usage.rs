@@ -231,9 +231,19 @@ pub fn contains_codex_capacity_signal(value: &str) -> bool {
             .any(|code| value.contains(code))
 }
 
-fn is_codex_capacity_stream_error_code(data: &Value) -> bool {
-    stream_error_fields(data, "code")
-        .into_iter()
+fn contains_codex_capacity_message(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.contains(CODEX_CAPACITY_MESSAGE)
+        || value.contains("model is at capacity")
+        || value.contains("server is overloaded")
+        || value.contains("service is overloaded")
+        || value.contains("service overloaded")
+}
+
+fn is_codex_capacity_stream_structured_signal(event_name: &str, data: &Value) -> bool {
+    std::iter::once(Some(event_name))
+        .chain(stream_error_fields(data, "type"))
+        .chain(stream_error_fields(data, "code"))
         .flatten()
         .any(is_codex_capacity_error_code)
 }
@@ -243,23 +253,8 @@ pub fn is_codex_capacity_stream_internal_error(event_name: &str, data: &Value) -
         return false;
     }
 
-    is_codex_capacity_stream_error_code(data)
-        || [
-            Some(event_name),
-            data.get("type").and_then(Value::as_str),
-            stream_error_field(data, "type"),
-            stream_error_field(data, "code"),
-            stream_error_message(data),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|value| {
-            let value = value.to_ascii_lowercase();
-            value.contains(CODEX_CAPACITY_MESSAGE)
-                || value.contains("overload")
-                || value.contains("at capacity")
-                || value.contains("service_unavailable_error")
-        })
+    is_codex_capacity_stream_structured_signal(event_name, data)
+        || stream_error_message(data).is_some_and(contains_codex_capacity_message)
 }
 
 fn searchable_stream_error_text(event_name: &str, data: &Value) -> String {
@@ -1638,6 +1633,14 @@ mod capacity_alias_tests {
                 "type": "response.failed",
                 "error": {"code": "model_at_capacity"}
             }),
+            serde_json::json!({
+                "type": "response.failed",
+                "error": {"type": "server_is_overloaded"}
+            }),
+            serde_json::json!({
+                "type": "model_at_capacity",
+                "status": "failed"
+            }),
         ];
 
         for data in cases {
@@ -1681,6 +1684,62 @@ mod capacity_alias_tests {
                 "error": {"code": "service_unavailable_error"}
             })
         ));
+    }
+
+    #[test]
+    fn unrelated_overload_message_does_not_override_passthrough() {
+        let data = serde_json::json!({
+            "type": "response.failed",
+            "error": {
+                "code": "vendor_error",
+                "message": "account metadata overload-ticket-123"
+            }
+        });
+        let passthrough = vec!["overload-ticket-123".to_string()];
+
+        assert!(!is_codex_capacity_stream_internal_error(
+            "response.failed",
+            &data
+        ));
+        let evidence = classify_codex_stream_internal_error(
+            "response.failed",
+            &data,
+            true,
+            &passthrough,
+            &[],
+            false,
+            "buffered_before_commit",
+        )
+        .expect("terminal error should classify");
+        assert_eq!(evidence.classification, "unknown");
+        assert_eq!(evidence.disposition, "passthrough_exception");
+    }
+
+    #[test]
+    fn explicit_capacity_message_remains_transient_capacity() {
+        let data = serde_json::json!({
+            "type": "response.failed",
+            "error": {
+                "code": "vendor_error",
+                "message": "The server is overloaded. Try again later."
+            }
+        });
+
+        assert!(is_codex_capacity_stream_internal_error(
+            "response.failed",
+            &data
+        ));
+        let evidence = classify_codex_stream_internal_error(
+            "response.failed",
+            &data,
+            true,
+            &[],
+            &[],
+            false,
+            "buffered_before_commit",
+        )
+        .expect("terminal capacity error should classify");
+        assert_eq!(evidence.classification, "transient_capacity");
     }
 }
 

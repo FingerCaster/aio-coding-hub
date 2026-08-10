@@ -40,6 +40,7 @@ fn incomplete_probe_error_code(evidence: StreamTerminalEvidence) -> Option<&'sta
         StreamTerminalOrigin::TotalTimeout => GatewayErrorCode::UpstreamTimeout.as_str(),
         StreamTerminalOrigin::Unclassified
         | StreamTerminalOrigin::NormalEof
+        | StreamTerminalOrigin::ProtocolTerminal
         | StreamTerminalOrigin::UpstreamReadError
         | StreamTerminalOrigin::TerminalFrame
         | StreamTerminalOrigin::BufferedBodyEof => GatewayErrorCode::StreamError.as_str(),

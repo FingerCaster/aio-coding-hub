@@ -2,8 +2,10 @@
 
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::watch;
 
 pub(crate) const MAX_RECENT_ATTEMPTS: usize = 100;
 pub(crate) const MAX_PROVIDER_BUCKETS: usize = 100;
@@ -62,12 +64,47 @@ pub(crate) fn request_config(
         .then_some(InfiniteRetryRequestConfig { retry_interval_ms })
 }
 
-pub(crate) async fn wait_between_rounds(retry_interval_ms: u32) {
-    if retry_interval_ms == 0 {
-        tokio::task::yield_now().await;
-    } else {
-        tokio::time::sleep(Duration::from_millis(u64::from(retry_interval_ms))).await;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayShutdown;
+
+pub(crate) fn gateway_shutdown_requested(receiver: &watch::Receiver<bool>) -> bool {
+    *receiver.borrow()
+}
+
+async fn wait_for_gateway_shutdown(receiver: &mut watch::Receiver<bool>) {
+    loop {
+        if *receiver.borrow_and_update() {
+            return;
+        }
+        if receiver.changed().await.is_err() {
+            return;
+        }
     }
+}
+
+pub(crate) async fn run_until_gateway_shutdown<T>(
+    receiver: &mut watch::Receiver<bool>,
+    future: impl Future<Output = T>,
+) -> Result<T, GatewayShutdown> {
+    tokio::select! {
+        biased;
+        _ = wait_for_gateway_shutdown(receiver) => Err(GatewayShutdown),
+        output = future => Ok(output),
+    }
+}
+
+pub(crate) async fn wait_between_rounds(
+    retry_interval_ms: u32,
+    receiver: &mut watch::Receiver<bool>,
+) -> Result<(), GatewayShutdown> {
+    run_until_gateway_shutdown(receiver, async move {
+        if retry_interval_ms == 0 {
+            tokio::task::yield_now().await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(u64::from(retry_interval_ms))).await;
+        }
+    })
+    .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -75,6 +112,7 @@ pub(crate) async fn wait_between_rounds(retry_interval_ms: u32) {
 pub(crate) enum FailureCategory {
     Success,
     EmptyRound,
+    PlanRefresh,
     Gate,
     Preparation,
     Transport,
@@ -494,6 +532,15 @@ impl InfiniteRetryLedger {
         self.phase = "waiting";
     }
 
+    pub(crate) fn record_plan_refresh_failure(&mut self) {
+        Self::increment(
+            self.failure_categories
+                .entry(FailureCategory::PlanRefresh)
+                .or_default(),
+            &mut self.overflowed,
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_attempt(
         &mut self,
@@ -719,7 +766,76 @@ mod tests {
 
     #[tokio::test]
     async fn zero_interval_cooperatively_yields() {
-        wait_between_rounds(0).await;
+        let (_shutdown, mut receiver) = watch::channel(false);
+        wait_between_rounds(0, &mut receiver)
+            .await
+            .expect("open gateway should continue");
+    }
+
+    #[tokio::test]
+    async fn gateway_shutdown_interrupts_round_wait() {
+        let (shutdown, mut receiver) = watch::channel(false);
+        let wait = tokio::spawn(async move { wait_between_rounds(60_000, &mut receiver).await });
+        tokio::task::yield_now().await;
+
+        shutdown.send_replace(true);
+
+        let result = tokio::time::timeout(Duration::from_secs(1), wait)
+            .await
+            .expect("shutdown should interrupt the long retry interval")
+            .expect("wait task should not panic");
+        assert_eq!(result, Err(GatewayShutdown));
+    }
+
+    #[tokio::test]
+    async fn gateway_shutdown_drops_in_flight_round_work() {
+        struct DropSignal(Arc<std::sync::atomic::AtomicBool>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (shutdown, mut receiver) = watch::channel(false);
+        let dropped_in_round = Arc::clone(&dropped);
+        let task = tokio::spawn(async move {
+            run_until_gateway_shutdown(&mut receiver, async move {
+                let _drop_signal = DropSignal(dropped_in_round);
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+            .await
+        });
+        started_rx.await.expect("round work should start");
+
+        shutdown.send_replace(true);
+
+        let result = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown should interrupt in-flight round work")
+            .expect("round task should not panic");
+        assert_eq!(result, Err(GatewayShutdown));
+        assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn plan_refresh_failures_are_observable_without_creating_attempts() {
+        let mut ledger = InfiniteRetryLedger::default();
+
+        ledger.record_plan_refresh_failure();
+
+        let snapshot = ledger.snapshot();
+        assert_eq!(snapshot.attempts, "0");
+        assert_eq!(
+            snapshot
+                .failure_categories
+                .get(&FailureCategory::PlanRefresh)
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]

@@ -622,6 +622,31 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.getByText(/20 MiB 最终响应缓冲/)).toBeInTheDocument();
   });
 
+  it("pauses active infinite retry snapshots while hidden and refreshes on foreground", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+
+    try {
+      renderTab({
+        appSettings: createAppSettings(),
+        persistCommonSettings: vi.fn().mockResolvedValue(createAppSettings()),
+      });
+      await act(async () => Promise.resolve());
+
+      expect(activeRequestLogsSnapshot).not.toHaveBeenCalled();
+      expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 1000)).toBe(false);
+
+      visibility.mockReturnValue("visible");
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+      await waitFor(() => expect(activeRequestLogsSnapshot).toHaveBeenCalledTimes(1));
+      expect(setIntervalSpy.mock.calls.some(([, delay]) => delay === 1000)).toBe(true);
+    } finally {
+      setIntervalSpy.mockRestore();
+      visibility.mockRestore();
+    }
+  });
+
   it("restores the persisted interval after a failed write", async () => {
     const persistCommonSettings = vi.fn().mockRejectedValue(new Error("write failed"));
     renderTab({

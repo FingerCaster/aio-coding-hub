@@ -13,6 +13,12 @@ use super::request_end::{
     RequestEndContextArgs, RequestEndDeps,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestAbortReason {
+    ClientCancelled,
+    GatewayShutdown,
+}
+
 pub(super) struct RequestAbortGuard<R: tauri::Runtime = tauri::Wry> {
     app: tauri::AppHandle<R>,
     db: db::Db,
@@ -34,6 +40,7 @@ pub(super) struct RequestAbortGuard<R: tauri::Runtime = tauri::Wry> {
     created_at_ms: i64,
     created_at: i64,
     started: Instant,
+    abort_reason: RequestAbortReason,
     armed: bool,
 }
 
@@ -79,6 +86,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             created_at_ms,
             created_at,
             started,
+            abort_reason: RequestAbortReason::ClientCancelled,
             armed: true,
         }
     }
@@ -116,6 +124,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             created_at_ms: self.created_at_ms,
             created_at: self.created_at,
             started: self.started,
+            abort_reason: self.abort_reason,
             armed: self.armed,
         };
         self.armed = false; // disarm the leftover shell
@@ -138,6 +147,10 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
         ledger: crate::gateway::infinite_retry::SharedInfiniteRetryLedger,
     ) {
         self.infinite_retry_ledger = Some(ledger);
+    }
+
+    pub(super) fn mark_gateway_shutdown(&mut self) {
+        self.abort_reason = RequestAbortReason::GatewayShutdown;
     }
 }
 
@@ -169,50 +182,67 @@ impl<R: tauri::Runtime> Drop for RequestAbortGuard<R> {
                 attempt.probe_result = Some("failed");
             }
         }
-        let completion = if let Some(ledger) = self.infinite_retry_ledger.as_ref() {
-            let (snapshot, usage_metrics, cost_usd_femto) = match ledger.lock() {
-                Ok(mut ledger) => {
-                    ledger.stop("client_cancelled");
-                    (
-                        Some(ledger.snapshot()),
-                        ledger.usage_metrics(),
-                        ledger.cost_usd_femto(),
-                    )
-                }
-                Err(_) => (None, None, None),
-            };
-            let mut activity_details_json = None;
-            if let Some(snapshot) = snapshot {
-                let now_ms = crate::gateway::util::now_unix_millis() as i64;
-                self.active_requests.update_infinite_retry_progress(
-                    self.trace_id.as_str(),
-                    snapshot.phase,
-                    snapshot.rounds.parse().unwrap_or(u64::MAX),
-                    snapshot.attempts.parse().unwrap_or(u64::MAX),
-                    now_ms,
-                );
-                let _ = crate::infinite_retry_provider_usage::replace_for_trace(
-                    &self.db,
-                    self.trace_id.as_str(),
-                    snapshot.providers.as_slice(),
-                    now_ms,
-                );
-                if let Ok(details) = serde_json::to_string(&snapshot) {
-                    activity_details_json = Some(details.clone());
-                    let _ = request_logs::touch_activity(
+        let (log_usage_metrics, log_cost_usd_femto, activity_details_json) =
+            if let Some(ledger) = self.infinite_retry_ledger.as_ref() {
+                let stop_reason = match self.abort_reason {
+                    RequestAbortReason::ClientCancelled => "client_cancelled",
+                    RequestAbortReason::GatewayShutdown => "gateway_shutdown",
+                };
+                let (snapshot, usage_metrics, cost_usd_femto) = match ledger.lock() {
+                    Ok(mut ledger) => {
+                        ledger.stop(stop_reason);
+                        (
+                            Some(ledger.snapshot()),
+                            ledger.usage_metrics(),
+                            ledger.cost_usd_femto(),
+                        )
+                    }
+                    Err(_) => (None, None, None),
+                };
+                let mut activity_details_json = None;
+                if let Some(snapshot) = snapshot {
+                    let now_ms = crate::gateway::util::now_unix_millis() as i64;
+                    self.active_requests.update_infinite_retry_progress(
+                        self.trace_id.as_str(),
+                        snapshot.phase,
+                        snapshot.rounds.parse().unwrap_or(u64::MAX),
+                        snapshot.attempts.parse().unwrap_or(u64::MAX),
+                        now_ms,
+                    );
+                    let _ = crate::infinite_retry_provider_usage::replace_for_trace(
                         &self.db,
                         self.trace_id.as_str(),
-                        self.cli_key.as_str(),
+                        snapshot.providers.as_slice(),
                         now_ms,
-                        Some(details),
                     );
+                    if let Ok(details) = serde_json::to_string(&snapshot) {
+                        activity_details_json = Some(details.clone());
+                        let _ = request_logs::touch_activity(
+                            &self.db,
+                            self.trace_id.as_str(),
+                            self.cli_key.as_str(),
+                            now_ms,
+                            Some(details),
+                        );
+                    }
                 }
+                (usage_metrics, cost_usd_femto, activity_details_json)
+            } else {
+                (None, None, None)
+            };
+        let completion = match self.abort_reason {
+            RequestAbortReason::ClientCancelled => RequestCompletion::client_abort_with_log_usage(
+                log_usage_metrics,
+                log_cost_usd_femto,
+            ),
+            RequestAbortReason::GatewayShutdown => {
+                RequestCompletion::gateway_shutdown_with_log_usage(
+                    log_usage_metrics,
+                    log_cost_usd_femto,
+                )
             }
-            RequestCompletion::client_abort_with_log_usage(usage_metrics, cost_usd_femto)
-                .with_log_activity_details_json(activity_details_json)
-        } else {
-            RequestCompletion::client_abort()
-        };
+        }
+        .with_log_activity_details_json(activity_details_json);
 
         emit_request_event_and_spawn_request_log(
             RequestEndArgs::from_context(RequestEndContextArgs {
@@ -253,6 +283,73 @@ mod tests {
     };
     use crate::gateway::proxy::dispatch::RequestDispatchIntent;
     use std::collections::HashMap;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_shutdown_persists_distinct_stop_reason_and_status() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db =
+            crate::db::init_for_tests(&db_dir.path().join("abort-shutdown.db")).expect("init db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(1);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(crate::gateway::active_requests::ActiveRequestStart {
+            trace_id: "trace-gateway-shutdown".to_string(),
+            cli_key: "codex".to_string(),
+            method: "POST".to_string(),
+            path: "/v1/responses".to_string(),
+            query: None,
+            session_id: Some("session-gateway-shutdown".to_string()),
+            requested_model: Some("gpt-5".to_string()),
+            created_at_ms: 1_000_000,
+            codex_infinite_retry_test: true,
+        });
+        let ledger = Arc::new(Mutex::new(
+            crate::gateway::infinite_retry::InfiniteRetryLedger::default(),
+        ));
+        ledger.lock().expect("ledger").start_round(true);
+        let mut guard = RequestAbortGuard::new(
+            app.handle().clone(),
+            db,
+            log_tx,
+            GatewayPluginPipeline::empty_shared(),
+            Arc::clone(&active_requests),
+            "trace-gateway-shutdown".to_string(),
+            "codex".to_string(),
+            "POST".to_string(),
+            "/v1/responses".to_string(),
+            true,
+            None,
+            Some("session-gateway-shutdown".to_string()),
+            Some("gpt-5".to_string()),
+            Arc::new(Mutex::new(Vec::new())),
+            1_000_000,
+            1_000,
+            Instant::now(),
+        );
+        guard.attach_infinite_retry_ledger(ledger);
+        guard.mark_gateway_shutdown();
+
+        drop(guard);
+
+        let log = tokio::time::timeout(std::time::Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("shutdown log should be enqueued")
+            .expect("log channel should stay open");
+        assert_eq!(log.status, Some(499));
+        assert_eq!(
+            log.error_code.as_deref(),
+            Some(crate::gateway::proxy::GatewayErrorCode::RequestInterruptedByGatewayStop.as_str())
+        );
+        let activity: serde_json::Value = serde_json::from_str(
+            log.activity_details_json
+                .as_deref()
+                .expect("infinite retry activity details"),
+        )
+        .expect("activity details json");
+        assert_eq!(activity["phase"], "stopped");
+        assert_eq!(activity["stopReason"], "gateway_shutdown");
+        assert!(active_requests.snapshot().is_empty());
+    }
 
     #[test]
     fn cloned_abort_attempt_keeps_provider_context() {

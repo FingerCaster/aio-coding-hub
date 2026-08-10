@@ -439,13 +439,12 @@ async fn execute_infinite_round<R>(
     input: &mut RequestContext<R>,
     abort_guard: &mut crate::gateway::proxy::abort_guard::RequestAbortGuard<R>,
     ledger: &crate::gateway::infinite_retry::SharedInfiniteRetryLedger,
+    introspection_body: &[u8],
 ) -> (Option<Response>, Vec<FailoverAttempt>)
 where
     R: tauri::Runtime + 'static,
     R::Handle: Unpin,
 {
-    let introspection_body =
-        body_for_introspection(&input.base_headers, input.body_bytes.as_ref()).into_owned();
     let ctx = CommonCtx::from(CommonCtxArgs {
         state: &input.state,
         cli_key: &input.cli_key,
@@ -479,7 +478,7 @@ where
         enable_response_fixer: input.enable_response_fixer,
         response_fixer_stream_config: input.response_fixer_stream_config,
         response_fixer_non_stream_config: input.response_fixer_non_stream_config,
-        introspection_body: introspection_body.as_ref(),
+        introspection_body,
     });
 
     let mut run_state = FailoverRunState::new();
@@ -489,7 +488,7 @@ where
         provider_iterator::IterationCounters::new((input.max_providers_to_try as usize).max(1));
     let anthropic_stream_requested =
         original_anthropic_stream_requested(input.introspection_json.as_ref())
-            || stream_flag_from_raw_body(&introspection_body);
+            || stream_flag_from_raw_body(introspection_body);
     let providers = input.providers.clone();
 
     for provider in &providers {
@@ -537,7 +536,7 @@ where
     (None, run_state.attempts)
 }
 
-async fn refresh_infinite_round_plan<R>(input: &mut RequestContext<R>)
+async fn refresh_infinite_round_plan<R>(input: &mut RequestContext<R>) -> bool
 where
     R: tauri::Runtime + 'static,
 {
@@ -585,10 +584,18 @@ where
     })
     .await;
 
-    let Ok((selection, runtime)) = selected else {
-        input.providers.clear();
-        input.session_bound_provider_id = None;
-        return;
+    let (selection, runtime) = match selected {
+        Ok(selected) => selected,
+        Err(error) => {
+            tracing::warn!(
+                trace_id = %input.trace_id,
+                error = %error,
+                "infinite retry round plan refresh failed"
+            );
+            input.providers.clear();
+            input.session_bound_provider_id = None;
+            return false;
+        }
     };
 
     input.effective_sort_mode_id = selection.effective_sort_mode_id;
@@ -623,6 +630,7 @@ where
     input.upstream_error_response_rules = runtime.upstream_error_response_rules;
     input.provider_base_url_ping_cache_ttl_seconds =
         runtime.provider_base_url_ping_cache_ttl_seconds;
+    true
 }
 
 fn infinite_failure_category(
@@ -746,6 +754,24 @@ async fn flush_infinite_activity<R: tauri::Runtime>(
     .await;
 }
 
+fn infinite_gateway_shutdown_response<R: tauri::Runtime>(
+    input: &RequestContext<R>,
+    abort_guard: &mut crate::gateway::proxy::abort_guard::RequestAbortGuard<R>,
+    ledger: &crate::gateway::infinite_retry::SharedInfiniteRetryLedger,
+) -> Response {
+    if let Ok(mut ledger) = ledger.lock() {
+        ledger.stop("gateway_shutdown");
+    }
+    abort_guard.mark_gateway_shutdown();
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        input.trace_id.clone(),
+        GatewayErrorCode::RequestInterruptedByGatewayStop.as_str(),
+        "gateway is shutting down".to_string(),
+        Vec::new(),
+    )
+}
+
 async fn run_infinite_rounds<R>(mut input: RequestContext<R>) -> Response
 where
     R: tauri::Runtime + 'static,
@@ -759,14 +785,35 @@ where
         crate::gateway::infinite_retry::InfiniteRetryLedger::default(),
     ));
     abort_guard.attach_infinite_retry_ledger(Arc::clone(&ledger));
+    let mut gateway_shutdown = input.state.active_requests.subscribe_gateway_shutdown();
+    let introspection_body =
+        body_for_introspection(&input.base_headers, input.body_bytes.as_ref()).into_owned();
     let mut last_flush = Instant::now()
         .checked_sub(std::time::Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
     let mut first_round = true;
 
     loop {
+        if crate::gateway::infinite_retry::gateway_shutdown_requested(&gateway_shutdown) {
+            return infinite_gateway_shutdown_response(&input, &mut abort_guard, &ledger);
+        }
         if !first_round {
-            refresh_infinite_round_plan(&mut input).await;
+            let refreshed = crate::gateway::infinite_retry::run_until_gateway_shutdown(
+                &mut gateway_shutdown,
+                refresh_infinite_round_plan(&mut input),
+            )
+            .await;
+            let refreshed = match refreshed {
+                Ok(refreshed) => refreshed,
+                Err(_) => {
+                    return infinite_gateway_shutdown_response(&input, &mut abort_guard, &ledger);
+                }
+            };
+            if !refreshed {
+                if let Ok(mut ledger) = ledger.lock() {
+                    ledger.record_plan_refresh_failure();
+                }
+            }
         }
         first_round = false;
         let empty = input.providers.is_empty();
@@ -790,8 +837,22 @@ where
         );
 
         if !empty {
-            let (response, mut attempts) =
-                execute_infinite_round(&mut input, &mut abort_guard, &ledger).await;
+            let round = crate::gateway::infinite_retry::run_until_gateway_shutdown(
+                &mut gateway_shutdown,
+                execute_infinite_round(
+                    &mut input,
+                    &mut abort_guard,
+                    &ledger,
+                    introspection_body.as_ref(),
+                ),
+            )
+            .await;
+            let (response, mut attempts) = match round {
+                Ok(round) => round,
+                Err(_) => {
+                    return infinite_gateway_shutdown_response(&input, &mut abort_guard, &ledger);
+                }
+            };
             record_infinite_round_attempts(&ledger, &mut attempts);
             if let Some(response) = response {
                 if let Ok(mut ledger) = ledger.lock() {
@@ -806,7 +867,15 @@ where
             ledger.finish_failed_round();
         }
         flush_infinite_activity(&input, &ledger, &mut last_flush, false).await;
-        crate::gateway::infinite_retry::wait_between_rounds(config.retry_interval_ms).await;
+        if crate::gateway::infinite_retry::wait_between_rounds(
+            config.retry_interval_ms,
+            &mut gateway_shutdown,
+        )
+        .await
+        .is_err()
+        {
+            return infinite_gateway_shutdown_response(&input, &mut abort_guard, &ledger);
+        }
     }
 }
 

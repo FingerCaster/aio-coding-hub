@@ -738,7 +738,7 @@ fn codex_stream_internal_error_structured_priority_and_exceptions_are_safe() {
         ("invalid_request_error ticket-123", "invalid_request"),
         ("insufficient_quota ticket-123", "quota"),
         ("content_policy_violation ticket-123", "policy"),
-        ("server_is_overloaded ticket-123", "transient_capacity"),
+        ("server_is_overloaded", "transient_capacity"),
         ("server_error ticket-123", "transient_provider"),
     ] {
         let evidence = classify_codex_stream_internal_error(

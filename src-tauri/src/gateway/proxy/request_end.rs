@@ -191,6 +191,21 @@ impl RequestCompletion {
         }
     }
 
+    pub(super) fn gateway_shutdown_with_log_usage(
+        log_usage_metrics: Option<crate::usage::UsageMetrics>,
+        log_cost_usd_femto: Option<i64>,
+    ) -> Self {
+        Self {
+            log_usage_metrics,
+            log_cost_usd_femto,
+            ..Self::failure(
+                499,
+                Some(crate::gateway::proxy::ErrorCategory::SystemError.as_str()),
+                crate::gateway::proxy::GatewayErrorCode::RequestInterruptedByGatewayStop.as_str(),
+            )
+        }
+    }
+
     pub(super) fn with_log_cost_usd_femto(mut self, value: Option<i64>) -> Self {
         self.log_cost_usd_femto = value;
         self

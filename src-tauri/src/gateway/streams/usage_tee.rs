@@ -1081,12 +1081,17 @@ where
             if firewall_enabled {
                 tee.completion_override = Some(completion_seen);
             }
+            let (origin, normal_eof) = if upstream_ended_normally {
+                (StreamTerminalOrigin::NormalEof, true)
+            } else {
+                (StreamTerminalOrigin::ProtocolTerminal, false)
+            };
             tee.finalize(
                 tee.ctx.error_code,
                 StreamTerminalEvidence::new(
-                    StreamTerminalOrigin::NormalEof,
+                    origin,
                     completion_seen,
-                    true,
+                    normal_eof,
                     completion_seen,
                     false,
                 ),
@@ -2349,6 +2354,110 @@ mod tests {
         assert_eq!(
             session.get_bound_provider(&cli_key, &session_id, now_unix),
             Some(1)
+        );
+        assert!(active_requests.snapshot().is_empty());
+        drop(upstream_tx);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn probe_protocol_terminal_is_success_without_claiming_upstream_eof() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-protocol-terminal.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(
+            app.handle().clone(),
+            db,
+            log_tx,
+            Arc::clone(&active_requests),
+        );
+        let now_unix = crate::gateway::util::now_unix_seconds() as i64;
+        ctx.session.bind_success(
+            ctx.cli_key.as_str(),
+            ctx.session_id.as_deref().expect("session"),
+            2,
+            None,
+            now_unix,
+        );
+        ctx.session_binding_request = ctx.session.begin_binding_request();
+        arm_probe(&mut ctx, now_unix);
+        ctx.attempts = vec![started_probe_attempt()];
+        ctx.attempts_json = serde_json::to_string(&ctx.attempts).expect("attempts json");
+        let circuit = Arc::clone(&ctx.circuit);
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+
+        let body = spawn_usage_sse_relay_body(
+            RelayBodyStream::new(upstream_rx),
+            ctx,
+            Some(Duration::from_millis(500)),
+            None,
+        );
+        let mut body_stream = body.into_data_stream();
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            )))
+            .await
+            .expect("send output");
+        tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+            .await
+            .expect("output should arrive")
+            .expect("body should yield output")
+            .expect("output should be ok");
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n\
+                  data: [DONE]\n\n",
+            )))
+            .await
+            .expect("send protocol terminal");
+        let terminal = tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+            .await
+            .expect("terminal chunk should arrive")
+            .expect("body should yield terminal chunk")
+            .expect("terminal chunk should be ok");
+        assert!(terminal
+            .as_ref()
+            .windows(b"response.completed".len())
+            .any(|window| window == b"response.completed"));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+                .await
+                .expect("protocol terminal should close downstream")
+                .is_none()
+        );
+
+        // Keep the sender alive until finalization to prove transport EOF was not observed.
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert_eq!(log.status, Some(200));
+        assert!(log.error_code.is_none());
+        assert_eq!(log.output_tokens, Some(2));
+        let activity: serde_json::Value = serde_json::from_str(
+            log.activity_details_json
+                .as_deref()
+                .expect("terminal activity details"),
+        )
+        .expect("activity details json");
+        assert_eq!(activity["terminal_origin"], "protocol_terminal");
+        assert_eq!(activity["normal_eof"], false);
+        assert_eq!(activity["completion_seen"], true);
+        assert_eq!(activity["usage_seen"], true);
+        let attempts: serde_json::Value =
+            serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(attempts[0]["probe_result"], "success");
+        assert_eq!(
+            circuit.snapshot(1, now_unix).state,
+            circuit_breaker::CircuitState::Closed
         );
         assert!(active_requests.snapshot().is_empty());
         drop(upstream_tx);

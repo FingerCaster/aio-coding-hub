@@ -22,6 +22,7 @@ import {
 } from "../../../services/cli/cliManager";
 import type { AppSettings, CodexHomeMode } from "../../../services/settings/settings";
 import { activeRequestLogsSnapshot } from "../../../services/gateway/activeRequests";
+import { useDocumentVisibility } from "../../../hooks/useDocumentVisibility";
 import { normalizeCustomCodexHome, buildConfigTomlPath } from "../../../utils/codexPaths";
 import { isWindowsRuntime } from "../../../utils/platform";
 import { cn } from "../../../utils/cn";
@@ -840,9 +841,16 @@ function CodexOauthProxySection({
 
 function useCodexInfiniteRetryActiveCount() {
   const [activeCount, setActiveCount] = useState(0);
+  const documentVisible = useDocumentVisibility();
 
   useEffect(() => {
     let mounted = true;
+
+    if (!documentVisible) {
+      return () => {
+        mounted = false;
+      };
+    }
 
     async function refresh() {
       try {
@@ -864,7 +872,7 @@ function useCodexInfiniteRetryActiveCount() {
       mounted = false;
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [documentVisible]);
 
   return activeCount;
 }
