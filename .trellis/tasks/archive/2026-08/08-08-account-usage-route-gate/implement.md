@@ -36,7 +36,7 @@
 - [x] 不更新 `earliest_available_unix`。测试纯余额阻断无 Retry-After、混合 gate 只使用其他权威时间。
 - [x] finalizer 在 `skipped_account_usage > 0` 时禁止写 recent-error 503 cache；混合 gate 仍可返回其他权威 Retry-After，但余额恢复/failure/stale 后的下一请求必须重新选择。
 - [x] 保持 all-unavailable attempt/route 投影；不得把余额 skipped 当 `not_triggered` observation 排除。
-- [x] 不改 planner 去为持续阻断 Provider 每请求制造 Direct/observation；测试仅在候选实际计划时要求普通 `decision=skip` / `selection=filtered` attempt，且 provider/retry index、circuit/probe 字段为空。
+- [x] 保留新 Session、无绑定、forced Provider 与普通选择的完整候选集合；候选实际进入 gate 时要求普通 `decision=skip` / `selection=filtered` attempt，且 provider/retry index、circuit/probe 字段为空。
 
 ## 4. 运行时恢复 Epoch
 
@@ -56,7 +56,9 @@
 - [x] account epoch 不让 `OPEN/HALF_OPEN` 变 Direct、不新增 probe trigger；现有 due/cooldown/single-flight 结果保持原样。
 - [x] arbitrary-length higher-priority prefix 中 circuit/account 两类恢复按最新 route 排序，not-due 候选不阻塞后续恢复候选。
 - [x] provider resolution 从 runtime 读取当前 `ConfirmedAvailable` 约束下的 Provider epoch 与 Session account baseline；缺失/stale/failure runtime 使用零值，不影响现有 planner。
-- [x] gate skip 保留 request intent reservation，下一 planned target 仍可发送；所有目标零 send 时沿用 drop release。
+- [x] 对已绑定 fallback 的 Session，在自然、Codex compaction、route-change 和 aggressive failback 创建 target/observation/reservation 前跳过 fresh Blocked 高优先级候选；新 Session、无绑定、forced Provider 与普通 fallback 不做该过滤。
+- [x] 全部更高优先级候选均 Blocked 时保持当前 binding，零合成 attempt、零 reservation；自然/compaction trigger 保持 pending，恢复 epoch 后重新规划。
+- [x] gate skip 不伪造消费 request intent reservation；reservation 仅可由同轮后续匹配的 planned target claim/send，所有目标零 send 时沿用 drop release。
 
 ## 6. 真实请求终态与显式配置变化
 
@@ -66,6 +68,9 @@
 - [x] account recovery 时 circuit 已 Open：不旁路，使用现有 cooldown/probe 规划；余额刷新不关闭 circuit。
 - [x] gate 从 true 显式关闭或有效 adapter 被关闭时，扩展 provider runtime reset decision，清理该 CLI live Session；不发布余额恢复/circuit 信号。
 - [x] name/note 与 `timedRefreshEnabled` 等 display-only 变化不清 Session、快照或 transition memory；query/route 语义变化分别通过 generation/token 与 route reset 失效。
+- [x] 增加同一 Session 连续请求回归：首次 P1 Blocked 得到 `P1 skipped + P2 success` 并绑定 P2；阻断不变的第二、第三次请求仅有 `P2 success`，raw attempts 和摘要均不重复 P1。
+- [x] 增加 Codex compaction fingerprint 回归：trigger 在 P1 Blocked 时保持 pending 但不重复产生日志；P1 发布 recovery epoch 后下一请求 Direct P1，真实成功才消费 trigger/提交 binding。
+- [x] 增加 resolution 读 Available、发送前变 Blocked 的竞态回归：当次一次 skip + fallback，下一请求读取 Blocked 后只走 fallback。
 
 ## 7. Provider UI 与可观察性
 

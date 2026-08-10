@@ -1,0 +1,2 @@
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"transport retry backoff 必须保持 attempt budget、Provider 切换与熔断语义。"}
+{"file": ".trellis/tasks/archive/2026-08/08-05-transport-error-retry-backoff/research/current-main-evidence.md", "reason": "当前 main 中 transport backoff 的提交、实现路径与规范证据。"}

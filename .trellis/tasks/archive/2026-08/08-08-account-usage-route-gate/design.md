@@ -164,7 +164,7 @@ outcome = skipped
 - `providers_tried`、同 Provider retry index 和 Ready-provider cap 均不增加；
 - 不调用上游、不加载模型凭据、不提交 dispatch intent/session reservation；
 - 不记录 circuit failure/success，不发布 probe result，不修改健康度；
-- request-scoped failback reservation 仍可供后续计划目标使用，全部目标均未发送时由现有 drop 逻辑释放。
+- request-scoped failback reservation 只可由本轮后续真正匹配的 planned target 认领；全部计划目标均未发送时由现有 drop 逻辑释放。余额 skip 本身不得伪造消费 reservation。
 
 `IterationCounters` 增加独立 `skipped_account_usage`，终态诊断与日志显示该数量。余额快照没有权威恢复时间，绝不把“下一次刷新”写入 `earliest_available_unix`；因此纯余额阻断没有 `Retry-After`，混合 gate 仍可使用 circuit/limit 提供的可信时间。
 
@@ -181,7 +181,13 @@ outcome = skipped
 
 forced Provider、managed route、Session rotated route、普通 fallback、planned direct/probe target 和 model-discovery 只要进入共同 `run_gates` 都执行同一规则；本任务不改变各路径原有请求分类、strict attempt 数或候选集合。
 
-可见性边界是“候选已被现有 planner/route 计划”。当前 planner 不会为持续余额阻断的高优先级 Provider 在每个稳态请求制造 Direct target；本任务不新增合成 observation。候选一旦实际进入 `run_gates`，就必须产生上述普通 `skipped`，不能在 resolution 阶段消失。
+可见性边界是“候选已被现有 planner/route 计划”。新 Session、无绑定请求、forced Provider 与普通候选选择保留原集合，候选一旦实际进入 `run_gates` 就必须产生上述普通 `skipped`。对已经绑定 fallback 的 Session，planner 可把新鲜可信的 Blocked 投影作为 failback 抑制提示，避免制造重复 Direct target；这不是从普通路由资格中删除 Provider，UnknownAllow 也不得触发抑制。
+
+### 5.4 稳态重复跳过故障
+
+本机请求日志的只读核查已复现同一 Session 连续请求均为 `[P1 account_usage_zero_balance skipped, P2 success]`，且第二条为有效 `session_reuse`，排除单纯 UI 重复展示和 Session 未绑定。
+
+原因是 account-usage gate 早于 `provider_gate::gate_provider` 返回，P1 尚未执行 `claim_for_provider`；P2 又不属于本轮高优先级 failback planned targets，因此 P2 的成功无法提交该 reservation。请求结束时 pending reservation 被 drop/release，Codex compaction 等自然触发仍保持待处理，下一请求便再次规划 P1。修复不能在余额 skip 时盲目消费触发，因为这会掩盖之后的真实恢复；应在 planner 创建 target/reservation 前抑制当前已确认 Blocked 的 failback 候选。
 
 ## 6. 余额恢复 Epoch
 
@@ -228,12 +234,17 @@ account_usage_recovery_epoch_baseline: u64
 
 ### 6.3 Failback planner
 
+Provider resolution 为 planner 提供同一次 runtime 投影得到的 account-usage recovery epoch 和 `fresh_blocked_provider_ids`；后者只包含当前新鲜可信的 `Blocked(ZeroBalance | Expired)`，缺失、stale、失败、矛盾或无法读取均投影为 UnknownAllow 且集合为空。
+
 Planner 每个候选读取 `(CircuitSnapshot, current route projection, account_usage_recovery_epoch)`：
 
 - 自然模式中，circuit 为 `CLOSED`，且 circuit epoch 较新，或当前投影为 `ConfirmedAvailable` 且 account-usage Provider epoch 比 Session baseline 新时，生成现有 `Direct` target。
 - account-usage epoch 为零、旧于/equal baseline 或 Provider 当前已再次 confirmed Blocked 时，不因余额来源生成 target。
 - circuit 为 `OPEN/HALF_OPEN` 时，account-usage recovery 不生成 direct，也不新增 probe trigger；现有 natural/open deadline、explicit trigger 和 single-flight 继续决定 probe。
-- route-change、compaction、aggressive 等既有显式规划不被余额 epoch 改写；它们选中的 Provider 最终仍由共同 gate 复检。
+- 新 Session、无 binding、forced Provider 和普通 fallback 的候选集合不使用 `fresh_blocked_provider_ids` 做资格过滤，首次实际命中仍由共同 gate 审计。
+- 对已有 fallback binding 的高优先级 failback prefix，自然、compaction、route-change 和 aggressive 规划在创建 Direct/Probe target、`not_triggered` observation 与 dispatch reservation 前跳过 `fresh_blocked_provider_ids`。若更高优先级候选全部阻断，结果保持当前 binding，不产生额外 attempt 或 reservation。
+- 被余额抑制的 compaction fingerprint/自然触发保持 pending；不把“已知无法发送”伪装为成功消费。Provider 转为 ConfirmedAvailable 并发布比 Session baseline 更新的 recovery epoch 后，下一请求重新纳入候选并按原优先级 Direct 回切。
+- 共同 gate 仍是发送时权威：若 resolution 看到 Available、但发送前变为 Blocked，本请求记录一次普通 `skipped` 并继续 fallback；下一请求读到 Blocked 后执行稳态抑制。
 - 多个恢复候选保持最新 route 的完整有序 prefix，不固定 P1/P2 长度。
 
 余额刷新本身不创建 `RequestDispatchIntent`、不消费 Session trigger、也不绑定 Provider。只有真实模型请求完整成功，才沿用现有非流/流 finalizer 的 token-aware binding commit。
@@ -265,6 +276,7 @@ Planner 每个候选读取 `(CircuitSnapshot, current route projection, account_
 ## 10. 关键风险
 
 - **gate 顺序副作用**：余额拒绝必须发生在 circuit probe lease 前，且不能消费 request reservation。
+- **reservation 反复释放**：已知 Blocked target 若先创建 reservation、又在 claim 前被 gate 拒绝，会使自然/compaction 触发每请求重放。必须在 stable-bound failback planning 阶段抑制 target/reservation，同时保留 trigger pending，等待 recovery epoch 重新启用。
 - **陈旧恢复**：再次 Blocked 必须清 Provider epoch；配置 generation 变化必须拒绝迟到 Available。
 - **不确定状态集体回切**：缺失/失败/过期仅 fail-open，不发布 epoch。
 - **Session 双 cursor 混淆**：circuit/account baseline 分开比较，不能用一个全局 revision 替代成功信号。

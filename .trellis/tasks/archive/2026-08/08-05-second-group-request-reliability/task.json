@@ -1,0 +1,29 @@
+{
+  "id": "second-group-request-reliability",
+  "name": "second-group-request-reliability",
+  "title": "第二组请求可靠性与 Codex 压缩体适配",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P1",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-05",
+  "completedAt": "2026-08-10",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-05-transport-error-retry-backoff",
+    "08-05-codex-zstd-request-body"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

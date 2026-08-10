@@ -28,6 +28,7 @@
 - 余额门控加入现有 `provider_checks::run_gates` 共同发送前检查，位于实际上游调用和 Ready Provider 计数之前。
 - 拒绝时生成稳定结构化 reason code 的普通 `skipped` attempt，保留 Provider 身份、路由顺序和审计可见性，且零上游调用。
 - 只有候选被现有 planner/route 实际计划并进入共同 gate 时才生成该 attempt；不为持续阻断的高优先级 Provider 在每个稳态请求中合成 observation 或强制 Direct target。
+- 新 Session、无绑定请求和普通候选选择仍保留原候选集合；首次实际选中余额阻断 Provider 时必须经过共同 gate 并留下一个可审计的 `skipped`，不能在 resolution 阶段静默删除。
 - 余额跳过不计供应商失败、不修改健康度、不打开/关闭熔断、不发布探针成功、不消费 Ready Provider 或同 Provider 重试预算。
 - 全部候选被门控时继续返回当前 `GW_ALL_PROVIDERS_UNAVAILABLE` 语义，并保留所有已检查候选；不得改写为无启用供应商或静默删除候选。
 - 余额阻断使用独立稳定的 error category、Gateway error code 和 `zero_balance`/`expired` reason code，不能伪装成 OAuth/本地消费限额。
@@ -47,7 +48,9 @@
 
 ### R4. 现有回切集成
 
-- 高优先级 Provider 处于余额阻断时不得被自然/显式回切反复计划；候选实际进入共同 gate 的请求保留结构化 `skipped`，其他稳态请求不合成额外 observation。
+- 对已绑定 fallback 的 Session，新鲜可信的余额阻断是 failback planner 的抑制提示：高优先级 Provider 不得被自然、compaction、route-change 或 aggressive 回切反复计划，也不得为其创建 Direct target、`not_triggered` observation 或 dispatch reservation；这不改变普通候选资格，发送前共同 gate 仍是权威判定。
+- 首次实际进入共同 gate 的余额阻断候选保留结构化 `skipped`；同一 Session 随后的稳态请求应直接使用已绑定 fallback，只记录真实发送的 attempt。若 planner 读取后、发送前状态转为阻断，共同 gate 仍记录一次 `skipped` 并继续 fallback，下一请求再进入稳态抑制。
+- 被抑制的自然/compaction 触发保持待处理，不通过余额 skip 伪造消费；Provider 确认恢复并发布新 recovery epoch 后，下一次符合条件的请求重新计划高优先级 Direct target。
 - 恢复代次比 Session 基线更新时，现有回切规划按原路由优先级将 Provider 作为 direct 目标，不把余额刷新当作网络探针成功。
 - direct 目标在发送前重新执行余额、熔断、冷却、OAuth 配额和本地消费上限门控。若再次余额不足，则记录 `skipped` 并继续当前 Provider/fallback。
 - 只有真实、完整的模型请求成功才能沿用现有单调绑定 token 提交 Session 回切；余额查询成功本身不得改绑 Session。
@@ -68,6 +71,9 @@
 - [x] `sub2api`、两种 NewAPI 模式和自定义 JavaScript 对同一归一化状态执行一致的门控、新鲜度与恢复规则。
 - [x] 显式开启后，新鲜 `zero_balance` / `expired` Provider 产生可区分的 `skipped` attempt、零上游调用和零 Ready 尝试消耗。
 - [x] 已知阻断不会让 planner 每次强制制造 Direct attempt；实际被既有路由/回切计划检查时仍以普通 `skipped` 可见。
+- [x] 同一 Session 首次命中阻断的高优先级 Provider 时记录 `skipped + fallback success`；绑定 fallback 后，在阻断快照未变化的连续请求中只记录实际 fallback success，且高优先级 Provider 零上游调用。
+- [x] Codex compaction fingerprint 等自然回切触发可保持待处理，但不得使已知阻断 Provider 每请求重复出现；确认恢复的 recovery epoch 会让下一次符合条件的请求重新尝试并完成回切。
+- [x] planner 读取 `available` 后、发送前转为阻断的竞态只在该请求记录一次余额 `skipped` 并 fallback；下一请求读取新投影后不再重复计划。
 - [x] 快照缺失、过期、查询失败、认证失败或配置不完整时立即恢复路由资格，后台重试不阻塞网关请求。
 - [x] 不确定状态的 fail-open 不发布主动回切信号；后续新鲜 `available` 才使现有 Session 获得余额恢复回切机会。
 - [x] 现金余额为零但套餐剩余为正的 Provider 可路由；所有已知可消费额度耗尽时才阻断。

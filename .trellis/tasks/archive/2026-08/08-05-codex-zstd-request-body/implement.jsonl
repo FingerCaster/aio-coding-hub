@@ -1,0 +1,3 @@
+{"file":".trellis/spec/aio-coding-hub/backend/codex-request-content-encoding-contract.md","reason":"Codex 压缩请求的有界解码、明文规范化和失败边界。"}
+{"file": ".trellis/tasks/archive/2026-08/08-05-codex-zstd-request-body/research/reference-fork-findings.md", "reason": "固定参考 fork 的选择性移植来源与合同差异。"}
+{"file": ".trellis/tasks/archive/2026-08/08-05-codex-zstd-request-body/research/current-main-evidence.md", "reason": "当前 main 中实现提交、源码与测试证据。"}

@@ -1,0 +1,2 @@
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"复核 transport retry 未改变预算与 failover 边界。"}
+{"file": ".trellis/tasks/archive/2026-08/08-05-transport-error-retry-backoff/research/current-main-evidence.md", "reason": "归档前复核当前 main 祖先和实现覆盖。"}

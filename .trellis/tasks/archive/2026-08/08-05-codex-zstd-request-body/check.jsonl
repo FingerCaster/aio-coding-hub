@@ -1,0 +1,2 @@
+{"file":".trellis/spec/aio-coding-hub/backend/codex-request-content-encoding-contract.md","reason":"复核编码层数、正文上限、早期错误和非目标透传。"}
+{"file": ".trellis/tasks/archive/2026-08/08-05-codex-zstd-request-body/research/current-main-evidence.md", "reason": "归档前复核当前 main 祖先和实现覆盖。"}
