@@ -33,6 +33,7 @@ workflow_dispatch:
   inputs:
     release_tag:       # optional aio-coding-hub-vMAJOR.MINOR.PATCH
     target_commitish:  # optional 40-hex commit SHA for a new manual tag
+    repair_beta_pointer: # default false; existing public Beta pointer recovery only
 ```
 
 The release job exports the identity consumed by every downstream job:
@@ -78,6 +79,11 @@ Release-As: 0.60.40
   release ID, tag, source SHA, run ID, run attempt, exact asset names, sizes,
   and SHA-256 digests. Assets are uploaded without overwrite and reverified
   before publication.
+- Normal manual publication still accepts only an empty draft. The explicit
+  Beta pointer-recovery input accepts only an existing public prerelease whose
+  tag and immutable source match, skips every build/publication/Homebrew job,
+  reverifies the public asset matrix and updater bytes, and runs only the
+  idempotent CAS pointer operation.
 - `latest.json` must name the intended version and contain non-empty URLs and
   signatures for `windows-x86_64`, `darwin-x86_64`, `darwin-aarch64`, and
   `linux-x86_64`.
@@ -98,6 +104,7 @@ Release-As: 0.60.40
 | `checkout_ref` is not 40-hex or differs from the tag SHA | Fail before build/promotion |
 | Candidate asset is missing, extra, changed, or lacks its digest | Fail promotion; do not partially publish |
 | Target Release is published, prerelease, non-empty, or has another identity | Fail closed; do not overwrite assets |
+| Beta pointer recovery targets a missing/draft/wrong-source Release | Fail closed; do not build, publish, or move the pointer |
 | Homebrew token is absent | Generate the Cask and explicitly skip tap sync |
 
 ## 5. Good / Base / Bad Cases

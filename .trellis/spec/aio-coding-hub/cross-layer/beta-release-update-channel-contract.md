@@ -56,6 +56,7 @@ release.yml:
   release_channel: stable | beta # default stable
   release_tag: aio-coding-hub-vMAJOR.MINOR.PATCH[-beta.N]
   target_commitish: 40-hex origin/main-reachable SHA # required for Beta
+  repair_beta_pointer: boolean # default false; Beta-only public Release recovery
 
 beta-channel.yml:
   action: promote | pause
@@ -146,6 +147,12 @@ beta-channel.yml:
   is an idempotent success without creating a second commit. Pause selects a
   previously verified safe stable/Beta Release; it never moves a tag or mutates
   Release assets.
+- `repair_beta_pointer=true` is an explicit Beta-only recovery path for a
+  public Release whose normal pointer job did not finish cleanly. It requires
+  the exact existing tag/source/public-prerelease identity, skips build,
+  promotion, publication, and Homebrew, reverifies the official Release asset
+  matrix plus updater manifest/signatures, and then performs only the same
+  idempotent CAS pointer operation.
 - Stable release preflight compares the requested canonical version with the
   normalized `snapshot.state.promotion_high_water_version`. It must never use
   `selected_version` as the admission floor because pause may intentionally
@@ -210,9 +217,10 @@ prefix.
   WiX version and its bounds, exact 14 assets, promotion,
   signing-secret scope, strict UTF-8 manifest/signatures, pointer state/parent,
   CAS race, bounded post-write ref confirmation retry, exact repeated promote
-  idempotency, repeated pause without high-water rollback, stable advancement
-  after withdrawal, support matrix, stable default, Homebrew, and CI scope
-  self-tests. Pointer timestamp fixtures must exercise the workflow's actual
+  idempotency, Beta-only public pointer recovery input, repeated pause without
+  high-water rollback, stable advancement after withdrawal, support matrix,
+  stable default, Homebrew, and CI scope self-tests. Pointer timestamp fixtures
+  must exercise the workflow's actual
   `Date.toISOString()` shape with non-zero milliseconds, while retaining valid
   second-only and `.000Z` cases and rejecting impossible or non-canonical dates.
   The workflow contract test must assert stable preflight reads
