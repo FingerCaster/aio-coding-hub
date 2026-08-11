@@ -122,6 +122,10 @@ beta-channel.yml:
 - All build jobs checkout the verified SHA, apply the deterministic four-file
   version overlay, and carry source/tag/version/overlay digest through the
   candidate and promotion attestations.
+- The Beta overlay keeps the canonical application version
+  `MAJOR.MINOR.PATCH-beta.N` and also writes the attested Tauri WiX version as
+  `MAJOR.MINOR.PATCH.N`. Every numeric field must fit WiX limits. Stable source
+  configuration remains unchanged.
 - Beta publishes exactly the official 14 signed assets as a public
   `prerelease=true`, `draft=false`, `make_latest=false` Release. It never runs
   Homebrew publication or changes stable `latest.json`/GitHub latest.
@@ -199,7 +203,8 @@ prefix.
   install failure acquiring a new `rid`, opt-in confirmation/cancel/failure,
   opt-out cleanup, and stable Release labeling on a Beta subscription in About,
   dialog, and sidebar.
-- Release: source, tag/channel, version overlay, exact 14 assets, promotion,
+- Release: source, tag/channel, version overlay including the derived numeric
+  WiX version and its bounds, exact 14 assets, promotion,
   signing-secret scope, strict UTF-8 manifest/signatures, pointer state/parent,
   CAS race, repeated pause without high-water rollback, stable advancement
   after withdrawal, support matrix, stable default, Homebrew, and CI scope

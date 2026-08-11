@@ -14,7 +14,7 @@ import {
 } from "./release-contract.mjs";
 
 export const RELEASE_VERSION_ATTESTATION_SCHEMA = 1;
-export const RELEASE_VERSION_OVERLAY_SCRIPT_VERSION = 1;
+export const RELEASE_VERSION_OVERLAY_SCRIPT_VERSION = 2;
 export const RELEASE_VERSION_FILES = Object.freeze([
   "package.json",
   "src-tauri/Cargo.toml",
@@ -101,6 +101,39 @@ function writeJsonVersion(path, label, version) {
     throw new Error(`${label} version must be a string`);
   }
   parsed.version = version;
+  writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+}
+
+export function deriveWixVersion(version) {
+  const parsed = parseReleaseVersion(version, "WiX release version");
+  if (parsed.major > 255) {
+    throw new Error("WiX release version major must not exceed 255");
+  }
+  if (parsed.minor > 255) {
+    throw new Error("WiX release version minor must not exceed 255");
+  }
+  if (parsed.patch > 65_535) {
+    throw new Error("WiX release version patch must not exceed 65535");
+  }
+  if (parsed.betaNumber !== null && parsed.betaNumber > 65_535) {
+    throw new Error("WiX release version Beta number must not exceed 65535");
+  }
+  return parsed.betaNumber === null
+    ? `${parsed.major}.${parsed.minor}.${parsed.patch}`
+    : `${parsed.major}.${parsed.minor}.${parsed.patch}.${parsed.betaNumber}`;
+}
+
+function writeTauriConfigVersion(path, version) {
+  const label = "src-tauri/tauri.conf.json";
+  const parsed = parseJsonFile(path, label);
+  if (typeof parsed.version !== "string") {
+    throw new Error(`${label} version must be a string`);
+  }
+  const bundle = requirePlainObject(parsed.bundle, `${label} bundle`);
+  const windows = requirePlainObject(bundle.windows, `${label} bundle.windows`);
+  const wix = requirePlainObject(windows.wix, `${label} bundle.windows.wix`);
+  parsed.version = version;
+  wix.version = deriveWixVersion(version);
   writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
 }
 
@@ -337,11 +370,7 @@ export function applyReleaseVersionOverlay({ repoRoot, channel, tag, sourceSha, 
       throw new Error("Beta overlay source version must be stable");
     }
     writeJsonVersion(join(root, "package.json"), "package.json", identity.version);
-    writeJsonVersion(
-      join(root, "src-tauri/tauri.conf.json"),
-      "src-tauri/tauri.conf.json",
-      identity.version
-    );
+    writeTauriConfigVersion(join(root, "src-tauri/tauri.conf.json"), identity.version);
     writeCargoTomlVersion(join(root, "src-tauri/Cargo.toml"), identity.version);
     cargoMetadata(root, false);
     const actualCargoLock = normalizeLf(readFileSync(cargoLockPath, "utf8"));

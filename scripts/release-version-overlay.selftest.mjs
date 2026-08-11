@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   RELEASE_VERSION_FILES,
   applyReleaseVersionOverlay,
+  deriveWixVersion,
   verifyReleaseVersionAttestations,
 } from "./release-version-overlay.mjs";
 
@@ -34,7 +35,22 @@ function createFixture(name, version) {
   );
   writeFileSync(
     join(directory, "src-tauri/tauri.conf.json"),
-    `${JSON.stringify({ productName: "AIO Coding Hub", version, identifier: "test" }, null, 2)}\n`
+    `${JSON.stringify(
+      {
+        productName: "AIO Coding Hub",
+        version,
+        identifier: "test",
+        bundle: {
+          windows: {
+            wix: {
+              upgradeCode: "c1b4a027-411b-5de5-94b9-b6953c022c17",
+            },
+          },
+        },
+      },
+      null,
+      2
+    )}\n`
   );
   writeFileSync(
     join(directory, "src-tauri/Cargo.toml"),
@@ -73,6 +89,14 @@ try {
   assert.equal(
     JSON.parse(readFileSync(join(betaOne, "src-tauri/tauri.conf.json"), "utf8")).version,
     betaOneAttestation.version
+  );
+  const betaOneTauriConfig = JSON.parse(
+    readFileSync(join(betaOne, "src-tauri/tauri.conf.json"), "utf8")
+  );
+  assert.equal(betaOneTauriConfig.bundle.windows.wix.version, "0.60.41.1");
+  assert.equal(
+    betaOneTauriConfig.bundle.windows.wix.upgradeCode,
+    "c1b4a027-411b-5de5-94b9-b6953c022c17"
   );
   assert.match(
     readFileSync(join(betaOne, "src-tauri/Cargo.toml"), "utf8"),
@@ -145,6 +169,13 @@ try {
   });
   assert.equal(stableAttestation.overlayMode, "none");
   assert.equal(run(stable, "git", ["status", "--porcelain"]), "");
+
+  assert.equal(deriveWixVersion("0.60.41-beta.2"), "0.60.41.2");
+  assert.equal(deriveWixVersion("0.60.41"), "0.60.41");
+  assert.throws(() => deriveWixVersion("256.0.0-beta.1"), /major must not exceed 255/);
+  assert.throws(() => deriveWixVersion("0.256.0-beta.1"), /minor must not exceed 255/);
+  assert.throws(() => deriveWixVersion("0.0.65536-beta.1"), /patch must not exceed 65535/);
+  assert.throws(() => deriveWixVersion("0.0.1-beta.65536"), /Beta number must not exceed 65535/);
 
   const dirty = createFixture("dirty", "0.60.40");
   writeFileSync(join(dirty, "README.md"), "unexpected diff\n");
