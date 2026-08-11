@@ -6,6 +6,7 @@ import heartbeatSource from "../../../src-tauri/src/app/heartbeat_watchdog.rs?ra
 import noticeSource from "../../../src-tauri/src/app/notice.rs?raw";
 import settingsServiceSource from "../../../src-tauri/src/app/settings_service.rs?raw";
 import startupStateSource from "../../../src-tauri/src/app/startup_state.rs?raw";
+import updateChannelServiceSource from "../../services/app/updateChannel.ts?raw";
 import settingsServiceFrontendSource from "../../services/settings/settings.ts?raw";
 
 function extractStringUnionLiterals(source: string, typeName: string) {
@@ -142,7 +143,13 @@ describe("generated/bindings.ts contract", () => {
     expect(settingsServiceSource).toContain(
       `UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE: &str = "${resource}"`
     );
-    expect(settingsServiceFrontendSource).toContain(`"${resource}"`);
+    expect(updateChannelServiceSource).toContain(
+      `UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE = "${resource}"`
+    );
+    expect(settingsServiceFrontendSource).toContain(
+      'export { settingsUpdateChannelSet } from "../app/updateChannel"'
+    );
+    expect(settingsServiceFrontendSource).not.toContain(resource);
   });
 
   it("pins acronym casing for usage bridge filter DTO fields", () => {

@@ -7,6 +7,7 @@ export type { UpdateChannel } from "../../generated/bindings";
 export const STABLE_UPDATE_CHANNEL: UpdateChannel = "stable";
 export const BETA_UPDATE_CHANNEL: UpdateChannel = "beta";
 export const UPDATE_CHANNEL_SET_COMMAND = "settings_update_channel_set";
+export const UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE = "update_channel:beta";
 
 export function isUpdateChannel(value: unknown): value is UpdateChannel {
   return value === STABLE_UPDATE_CHANNEL || value === BETA_UPDATE_CHANNEL;
@@ -64,7 +65,7 @@ export async function settingsUpdateChannelSet(channel: UpdateChannel): Promise<
   const normalizedChannel = normalizeUpdateChannel(channel);
   const confirm =
     normalizedChannel === BETA_UPDATE_CHANNEL
-      ? createRiskyIpcConfirm(UPDATE_CHANNEL_SET_COMMAND, `update_channel:${normalizedChannel}`)
+      ? createRiskyIpcConfirm(UPDATE_CHANNEL_SET_COMMAND, UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE)
       : null;
 
   const result = await invokeGeneratedIpc<unknown>({
