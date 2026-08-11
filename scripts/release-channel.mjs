@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import {
   RELEASE_CHANNELS,
   compareReleaseVersions,
+  parseAnyReleaseTag,
+  parseReleaseVersion,
   parseReleaseTag,
   requirePlainObject,
   requirePositiveInteger,
@@ -18,12 +20,14 @@ import { OFFICIAL_RELEASE_TARGETS } from "./support-matrix.mjs";
 export const RELEASE_CHANNEL_BRANCH = "release-channels";
 export const RELEASE_CHANNEL_MANIFEST = "latest-beta.json";
 export const RELEASE_CHANNEL_STATE = "beta-channel-state.json";
-export const RELEASE_CHANNEL_STATE_SCHEMA = 1;
+export const RELEASE_CHANNEL_STATE_SCHEMA = 2;
+
+const LEGACY_RELEASE_CHANNEL_STATE_SCHEMA = 1;
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const REPOSITORY_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]{1,100}$/;
 const OPERATOR_PATTERN = /^[^\u0000-\u001f\u007f]{1,100}$/;
-const STATE_KEYS = Object.freeze(
+const LEGACY_STATE_KEYS = Object.freeze(
   [
     "schema_version",
     "action",
@@ -43,6 +47,7 @@ const STATE_KEYS = Object.freeze(
     "updated_at",
   ].sort()
 );
+const STATE_KEYS = Object.freeze([...LEGACY_STATE_KEYS, "promotion_high_water_version"].sort());
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -99,6 +104,16 @@ function requireNullableSha(value, label) {
 function requireNullableTag(value, label) {
   if (value === null) return null;
   return parseReleaseTag(value, value.includes("-beta.") ? "beta" : "stable").tag;
+}
+
+function maximumReleaseVersion(...versions) {
+  return versions
+    .filter((version) => version !== null && version !== undefined)
+    .reduce(
+      (maximum, version) =>
+        maximum === null || compareReleaseVersions(version, maximum) > 0 ? version : maximum,
+      null
+    );
 }
 
 function releaseUrl(owner, repo, tag) {
@@ -169,8 +184,11 @@ export function parseReleaseChannelState(text, { owner, repo, manifestText }) {
     );
   }
   const state = requirePlainObject(parsed, "Release channel state");
-  requireExactKeys(state, STATE_KEYS, "Release channel state");
-  if (state.schema_version !== RELEASE_CHANNEL_STATE_SCHEMA) {
+  if (state.schema_version === LEGACY_RELEASE_CHANNEL_STATE_SCHEMA) {
+    requireExactKeys(state, LEGACY_STATE_KEYS, "Release channel state");
+  } else if (state.schema_version === RELEASE_CHANNEL_STATE_SCHEMA) {
+    requireExactKeys(state, STATE_KEYS, "Release channel state");
+  } else {
     throw new Error(`Unsupported release channel state schema: ${state.schema_version}`);
   }
   if (state.action !== "promote" && state.action !== "pause") {
@@ -213,6 +231,20 @@ export function parseReleaseChannelState(text, { owner, repo, manifestText }) {
   if (state.action === "pause" && withdrawnTag !== previousSelectedTag) {
     throw new Error("Pause state withdrawn tag must match the previous selected tag");
   }
+  const transitionHighWaterVersion = maximumReleaseVersion(
+    identity.version,
+    withdrawnTag ? parseAnyReleaseTag(withdrawnTag).version : null
+  );
+  const promotionHighWaterVersion =
+    state.schema_version === LEGACY_RELEASE_CHANNEL_STATE_SCHEMA
+      ? transitionHighWaterVersion
+      : parseReleaseVersion(state.promotion_high_water_version).version;
+  if (compareReleaseVersions(promotionHighWaterVersion, transitionHighWaterVersion) < 0) {
+    throw new Error("Release channel promotion high-water version regressed");
+  }
+  if (state.action === "promote" && promotionHighWaterVersion !== identity.version) {
+    throw new Error("Promote state high-water version must match the selected version");
+  }
   requirePositiveInteger(state.workflow_run_id, "Release channel workflow run ID");
   requirePositiveInteger(state.workflow_run_attempt, "Release channel workflow run attempt");
   requireOperator(state.operator);
@@ -228,6 +260,7 @@ export function parseReleaseChannelState(text, { owner, repo, manifestText }) {
     previous_ref_sha: previousRefSha,
     previous_selected_tag: previousSelectedTag,
     withdrawn_tag: withdrawnTag,
+    promotion_high_water_version: promotionHighWaterVersion,
   };
 }
 
@@ -463,9 +496,10 @@ function validateTransition({ action, current, target, withdrawnTag }) {
     if (withdrawnTag !== null && withdrawnTag !== undefined && withdrawnTag !== "") {
       throw new Error("Promote must not include a withdrawn tag");
     }
+    const highWaterVersion = current?.state.promotion_high_water_version;
     if (
-      current &&
-      compareReleaseVersions(target.identity.version, current.state.selected_version) <= 0
+      highWaterVersion &&
+      compareReleaseVersions(target.identity.version, highWaterVersion) <= 0
     ) {
       throw new Error("Release channel promotion must select a strictly higher version");
     }
@@ -511,6 +545,10 @@ function buildState({
     previous_ref_sha: current?.refSha ?? null,
     previous_selected_tag: current?.state.selected_tag ?? null,
     withdrawn_tag: withdrawnTag,
+    promotion_high_water_version: maximumReleaseVersion(
+      current?.state.promotion_high_water_version,
+      target.identity.version
+    ),
     workflow_run_id: requirePositiveInteger(workflowRunId, "Workflow run ID"),
     workflow_run_attempt: requirePositiveInteger(workflowRunAttempt, "Workflow run attempt"),
     operator: requireOperator(operator),

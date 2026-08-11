@@ -884,6 +884,7 @@ where
                         upstream_ended_normally = true;
                         if let Some(firewall) = terminal_firewall.as_mut() {
                             let output = firewall.finish();
+                            visible_completion_seen |= output.completion_seen;
                             if let Some(reason) = output.fail_closed_reason {
                                 firewall_terminal_error = true;
                                 response_fixer::push_special_setting(
@@ -906,7 +907,7 @@ where
                             if let Some(firewall) = terminal_firewall.as_mut() {
                                 let output = firewall.ingest(chunk.as_ref());
                                 visible_completion_seen |= output.completion_seen;
-                                completion_seen = output.completion_seen;
+                                completion_seen = visible_completion_seen;
                                 stop_after_chunk = output.stop;
                                 let terminal_error = output.terminal_error;
                                 firewall_terminal_error |= terminal_error;
@@ -971,6 +972,7 @@ where
                         Err(err) => {
                             if let Some(firewall) = terminal_firewall.as_mut() {
                                 let output = firewall.finish();
+                                visible_completion_seen |= output.completion_seen;
                                 if let Some(reason) = output.fail_closed_reason {
                                     firewall_terminal_error = true;
                                     response_fixer::push_special_setting(

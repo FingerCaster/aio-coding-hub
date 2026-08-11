@@ -1749,12 +1749,56 @@ INSERT INTO providers(
                 .accept()
                 .await
                 .expect("accept token request");
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request).await;
+            const TOKEN_REQUEST_MAX_BYTES: usize = 16 * 1024;
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut chunk).await.expect("read token headers");
+                assert!(read > 0, "token request closed before headers completed");
+                request.extend_from_slice(&chunk[..read]);
+                assert!(
+                    request.len() <= TOKEN_REQUEST_MAX_BYTES,
+                    "token request headers exceeded fixture limit"
+                );
+
+                let Some(offset) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let header_end = offset + 4;
+                let headers = std::str::from_utf8(&request[..header_end])
+                    .expect("token request headers must be UTF-8");
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then_some(value.trim())
+                    })
+                    .expect("token request must include Content-Length")
+                    .parse::<usize>()
+                    .expect("token request Content-Length must be valid");
+                break (header_end, content_length);
+            };
+
+            let request_end = header_end
+                .checked_add(content_length)
+                .filter(|length| *length <= TOKEN_REQUEST_MAX_BYTES)
+                .expect("token request exceeded fixture limit");
+            while request.len() < request_end {
+                let read = stream.read(&mut chunk).await.expect("read token body");
+                assert!(read > 0, "token request closed before body completed");
+                request.extend_from_slice(&chunk[..read]);
+                assert!(
+                    request.len() <= TOKEN_REQUEST_MAX_BYTES,
+                    "token request exceeded fixture limit"
+                );
+            }
             stream
                 .write_all(redirect_response.as_bytes())
                 .await
                 .expect("write token redirect");
+            stream.shutdown().await.expect("close token endpoint");
         });
 
         crate::providers::update_oauth_tokens(

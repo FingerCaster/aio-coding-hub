@@ -114,12 +114,6 @@ beta-channel.yml:
 - Beta install performs a fresh check and requires identical version, target,
   URL, and signature. A final guarded channel/epoch check occurs after download
   and before install.
-- The strict buffered Codex final-wire validator records the first canonical
-  response ID exposed by the upstream transcript and, when present, requires
-  `response.created` and `response.completed` to carry the same ID. A created
-  ID with a missing completion ID fails closed; completion-only fixtures remain
-  valid when the upstream does not expose an ID.
-
 ### Release And Pointer
 
 - Beta tags are manual-only
@@ -134,7 +128,13 @@ beta-channel.yml:
 - `release-channels` contains only `latest-beta.json` and
   `beta-channel-state.json`. Manifest bytes equal the verified Release
   `latest.json`; state binds the previous ref, selected Release/source,
-  manifest SHA-256, action, run identity, operator, and UTC time.
+  manifest SHA-256, action, run identity, operator, UTC time, and the monotonic
+  promotion high-water version. Schema-v1 state derives that high-water value
+  from its selected and withdrawn tags; schema v2 persists it across every
+  later pause. A promotion must be strictly higher than the persisted
+  high-water version, while a pause may select an older verified safe target
+  without lowering it. A later stable Release still advances the Beta pointer
+  when its canonical version is strictly above that same high-water mark.
 - Pointer writes use the Git Data API with the old commit as parent and
   `force=false`. `expected_ref_sha` is a compare-and-swap precondition. Pause
   selects a previously verified safe stable/Beta Release; it never moves a tag
@@ -192,7 +192,8 @@ prefix.
   dialog, and sidebar.
 - Release: source, tag/channel, version overlay, exact 14 assets, promotion,
   signing-secret scope, strict UTF-8 manifest/signatures, pointer state/parent,
-  CAS race, pause, support matrix, stable default, Homebrew, and CI scope
+  CAS race, repeated pause without high-water rollback, stable advancement
+  after withdrawal, support matrix, stable default, Homebrew, and CI scope
   self-tests. Pointer timestamp fixtures must exercise the workflow's actual
   `Date.toISOString()` shape with non-zero milliseconds, while retaining valid
   second-only and `.000Z` cases and rejecting impossible or non-canonical dates.

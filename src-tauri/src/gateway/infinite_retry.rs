@@ -18,6 +18,36 @@ pub(crate) struct InfiniteRetryRequestConfig {
     pub(crate) retry_interval_ms: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CodexResponsesPathContract {
+    pub(crate) path: &'static str,
+    pub(crate) min_enabled_ttfb_secs: u32,
+}
+
+// The eligibility gate and buffered final-wire deadline assertion both consume
+// this list, so supported-path changes cannot bypass the measured TTFB floor.
+pub(crate) const CODEX_RESPONSES_PATH_CONTRACTS: &[CodexResponsesPathContract] = &[
+    CodexResponsesPathContract {
+        path: "/v1/responses",
+        min_enabled_ttfb_secs: 1,
+    },
+    CodexResponsesPathContract {
+        path: "/responses",
+        min_enabled_ttfb_secs: 1,
+    },
+    CodexResponsesPathContract {
+        path: "/v1/codex/responses",
+        min_enabled_ttfb_secs: 1,
+    },
+];
+
+pub(crate) fn is_supported_codex_responses_path(path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    CODEX_RESPONSES_PATH_CONTRACTS
+        .iter()
+        .any(|contract| path == contract.path)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ProviderHealthMode {
     #[default]
@@ -50,11 +80,10 @@ pub(crate) fn request_config(
     retry_interval_ms: u32,
     facts: EligibilityFacts<'_>,
 ) -> Option<InfiniteRetryRequestConfig> {
-    let path = facts.path.trim_end_matches('/');
     (enabled
         && facts.cli_key == "codex"
         && facts.method == axum::http::Method::POST
-        && matches!(path, "/responses" | "/v1/responses" | "/v1/codex/responses")
+        && is_supported_codex_responses_path(facts.path)
         && facts.observe_request
         && !facts.is_compact_request
         && !facts.is_model_discovery
@@ -508,6 +537,9 @@ impl InfiniteRetryLedger {
 
     pub(crate) fn start_round(&mut self, empty: bool) -> u64 {
         self.recorded_attempts_in_round.clear();
+        if !self.pending_attempt_usage.is_empty() {
+            self.overflowed = true;
+        }
         self.pending_attempt_usage.clear();
         Self::increment(&mut self.rounds, &mut self.overflowed);
         if empty {
@@ -621,6 +653,54 @@ impl InfiniteRetryLedger {
                 usage,
                 cost_usd_femto,
             },
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_keyless_attempt(
+        &mut self,
+        provider_id: i64,
+        provider_name: &str,
+        status: Option<u16>,
+        outcome_code: &'static str,
+        failure_category: FailureCategory,
+        duration_ms: u64,
+    ) {
+        let (candidate, ambiguous) = {
+            let mut matches = self
+                .pending_attempt_usage
+                .keys()
+                .filter(|key| key.provider_id == provider_id)
+                .copied();
+            let candidate = matches.next();
+            (candidate, matches.next().is_some())
+        };
+
+        if !ambiguous {
+            if let Some(key) = candidate {
+                self.record_attempt_once(
+                    key,
+                    provider_name,
+                    status,
+                    outcome_code,
+                    failure_category,
+                    duration_ms,
+                );
+                return;
+            }
+        } else {
+            self.overflowed = true;
+        }
+
+        self.record_attempt(
+            provider_id,
+            provider_name,
+            status,
+            outcome_code,
+            failure_category,
+            duration_ms,
+            None,
+            None,
         );
     }
 
@@ -750,7 +830,13 @@ mod tests {
     #[test]
     fn eligibility_is_fail_closed_and_excludes_system_turns() {
         let method = axum::http::Method::POST;
-        assert!(request_config(true, 1_000, facts(&method, "/v1/responses")).is_some());
+        for contract in CODEX_RESPONSES_PATH_CONTRACTS {
+            assert!(request_config(true, 1_000, facts(&method, contract.path)).is_some());
+            assert!(
+                request_config(true, 1_000, facts(&method, &format!("{}/", contract.path)))
+                    .is_some()
+            );
+        }
         let mut system = facts(&method, "/v1/responses");
         system.is_system_request = true;
         assert_eq!(request_config(true, 1_000, system), None);
@@ -860,6 +946,28 @@ mod tests {
         assert!(snapshot.provider_attribution_overflowed);
         assert_eq!(snapshot.attempts, "150");
         assert_eq!(snapshot.usage.unknown_attempts, "150");
+    }
+
+    #[test]
+    fn starting_next_round_marks_orphaned_pending_usage_as_overflowed() {
+        let mut ledger = InfiniteRetryLedger::default();
+        ledger.start_round(false);
+        ledger.observe_attempt_usage(
+            AttemptKey::new(7, 1, 11),
+            Some(UsageSample {
+                input_tokens: Some(13),
+                total_tokens: Some(13),
+                ..UsageSample::default()
+            }),
+            Some(17),
+        );
+
+        ledger.start_round(false);
+
+        let snapshot = ledger.snapshot();
+        assert!(snapshot.overflowed);
+        assert_eq!(snapshot.usage.known_attempts, "0");
+        assert_eq!(snapshot.usage.cost_usd_femto, None);
     }
 
     #[test]

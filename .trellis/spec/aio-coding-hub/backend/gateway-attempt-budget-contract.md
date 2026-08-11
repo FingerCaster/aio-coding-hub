@@ -79,6 +79,13 @@ fn provider_max_attempts_for_request(
 - Grok and Codex Responses requests reserve the same single internal
   `previous_response_id` repair. A matching 400/404 removes the field and
   retries once; the repair cannot recurse or create a third request.
+- The repair matcher is field-anchored. For structured JSON, inspect only
+  `error.message`, `error.param`, and `error.code`: a message must contain both
+  the `previous_response_id` target and missing/invalid semantics, unless exact
+  `error.param == "previous_response_id"` supplies the target; a code must
+  contain both target and semantics itself. Never join generic codes, unrelated
+  fields, or request echoes into a match. A non-JSON plain-text fallback must
+  contain both target and missing/invalid semantics in the same body.
 - The configured attempt limit is a user-facing baseline. Request-scoped internal
   recovery may raise the effective budget only through the explicit formula
   above; no other subsystem may add implicit capacity.
@@ -94,6 +101,8 @@ fn provider_max_attempts_for_request(
 | OAuth and `previous_response_id` both applicable at configured limit 1 | Effective budget is 3 |
 | circuit threshold greater than configured attempts | Do not change this request's budget |
 | Codex model discovery | Exactly one attempt per provider |
+| Structured 400/404 mentions `previous_response_id` only outside the anchored error fields | Do not repair or remove the field |
+| Exact error parameter plus missing/invalid message, or self-contained error code | Consume the one reserved repair and remove the field |
 | circuit threshold outside `1..=50` | Reject independently of attempt-limit validation |
 
 ### 5. Good / Base / Bad Cases
@@ -132,6 +141,10 @@ fn provider_max_attempts_for_request(
   first continuation error, then success. Assert exactly two request bodies,
   removal on the second, final response id/usage, TTFB, and the existing 20 MiB
   non-SSE boundary.
+- Matcher-test anchored positive message/parameter/code and plain-text cases,
+  plus negative request echoes, unrelated invalid model fields, non-exact
+  parameters, generic `invalid_request_error`/`unknown` codes, and cross-field
+  target/semantic combinations.
 - Persistence and frontend cross-layer tests must keep the attempt range
   `1..=20`, circuit range `1..=50`, and total-attempt cap `100` aligned.
 - Run the full Rust suite after changing failover preparation. Focused budget

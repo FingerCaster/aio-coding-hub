@@ -129,10 +129,10 @@ class GitDataFixture {
                 (entry) => entry.path === RELEASE_CHANNEL_STATE
               );
               const currentState = JSON.parse(this.blobs.get(stateEntry.sha).toString("utf8"));
-              currentState.action = "promote";
               currentState.previous_ref_sha = this.refSha;
               currentState.previous_selected_tag = currentState.selected_tag;
-              currentState.withdrawn_tag = null;
+              currentState.withdrawn_tag =
+                currentState.action === "pause" ? currentState.selected_tag : null;
               currentState.updated_at = "2026-08-10T00:08:00.000Z";
               const stateBytes = Buffer.from(`${JSON.stringify(currentState, null, 2)}\n`);
               const stateSha = this.objectSha("blob", stateBytes);
@@ -285,6 +285,7 @@ assert.equal(first.previousRefSha, null);
 assert.equal(first.state.selected_channel, "beta");
 assert.equal(first.state.previous_ref_sha, null);
 assert.equal(first.state.withdrawn_tag, null);
+assert.equal(first.state.promotion_high_water_version, "0.60.41-beta.1");
 assert.equal(first.state.manifest_sha256, sha256(betaOne.manifestText));
 assert.equal(
   Object.hasOwn(first.state, "new_ref_sha"),
@@ -301,6 +302,29 @@ assert.ok(
 let snapshot = await readReleaseChannelSnapshot({ github: fixture.github, owner, repo });
 assert.equal(snapshot.refSha, first.newRefSha);
 assert.equal(snapshot.manifestText, betaOne.manifestText, "pointer must preserve Release bytes");
+const legacyState = JSON.parse(snapshot.stateText);
+legacyState.schema_version = 1;
+delete legacyState.promotion_high_water_version;
+assert.equal(
+  parseReleaseChannelState(`${JSON.stringify(legacyState)}\n`, {
+    owner,
+    repo,
+    manifestText: snapshot.manifestText,
+  }).promotion_high_water_version,
+  "0.60.41-beta.1",
+  "schema v1 state must derive a safe promotion high-water version"
+);
+const regressedHighWaterState = JSON.parse(snapshot.stateText);
+regressedHighWaterState.promotion_high_water_version = "0.60.40";
+assert.throws(
+  () =>
+    parseReleaseChannelState(`${JSON.stringify(regressedHighWaterState)}\n`, {
+      owner,
+      repo,
+      manifestText: snapshot.manifestText,
+    }),
+  /high-water version regressed/
+);
 assert.equal(
   Object.hasOwn(JSON.parse(snapshot.stateText), "new_ref_sha"),
   false,
@@ -392,6 +416,106 @@ const paused = await publishReleaseChannel({
 assert.equal(paused.state.action, "pause");
 assert.equal(paused.state.withdrawn_tag, "aio-coding-hub-v0.60.41-beta.2");
 assert.equal(paused.state.selected_channel, "stable");
+
+const withdrawalFixture = new GitDataFixture();
+for (const [tag, id, prerelease] of [
+  ["aio-coding-hub-v0.60.39", 109, false],
+  ["aio-coding-hub-v0.60.40", 110, false],
+  ["aio-coding-hub-v0.60.41-beta.1", 111, true],
+  ["aio-coding-hub-v0.60.41-beta.2", 112, true],
+  ["aio-coding-hub-v0.60.41-beta.3", 113, true],
+  ["aio-coding-hub-v0.60.42", 114, false],
+]) {
+  withdrawalFixture.addRelease({ tag, id, prerelease });
+}
+const publishWithdrawalTarget = ({
+  action = "promote",
+  tag,
+  expectedRefSha,
+  withdrawnTag,
+  updatedAt,
+}) =>
+  publishReleaseChannel({
+    github: withdrawalFixture.github,
+    fetchImpl: withdrawalFixture.fetch,
+    owner,
+    repo,
+    action,
+    tag,
+    sourceSha,
+    expectedRefSha,
+    withdrawnTag,
+    ...workflow,
+    updatedAt,
+  });
+const withdrawalBetaOne = await publishWithdrawalTarget({
+  tag: "aio-coding-hub-v0.60.41-beta.1",
+  expectedRefSha: null,
+  updatedAt: "2026-08-10T00:03:10.000Z",
+});
+const withdrawalBetaTwo = await publishWithdrawalTarget({
+  tag: "aio-coding-hub-v0.60.41-beta.2",
+  expectedRefSha: withdrawalBetaOne.newRefSha,
+  updatedAt: "2026-08-10T00:03:20.000Z",
+});
+const withdrawalPause = await publishWithdrawalTarget({
+  action: "pause",
+  tag: "aio-coding-hub-v0.60.40",
+  expectedRefSha: withdrawalBetaTwo.newRefSha,
+  withdrawnTag: "aio-coding-hub-v0.60.41-beta.2",
+  updatedAt: "2026-08-10T00:03:30.000Z",
+});
+assert.equal(withdrawalPause.state.promotion_high_water_version, "0.60.41-beta.2");
+for (const [tag, updatedAt] of [
+  ["aio-coding-hub-v0.60.41-beta.2", "2026-08-10T00:03:40.000Z"],
+  ["aio-coding-hub-v0.60.41-beta.1", "2026-08-10T00:03:50.000Z"],
+]) {
+  await assert.rejects(
+    () =>
+      publishWithdrawalTarget({
+        tag,
+        expectedRefSha: withdrawalPause.newRefSha,
+        updatedAt,
+      }),
+    /strictly higher version/
+  );
+}
+const withdrawalPauseAgain = await publishWithdrawalTarget({
+  action: "pause",
+  tag: "aio-coding-hub-v0.60.39",
+  expectedRefSha: withdrawalPause.newRefSha,
+  withdrawnTag: "aio-coding-hub-v0.60.40",
+  updatedAt: "2026-08-10T00:03:55.000Z",
+});
+assert.equal(withdrawalPauseAgain.state.promotion_high_water_version, "0.60.41-beta.2");
+for (const [tag, updatedAt] of [
+  ["aio-coding-hub-v0.60.41-beta.2", "2026-08-10T00:03:56.000Z"],
+  ["aio-coding-hub-v0.60.41-beta.1", "2026-08-10T00:03:57.000Z"],
+]) {
+  await assert.rejects(
+    () =>
+      publishWithdrawalTarget({
+        tag,
+        expectedRefSha: withdrawalPauseAgain.newRefSha,
+        updatedAt,
+      }),
+    /strictly higher version/
+  );
+}
+const withdrawalBetaThree = await publishWithdrawalTarget({
+  tag: "aio-coding-hub-v0.60.41-beta.3",
+  expectedRefSha: withdrawalPauseAgain.newRefSha,
+  updatedAt: "2026-08-10T00:04:00.000Z",
+});
+assert.equal(withdrawalBetaThree.state.selected_tag, "aio-coding-hub-v0.60.41-beta.3");
+assert.equal(withdrawalBetaThree.state.previous_ref_sha, withdrawalPauseAgain.newRefSha);
+const withdrawalStable = await publishWithdrawalTarget({
+  tag: "aio-coding-hub-v0.60.42",
+  expectedRefSha: withdrawalBetaThree.newRefSha,
+  updatedAt: "2026-08-10T00:04:05.000Z",
+});
+assert.equal(withdrawalStable.state.selected_channel, "stable");
+assert.equal(withdrawalStable.state.promotion_high_water_version, "0.60.42");
 
 await assert.rejects(
   () =>

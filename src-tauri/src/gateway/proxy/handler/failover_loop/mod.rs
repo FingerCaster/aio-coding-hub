@@ -678,7 +678,7 @@ fn record_infinite_round_attempts(
                 )
             },
         ) else {
-            ledger.record_attempt(
+            ledger.record_keyless_attempt(
                 attempt.provider_id,
                 attempt.provider_name.as_str(),
                 attempt.status,
@@ -688,8 +688,6 @@ fn record_infinite_round_attempts(
                     .attempt_duration_ms
                     .unwrap_or_default()
                     .min(u128::from(u64::MAX)) as u64,
-                None,
-                None,
             );
             continue;
         };
@@ -881,3 +879,127 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod infinite_retry_usage_tests {
+    use super::*;
+    use crate::gateway::infinite_retry::{
+        AttemptKey, InfiniteRetryLedger, SharedInfiniteRetryLedger, UsageSample,
+    };
+
+    fn attempt(
+        provider_id: i64,
+        retry_index: Option<u32>,
+        attempt_started_ms: Option<u128>,
+    ) -> FailoverAttempt {
+        FailoverAttempt {
+            provider_id,
+            provider_name: format!("provider-{provider_id}"),
+            base_url: "https://example.com".to_string(),
+            outcome: "upstream_failure".to_string(),
+            status: Some(StatusCode::BAD_GATEWAY.as_u16()),
+            provider_index: Some(1),
+            retry_index,
+            session_reuse: None,
+            error_category: Some(ErrorCategory::ProviderError.as_str()),
+            error_code: Some(GatewayErrorCode::Upstream5xx.as_str()),
+            decision: Some(FailoverDecision::SwitchProvider.as_str()),
+            reason: Some("test failure".to_string()),
+            selection_method: None,
+            reason_code: None,
+            attempt_started_ms,
+            attempt_duration_ms: Some(1),
+            circuit_state_before: None,
+            circuit_state_after: None,
+            circuit_failure_count: None,
+            circuit_failure_threshold: None,
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            provider_bridged: Some(false),
+            timeout_secs: None,
+            stream_internal_error: None,
+            requested_upstream_model: None,
+        }
+    }
+
+    fn ledger_with_pending(pending: &[(AttemptKey, u64, u128)]) -> SharedInfiniteRetryLedger {
+        let ledger = Arc::new(Mutex::new(InfiniteRetryLedger::default()));
+        {
+            let mut ledger = ledger.lock().expect("ledger");
+            ledger.start_round(false);
+            for (key, input_tokens, cost_usd_femto) in pending {
+                ledger.observe_attempt_usage(
+                    *key,
+                    Some(UsageSample {
+                        input_tokens: Some(*input_tokens),
+                        total_tokens: Some(*input_tokens),
+                        ..UsageSample::default()
+                    }),
+                    Some(*cost_usd_femto),
+                );
+            }
+        }
+        ledger
+    }
+
+    #[test]
+    fn keyless_attempt_preserves_unique_pending_usage_for_provider() {
+        let key = AttemptKey::new(7, 1, 11);
+        let ledger = ledger_with_pending(&[(key, 13, 17)]);
+        let mut attempts = vec![attempt(7, None, Some(11))];
+
+        record_infinite_round_attempts(&ledger, &mut attempts);
+
+        let snapshot = ledger.lock().expect("ledger").snapshot();
+        assert_eq!(snapshot.attempts, "1");
+        assert_eq!(snapshot.usage.known_attempts, "1");
+        assert_eq!(snapshot.usage.unknown_attempts, "0");
+        assert_eq!(snapshot.usage.input_tokens.as_deref(), Some("13"));
+        assert_eq!(snapshot.usage.cost_usd_femto.as_deref(), Some("17"));
+        let provider = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.provider_id == Some(7))
+            .expect("provider bucket");
+        assert_eq!(provider.usage.input_tokens.as_deref(), Some("13"));
+        assert_eq!(provider.usage.cost_usd_femto.as_deref(), Some("17"));
+        assert!(!snapshot.overflowed);
+    }
+
+    #[test]
+    fn ambiguous_keyless_provider_usage_is_not_guessed_and_is_diagnostic() {
+        let first = AttemptKey::new(7, 1, 11);
+        let second = AttemptKey::new(7, 2, 22);
+        let ledger = ledger_with_pending(&[(first, 13, 17), (second, 19, 23)]);
+        let mut attempts = vec![attempt(7, None, Some(33))];
+
+        record_infinite_round_attempts(&ledger, &mut attempts);
+
+        let snapshot = ledger.lock().expect("ledger").snapshot();
+        assert_eq!(snapshot.attempts, "1");
+        assert_eq!(snapshot.usage.known_attempts, "0");
+        assert_eq!(snapshot.usage.unknown_attempts, "1");
+        assert_eq!(snapshot.usage.cost_usd_femto, None);
+        assert!(snapshot.overflowed);
+    }
+
+    #[test]
+    fn unique_keyless_repair_marks_exact_key_recorded_without_double_counting() {
+        let key = AttemptKey::new(7, 1, 11);
+        let ledger = ledger_with_pending(&[(key, 13, 17)]);
+        let mut attempts = vec![attempt(7, None, Some(11)), attempt(7, Some(1), Some(11))];
+
+        record_infinite_round_attempts(&ledger, &mut attempts);
+
+        let snapshot = ledger.lock().expect("ledger").snapshot();
+        assert_eq!(snapshot.attempts, "1");
+        assert_eq!(snapshot.usage.known_attempts, "1");
+        assert_eq!(snapshot.usage.unknown_attempts, "0");
+        assert_eq!(snapshot.usage.input_tokens.as_deref(), Some("13"));
+        assert_eq!(snapshot.usage.cost_usd_femto.as_deref(), Some("17"));
+    }
+}

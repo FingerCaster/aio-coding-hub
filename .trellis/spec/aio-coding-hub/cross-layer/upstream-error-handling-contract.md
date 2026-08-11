@@ -94,11 +94,36 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   forwards that complete terminal frame unchanged, then ends. Malformed JSON,
   invalid UTF-8, partial EOF tails, and oversized frames fail closed. Forward
   `response.completed` at most once and preserve its order with `[DONE]`.
+- Live and strict final-wire validation share canonical response-ID continuity.
+  Once an upstream frame exposes an ID, later identified frames must match it,
+  and `response.completed` must carry that ID. Completion-only transcripts may
+  omit an ID only when no earlier frame exposed one. Duplicate completion fails
+  closed; completion state remains monotonic across keepalive, EOF, and relay
+  errors. Strict buffered validation rejects semantic frames after completion,
+  unknown or unparseable semantic frames before completion, and `[DONE]` unless
+  exactly one valid completion preceded it.
 - Guard expiry and prefix-cap release commit one attempt only; the post-commit
   firewall still protects subsequent terminal frames. Never splice output from
   another Provider after commit. Preserve the existing 20 MiB aggregate guard,
   TTFB accounting, response ID, usage, completion, continuation repair, and
   downstream-abort behavior.
+- The explicit infinite-retry test mode is the only path that buffers the
+  complete transformed final wire before commit. That collector has a 500 ms
+  total wall-clock deadline around the whole collection, independent of the
+  per-read idle timeout. Its supported Codex Responses paths and each path's
+  minimum enabled TTFB are one shared contract consumed by both eligibility and
+  the compile-time deadline assertion; the wall-clock cap must remain strictly
+  below every listed TTFB floor. Ordinary streaming and non-test behavior do not
+  enter this collector.
+- Infinite-retry usage accounting keeps client-visible usage on the single
+  replayed success while retaining every observed attempt for internal totals,
+  Provider quota/cost attribution, and logs. A route attempt without its exact
+  attempt key may consume pending usage only when exactly one pending key exists
+  for that Provider; it must mark that exact key recorded so a later keyed view
+  cannot double count it. Multiple candidates are never guessed: record unknown
+  usage, mark attribution overflow/incomplete, and mark any usage still orphaned
+  at the next round boundary incomplete before clearing it. Ordinary requests
+  retain their existing usage projection.
 - If all Providers fail on retryable pre-commit stream errors, return the
   existing standard HTTP 502 / `GW_FAKE_200` terminal envelope instead of the
   original HTTP 200 stream. Client-facing top-level messages, attempt reasons,
@@ -162,6 +187,9 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 | Terminal error after commit | Drop the complete terminal frame and end; retain raw evidence internally |
 | Valid post-commit passthrough exception | Forward the complete original terminal frame once, then end |
 | Partial, malformed, invalid UTF-8, or >1 MiB frame | Fail closed without forwarding unclassified tail bytes |
+| Response ID changes, completion loses a known ID, or completion repeats | Fail closed without forwarding the invalid terminal frame |
+| Infinite-retry attempt lacks an exact key and one Provider usage sample is pending | Consume that exact sample once; never duplicate it in a later keyed projection |
+| Infinite-retry keyless attempt has multiple pending samples for one Provider | Do not guess; record unknown usage and mark attribution incomplete |
 | Normalized bridge emits Codex terminal frame | Apply the same classifier/firewall as native final wire |
 | Non-Codex or unnormalized bridge stream | Preserve existing protocol behavior |
 | All Providers end in retryable capacity streams | Return standard 502 / fake-200 envelope; keep evidence internal and remove every capacity text/code signal from client diagnostics |
@@ -200,7 +228,15 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 - Relay tests assert raw-tracker-before-filter ordering, exact split/multi-frame
   and LF/CRLF bytes, complete-frame passthrough, default drop, malformed/
   oversized/partial fail-closed behavior, downstream abort, one completed frame,
-  `[DONE]` order, usage, response ID, 20 MiB limit, and no content duplication.
+  `[DONE]` order, canonical response-ID continuity, duplicate-completion failure,
+  monotonic completion state, usage, 20 MiB limit, and no content duplication.
+- Infinite final-wire tests use paused time to prove continuous chunks cannot
+  reset the 500 ms wall-clock deadline, a shorter idle timeout remains
+  distinguishable, and every eligibility-supported path participates in the
+  minimum-enabled-TTFB assertion from the shared path contract.
+- Infinite usage-ledger tests cover one unique keyless sample, ambiguous samples,
+  later keyed projection without double counting, orphaned pending usage at a
+  round boundary, final client usage isolation, and unchanged non-test behavior.
 - Default-policy tests keep Rust and TypeScript aligned: only the HTTP 400
   capacity content rule is prefilled, passthrough and hidden legacy lists are
   empty, the stream master switch is enabled, and the three transport retry

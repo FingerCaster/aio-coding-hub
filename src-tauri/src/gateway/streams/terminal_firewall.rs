@@ -7,9 +7,10 @@ pub(super) const MAX_TERMINAL_FIREWALL_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Validates a fully buffered final-wire Codex Responses SSE payload.
 ///
-/// This deliberately reuses the live firewall state machine. Exact-byte
-/// equality additionally rejects duplicate terminals and any bytes after
-/// `[DONE]`, both of which the live relay safely suppresses after commit.
+/// This deliberately reuses the live firewall state machine, so duplicate
+/// completions and response-id drift fail closed in both paths. Exact-byte
+/// equality additionally rejects any bytes after `[DONE]`, which the live
+/// relay safely suppresses after commit.
 /// Responses SSE may end at a complete frame without a `[DONE]` sentinel;
 /// when present, `[DONE]` must still follow the one valid completion.
 pub(crate) fn validate_complete_codex_sse(
@@ -87,9 +88,9 @@ pub(super) struct CodexTerminalFirewall {
     passthrough_keywords: Vec<String>,
     pending: Vec<u8>,
     stopped: bool,
-    completion_forwarded: bool,
+    completion_seen: bool,
     strict_complete: bool,
-    strict_response_id: Option<String>,
+    response_id: Option<String>,
 }
 
 impl CodexTerminalFirewall {
@@ -98,9 +99,9 @@ impl CodexTerminalFirewall {
             passthrough_keywords: passthrough_keywords.to_vec(),
             pending: Vec::new(),
             stopped: false,
-            completion_forwarded: false,
+            completion_seen: false,
             strict_complete: false,
-            strict_response_id: None,
+            response_id: None,
         }
     }
 
@@ -113,11 +114,16 @@ impl CodexTerminalFirewall {
 
     pub(super) fn ingest(&mut self, mut input: &[u8]) -> TerminalFirewallOutput {
         if self.stopped {
-            return TerminalFirewallOutput::stopped(Vec::new(), false, false, None, None);
+            return TerminalFirewallOutput::stopped(
+                Vec::new(),
+                false,
+                self.completion_seen,
+                None,
+                None,
+            );
         }
 
         let mut forwarded = Vec::with_capacity(input.len().min(64 * 1024));
-        let mut completion_seen = false;
 
         while !input.is_empty() {
             let room = MAX_TERMINAL_FIREWALL_FRAME_BYTES.saturating_sub(self.pending.len());
@@ -127,7 +133,7 @@ impl CodexTerminalFirewall {
                 return TerminalFirewallOutput::stopped(
                     forwarded,
                     true,
-                    completion_seen,
+                    self.completion_seen,
                     None,
                     Some("frame_too_large"),
                 );
@@ -144,12 +150,9 @@ impl CodexTerminalFirewall {
                 self.pending.drain(..frame_end);
                 match self.inspect_frame(frame.as_slice()) {
                     FrameDecision::Forward { completion } => {
-                        if !completion || !self.completion_forwarded {
-                            forwarded.extend_from_slice(frame.as_slice());
-                        }
+                        forwarded.extend_from_slice(frame.as_slice());
                         if completion {
-                            self.completion_forwarded = true;
-                            completion_seen = true;
+                            self.completion_seen = true;
                         }
                     }
                     FrameDecision::Done => {
@@ -159,7 +162,7 @@ impl CodexTerminalFirewall {
                         return TerminalFirewallOutput::stopped(
                             forwarded,
                             false,
-                            completion_seen,
+                            self.completion_seen,
                             None,
                             None,
                         );
@@ -170,7 +173,7 @@ impl CodexTerminalFirewall {
                         return TerminalFirewallOutput::stopped(
                             forwarded,
                             true,
-                            completion_seen,
+                            self.completion_seen,
                             Some(evidence),
                             None,
                         );
@@ -182,7 +185,7 @@ impl CodexTerminalFirewall {
                         return TerminalFirewallOutput::stopped(
                             forwarded,
                             true,
-                            completion_seen,
+                            self.completion_seen,
                             Some(evidence),
                             None,
                         );
@@ -193,7 +196,7 @@ impl CodexTerminalFirewall {
                         return TerminalFirewallOutput::stopped(
                             forwarded,
                             true,
-                            completion_seen,
+                            self.completion_seen,
                             None,
                             Some(reason),
                         );
@@ -207,23 +210,29 @@ impl CodexTerminalFirewall {
                 return TerminalFirewallOutput::stopped(
                     forwarded,
                     true,
-                    completion_seen,
+                    self.completion_seen,
                     None,
                     Some("frame_too_large"),
                 );
             }
         }
 
-        TerminalFirewallOutput::open(forwarded, completion_seen)
+        TerminalFirewallOutput::open(forwarded, self.completion_seen)
     }
 
     pub(super) fn finish(&mut self) -> TerminalFirewallOutput {
         if self.stopped || self.pending.is_empty() {
-            return TerminalFirewallOutput::open(Vec::new(), false);
+            return TerminalFirewallOutput::open(Vec::new(), self.completion_seen);
         }
         self.stopped = true;
         self.pending.clear();
-        TerminalFirewallOutput::stopped(Vec::new(), true, false, None, Some("partial_frame_at_eof"))
+        TerminalFirewallOutput::stopped(
+            Vec::new(),
+            true,
+            self.completion_seen,
+            None,
+            Some("partial_frame_at_eof"),
+        )
     }
 
     fn inspect_frame(&mut self, frame: &[u8]) -> FrameDecision {
@@ -233,26 +242,30 @@ impl CodexTerminalFirewall {
 
         if let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(text) {
             let completion = is_completion_frame(&event_name, &data);
+            if completion && self.completion_seen {
+                return FrameDecision::FailClosed("duplicate_completed");
+            }
             if self.strict_complete {
                 if completion && !is_valid_completion_frame(&data) {
                     return FrameDecision::FailClosed("invalid_completed");
                 }
-                if self.completion_forwarded {
+                if self.completion_seen {
                     return FrameDecision::FailClosed("semantic_frame_after_completed");
                 }
-                let response_id = canonical_response_id(&event_name, &data).map(str::to_owned);
-                match (self.strict_response_id.as_deref(), response_id.as_deref()) {
-                    (Some(expected), Some(actual)) if expected != actual => {
-                        return FrameDecision::FailClosed("response_id_mismatch");
-                    }
-                    (Some(_), None) if completion => {
-                        return FrameDecision::FailClosed("response_id_mismatch");
-                    }
-                    (None, Some(response_id)) => {
-                        self.strict_response_id = Some(response_id.to_string());
-                    }
-                    _ => {}
+            }
+
+            let response_id = canonical_response_id(&event_name, &data).map(str::to_owned);
+            match (self.response_id.as_deref(), response_id.as_deref()) {
+                (Some(expected), Some(actual)) if expected != actual => {
+                    return FrameDecision::FailClosed("response_id_mismatch");
                 }
+                (Some(_), None) if completion => {
+                    return FrameDecision::FailClosed("response_id_mismatch");
+                }
+                (None, Some(response_id)) => {
+                    self.response_id = Some(response_id.to_string());
+                }
+                _ => {}
             }
 
             if let Some(evidence) = usage::classify_codex_stream_internal_error(
@@ -390,6 +403,19 @@ mod tests {
             validate_complete_codex_sse(valid_with_done.as_bytes(), &[]),
             Ok(())
         );
+        let completed_without_id = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(completed_without_id.as_bytes(), &[]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_complete_codex_sse(format!("{completed}{completed}").as_bytes(), &[]),
+            Err("duplicate_completed")
+        );
         assert_eq!(
             validate_complete_codex_sse(format!("{valid_with_done}: trailing\n\n").as_bytes(), &[],),
             Err("trailing_or_duplicate_terminal")
@@ -481,6 +507,44 @@ mod tests {
             validate_complete_codex_sse(data_type_only.as_bytes(), &[]),
             Ok(())
         );
+    }
+
+    #[test]
+    fn live_firewall_rejects_mismatched_or_missing_completion_response_id() {
+        let created = frame(
+            "response.created",
+            r#"{"type":"response.created","response":{"id":"resp-a","status":"in_progress"}}"#,
+            "\n",
+        );
+        let mismatched = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"id":"resp-b","status":"completed"}}"#,
+            "\n",
+        );
+        let mut firewall = CodexTerminalFirewall::new(&[]);
+        assert_eq!(
+            firewall.ingest(created.as_bytes()).bytes.as_ref(),
+            created.as_bytes()
+        );
+
+        let output = firewall.ingest(mismatched.as_bytes());
+        assert!(output.bytes.is_empty());
+        assert!(output.stop);
+        assert!(output.terminal_error);
+        assert_eq!(output.fail_closed_reason, Some("response_id_mismatch"));
+
+        let missing_id = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            "\n",
+        );
+        let mut firewall = CodexTerminalFirewall::new(&[]);
+        let _ = firewall.ingest(created.as_bytes());
+        let output = firewall.ingest(missing_id.as_bytes());
+        assert!(output.bytes.is_empty());
+        assert!(output.stop);
+        assert!(output.terminal_error);
+        assert_eq!(output.fail_closed_reason, Some("response_id_mismatch"));
     }
 
     #[test]
@@ -679,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_completion_is_forwarded_once_before_done() {
+    fn duplicate_completion_fails_closed_before_duplicate_or_done() {
         let completed = frame(
             "response.completed",
             r#"{"type":"response.completed","response":{"status":"completed"}}"#,
@@ -689,11 +753,36 @@ mod tests {
         let mut firewall = CodexTerminalFirewall::new(&[]);
         let output = firewall.ingest(format!("{completed}{completed}{done}").as_bytes());
 
-        assert_eq!(
-            output.bytes.as_ref(),
-            format!("{completed}{done}").as_bytes()
-        );
+        assert_eq!(output.bytes.as_ref(), completed.as_bytes());
         assert!(output.completion_seen);
         assert!(output.stop);
+        assert!(output.terminal_error);
+        assert_eq!(output.fail_closed_reason, Some("duplicate_completed"));
+    }
+
+    #[test]
+    fn completion_seen_stays_monotonic_across_keepalive_and_finish() {
+        let completed = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            "\n",
+        );
+        let keepalive = ": keepalive\n\n";
+        let mut firewall = CodexTerminalFirewall::new(&[]);
+
+        let completion = firewall.ingest(completed.as_bytes());
+        assert!(completion.completion_seen);
+        assert!(!completion.stop);
+
+        let heartbeat = firewall.ingest(keepalive.as_bytes());
+        assert_eq!(heartbeat.bytes.as_ref(), keepalive.as_bytes());
+        assert!(heartbeat.completion_seen);
+        assert!(!heartbeat.stop);
+
+        let eof = firewall.finish();
+        assert!(eof.bytes.is_empty());
+        assert!(eof.completion_seen);
+        assert!(!eof.stop);
+        assert!(!eof.terminal_error);
     }
 }

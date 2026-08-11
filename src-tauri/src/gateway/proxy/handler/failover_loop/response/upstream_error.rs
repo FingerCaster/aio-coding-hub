@@ -283,6 +283,36 @@ fn should_scan_codex_previous_response_id_error(
         && codex_request_has_previous_response_id(upstream_body)
 }
 
+fn mentions_previous_response_id_target(value: &str) -> bool {
+    value.contains("previous_response_id") || value.contains("previous response id")
+}
+
+fn has_missing_or_invalid_semantics(value: &str) -> bool {
+    value.contains("not found")
+        || value.contains("no response")
+        || value.contains("could not find")
+        || value.contains("does not exist")
+        || value.contains("missing")
+        || value.contains("unknown")
+        || value.contains("invalid")
+}
+
+fn matches_previous_response_id_message(message: &str, param_targets_previous_id: bool) -> bool {
+    let message = message.to_ascii_lowercase();
+    has_missing_or_invalid_semantics(&message)
+        && (param_targets_previous_id || mentions_previous_response_id_target(&message))
+}
+
+fn matches_previous_response_id_code(code: &str) -> bool {
+    let code = code.trim().to_ascii_lowercase();
+    if !code.contains("previous_response_id") {
+        return false;
+    }
+
+    let semantic_code = code.replace(['_', '-', '.'], " ");
+    has_missing_or_invalid_semantics(&semantic_code)
+}
+
 fn matches_codex_previous_response_id_error(status: reqwest::StatusCode, body: &[u8]) -> bool {
     if !matches!(
         status,
@@ -294,18 +324,30 @@ fn matches_codex_previous_response_id_error(status: reqwest::StatusCode, body: &
         return false;
     }
 
-    let haystack = String::from_utf8_lossy(body).to_ascii_lowercase();
-    let mentions_previous_response = haystack.contains("previous_response_id")
-        || haystack.contains("previous response")
-        || haystack.contains("previous response id");
-    let says_missing = haystack.contains("not found")
-        || haystack.contains("no response")
-        || haystack.contains("could not find")
-        || haystack.contains("does not exist")
-        || haystack.contains("unknown")
-        || haystack.contains("invalid");
+    if let Ok(root) = serde_json::from_slice::<serde_json::Value>(body) {
+        let Some(error) = root.get("error").and_then(serde_json::Value::as_object) else {
+            return false;
+        };
+        let param_targets_previous_id = error
+            .get("param")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|param| param == "previous_response_id");
+        let message_matches = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|message| {
+                matches_previous_response_id_message(message, param_targets_previous_id)
+            });
+        let code_matches = error
+            .get("code")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(matches_previous_response_id_code);
+        return message_matches || code_matches;
+    }
 
-    mentions_previous_response && says_missing
+    let plain_text = String::from_utf8_lossy(body).to_ascii_lowercase();
+    mentions_previous_response_id_target(&plain_text)
+        && has_missing_or_invalid_semantics(&plain_text)
 }
 
 fn remove_codex_previous_response_id(body: &mut Bytes) -> bool {
@@ -1541,10 +1583,55 @@ mod tests {
             reqwest::StatusCode::NOT_FOUND,
             br#"Previous response id does not exist"#,
         ));
+        assert!(matches_codex_previous_response_id_error(
+            reqwest::StatusCode::NOT_FOUND,
+            br#"{"error":{"code":"previous_response_id_not_found"}}"#,
+        ));
         assert!(!matches_codex_previous_response_id_error(
             reqwest::StatusCode::BAD_REQUEST,
             br#"{"error":{"message":"model is required"}}"#,
         ));
+    }
+
+    #[test]
+    fn codex_previous_response_id_error_does_not_join_unrelated_structured_fields() {
+        let unrelated_errors: &[(&str, &[u8])] = &[
+            (
+                "non-exact parameter anchor",
+                br#"{"error":{"message":"No response found with id 'resp_old'","param":"request.previous_response_id"}}"#,
+            ),
+            (
+                "generic invalid request code",
+                br#"{"error":{"message":"request rejected for previous_response_id","code":"invalid_request_error"}}"#,
+            ),
+            (
+                "generic unknown code",
+                br#"{"error":{"message":"request rejected for previous_response_id","code":"unknown"}}"#,
+            ),
+            (
+                "unrelated invalid message with bare target code",
+                br#"{"error":{"message":"model is invalid","code":"previous_response_id"}}"#,
+            ),
+            (
+                "invalid request type",
+                br#"{"error":{"type":"invalid_request_error","message":"model is required"},"previous_response_id":"resp_old"}"#,
+            ),
+            (
+                "invalid model",
+                br#"{"error":{"message":"model is invalid","param":"model"},"request":{"previous_response_id":"resp_old"}}"#,
+            ),
+            (
+                "unknown model",
+                br#"{"error":{"message":"unknown model","code":"model_not_found"},"request":{"previous_response_id":"resp_old"}}"#,
+            ),
+        ];
+
+        for (case, body) in unrelated_errors {
+            assert!(
+                !matches_codex_previous_response_id_error(reqwest::StatusCode::BAD_REQUEST, body,),
+                "{case} must not clear previous_response_id",
+            );
+        }
     }
 
     #[test]
