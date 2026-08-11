@@ -88,6 +88,7 @@ function assertImmediateFetchHeadPeel(jobName) {
 
 assertImmediateFetchHeadPeel("promote-release");
 assertImmediateFetchHeadPeel("publish");
+assertImmediateFetchHeadPeel("repair-beta-release-channel");
 assertImmediateFetchHeadPeel("publish-release-channel");
 
 const releaseChannelJob = workflowJobBlock("publish-release-channel");

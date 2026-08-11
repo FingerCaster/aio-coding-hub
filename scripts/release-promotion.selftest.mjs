@@ -632,8 +632,24 @@ requireWorkflowText(
   "stable release-please PR phase"
 );
 requireWorkflowText(
-  "if: ${{ steps.manual_release.outputs.release_created == 'true' || steps.release.outputs.release_created == 'true' }}",
+  "if: ${{ inputs.repair_beta_pointer == true || steps.manual_release.outputs.release_created == 'true' || steps.release.outputs.release_created == 'true' }}",
   "release-please second-stage immutable source resolution"
+);
+requireWorkflowText(
+  "repair_beta_pointer:",
+  "Beta pointer recovery must be an explicit workflow input"
+);
+requireWorkflowText(
+  "repair-beta-release-channel:",
+  "Beta pointer recovery must have a dedicated pointer-only job"
+);
+requireWorkflowText(
+  "Verify public Beta and repair release channel pointer with CAS",
+  "pointer-only recovery must verify the public Release before CAS"
+);
+requireWorkflowText(
+  "inputs.repair_beta_pointer == true &&",
+  "pointer-only recovery must be explicitly gated"
 );
 requireWorkflowText(
   'if [[ "$channel" == "beta" ]]; then prerelease=true; fi',
@@ -761,6 +777,23 @@ requireWorkflowText(
 requireWorkflowText(
   "if (confirmed?.refSha !== result.newRefSha)",
   "release channel post-CAS ref confirmation"
+);
+const repairJobStart = releaseWorkflow.indexOf("  repair-beta-release-channel:");
+const repairJobEnd = releaseWorkflow.indexOf("\n  publish-release-channel:", repairJobStart);
+assert.ok(
+  repairJobStart !== -1 && repairJobEnd > repairJobStart,
+  "pointer recovery job block is bounded"
+);
+const repairJob = releaseWorkflow.slice(repairJobStart, repairJobEnd);
+assert.doesNotMatch(
+  repairJob,
+  /softprops\/action-gh-release|Upload verified candidate assets|Build signed Tauri candidate/,
+  "pointer-only recovery must not build or mutate Release assets"
+);
+assert.match(
+  repairJob,
+  /publishReleaseChannel\([\s\S]*?expectedRefSha: snapshot\?\.refSha \?\? null/,
+  "pointer-only recovery must use the same CAS publisher"
 );
 requireWorkflowText(
   "needs.release-please.outputs.release_channel == 'stable'",
