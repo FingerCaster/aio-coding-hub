@@ -81,11 +81,15 @@ fn provider_max_attempts_for_request(
   retries once; the repair cannot recurse or create a third request.
 - The repair matcher is field-anchored. For structured JSON, inspect only
   `error.message`, `error.param`, and `error.code`: a message must contain both
-  the `previous_response_id` target and missing/invalid semantics, unless exact
-  `error.param == "previous_response_id"` supplies the target; a code must
-  contain both target and semantics itself. Never join generic codes, unrelated
-  fields, or request echoes into a match. A non-JSON plain-text fallback must
-  contain both target and missing/invalid semantics in the same body.
+  the `previous_response_id` target and response-ID lookup semantics in one
+  bounded local segment. Exact `error.param == "previous_response_id"` may
+  identify the target only when the message independently describes a missing,
+  unknown, not-found, nonexistent, or invalid response ID in that same local
+  segment; it cannot turn `response format is invalid` or `missing required
+  field: input` into a match. A code must contain both target and semantics
+  itself. Never join generic codes, unrelated fields, distant HTML/line
+  segments, or request echoes into a match. A non-JSON plain-text fallback must
+  satisfy the same bounded local-segment rule.
 - The configured attempt limit is a user-facing baseline. Request-scoped internal
   recovery may raise the effective budget only through the explicit formula
   above; no other subsystem may add implicit capacity.
@@ -102,7 +106,9 @@ fn provider_max_attempts_for_request(
 | circuit threshold greater than configured attempts | Do not change this request's budget |
 | Codex model discovery | Exactly one attempt per provider |
 | Structured 400/404 mentions `previous_response_id` only outside the anchored error fields | Do not repair or remove the field |
-| Exact error parameter plus missing/invalid message, or self-contained error code | Consume the one reserved repair and remove the field |
+| Exact error parameter plus a locally response-ID-specific missing/invalid message, or self-contained error code | Consume the one reserved repair and remove the field |
+| Exact error parameter plus an unrelated response-format/input-field error | Do not repair or remove the field |
+| Plain text has target and semantics only in distant HTML/line segments | Do not repair or remove the field |
 | circuit threshold outside `1..=50` | Reject independently of attempt-limit validation |
 
 ### 5. Good / Base / Bad Cases
@@ -143,8 +149,9 @@ fn provider_max_attempts_for_request(
   non-SSE boundary.
 - Matcher-test anchored positive message/parameter/code and plain-text cases,
   plus negative request echoes, unrelated invalid model fields, non-exact
-  parameters, generic `invalid_request_error`/`unknown` codes, and cross-field
-  target/semantic combinations.
+  parameters, generic `invalid_request_error`/`unknown` codes, cross-field
+  target/semantic combinations, exact-param `response format is invalid`, and
+  distant HTML/line target/semantic combinations.
 - Persistence and frontend cross-layer tests must keep the attempt range
   `1..=20`, circuit range `1..=50`, and total-attempt cap `100` aligned.
 - Run the full Rust suite after changing failover preparation. Focused budget
@@ -171,3 +178,19 @@ let max_attempts = configured_max_attempts.max(1 + required_internal_retries);
 
 Keep circuit accounting in the provider router and let failures accumulate
 across requests.
+
+#### Wrong
+
+```rust
+exact_param && message.contains("response") && message.contains("invalid")
+```
+
+This accepts unrelated protocol or input-format failures.
+
+#### Correct
+
+```rust
+exact_param && has_locally_anchored_previous_response_id_semantics(message)
+```
+
+The message still has to describe the response-ID lookup failure locally.

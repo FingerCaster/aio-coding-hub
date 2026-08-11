@@ -283,24 +283,61 @@ fn should_scan_codex_previous_response_id_error(
         && codex_request_has_previous_response_id(upstream_body)
 }
 
-fn mentions_previous_response_id_target(value: &str) -> bool {
-    value.contains("previous_response_id") || value.contains("previous response id")
+const PREVIOUS_RESPONSE_ERROR_SEMANTICS: [&str; 7] = [
+    "not found",
+    "no response",
+    "could not find",
+    "does not exist",
+    "missing",
+    "unknown",
+    "invalid",
+];
+const PARAM_TARGETED_RESPONSE_ID_ANCHORS: [&str; 5] = [
+    "response id",
+    "response with id",
+    "response for id",
+    "response found with id",
+    "response found for id",
+];
+const MAX_PREVIOUS_RESPONSE_ERROR_ANCHOR_DISTANCE: usize = 96;
+
+fn is_previous_response_error_boundary(ch: char) -> bool {
+    matches!(
+        ch,
+        '\n' | '\r' | '<' | '>' | '&' | '?' | '/' | '\\' | '=' | ';' | '.' | '!'
+    )
 }
 
-fn has_missing_or_invalid_semantics(value: &str) -> bool {
-    value.contains("not found")
-        || value.contains("no response")
-        || value.contains("could not find")
-        || value.contains("does not exist")
-        || value.contains("missing")
-        || value.contains("unknown")
-        || value.contains("invalid")
+fn has_locally_anchored_semantics(value: &str, anchors: &[&str], semantics: &[&str]) -> bool {
+    let value = value.to_ascii_lowercase();
+    value
+        .split(is_previous_response_error_boundary)
+        .any(|segment| {
+            anchors.iter().any(|anchor| {
+                segment.match_indices(anchor).any(|(anchor_offset, _)| {
+                    semantics.iter().any(|semantic| {
+                        segment.match_indices(semantic).any(|(semantic_offset, _)| {
+                            anchor_offset.abs_diff(semantic_offset)
+                                <= MAX_PREVIOUS_RESPONSE_ERROR_ANCHOR_DISTANCE
+                        })
+                    })
+                })
+            })
+        })
+}
+
+fn has_locally_anchored_error_semantics(value: &str, anchors: &[&str]) -> bool {
+    has_locally_anchored_semantics(value, anchors, &PREVIOUS_RESPONSE_ERROR_SEMANTICS)
 }
 
 fn matches_previous_response_id_message(message: &str, param_targets_previous_id: bool) -> bool {
-    let message = message.to_ascii_lowercase();
-    has_missing_or_invalid_semantics(&message)
-        && (param_targets_previous_id || mentions_previous_response_id_target(&message))
+    has_locally_anchored_error_semantics(message, &["previous_response_id", "previous response id"])
+        || (param_targets_previous_id
+            && has_locally_anchored_semantics(
+                message,
+                &PARAM_TARGETED_RESPONSE_ID_ANCHORS,
+                &PREVIOUS_RESPONSE_ERROR_SEMANTICS,
+            ))
 }
 
 fn matches_previous_response_id_code(code: &str) -> bool {
@@ -310,7 +347,7 @@ fn matches_previous_response_id_code(code: &str) -> bool {
     }
 
     let semantic_code = code.replace(['_', '-', '.'], " ");
-    has_missing_or_invalid_semantics(&semantic_code)
+    has_locally_anchored_error_semantics(&semantic_code, &["previous response id"])
 }
 
 fn matches_codex_previous_response_id_error(status: reqwest::StatusCode, body: &[u8]) -> bool {
@@ -345,9 +382,13 @@ fn matches_codex_previous_response_id_error(status: reqwest::StatusCode, body: &
         return message_matches || code_matches;
     }
 
-    let plain_text = String::from_utf8_lossy(body).to_ascii_lowercase();
-    mentions_previous_response_id_target(&plain_text)
-        && has_missing_or_invalid_semantics(&plain_text)
+    let plain_text = String::from_utf8_lossy(body);
+    matches_previous_response_id_message(plain_text.as_ref(), false)
+        || has_locally_anchored_semantics(
+            plain_text.as_ref(),
+            &PARAM_TARGETED_RESPONSE_ID_ANCHORS,
+            &PREVIOUS_RESPONSE_ERROR_SEMANTICS,
+        )
 }
 
 fn remove_codex_previous_response_id(body: &mut Bytes) -> bool {
@@ -1580,6 +1621,18 @@ mod tests {
             br#"{"error":{"message":"No response found with id 'resp_old'","param":"previous_response_id"}}"#,
         ));
         assert!(matches_codex_previous_response_id_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            br#"{"error":{"message":"Response id is invalid","param":"previous_response_id"}}"#,
+        ));
+        assert!(matches_codex_previous_response_id_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            br#"{"error":{"message":"Unknown response id","param":"previous_response_id"}}"#,
+        ));
+        assert!(matches_codex_previous_response_id_error(
+            reqwest::StatusCode::NOT_FOUND,
+            br#"No response found with id 'resp_old'"#,
+        ));
+        assert!(matches_codex_previous_response_id_error(
             reqwest::StatusCode::NOT_FOUND,
             br#"Previous response id does not exist"#,
         ));
@@ -1624,6 +1677,18 @@ mod tests {
                 "unknown model",
                 br#"{"error":{"message":"unknown model","code":"model_not_found"},"request":{"previous_response_id":"resp_old"}}"#,
             ),
+            (
+                "exact parameter with unrelated response format error",
+                br#"{"error":{"message":"response format is invalid","param":"previous_response_id"}}"#,
+            ),
+            (
+                "exact parameter with unrelated missing response field",
+                br#"{"error":{"message":"response field 'model' is missing","param":"previous_response_id"}}"#,
+            ),
+            (
+                "exact parameter with unrelated missing response schema",
+                br#"{"error":{"message":"response schema was not found","param":"previous_response_id"}}"#,
+            ),
         ];
 
         for (case, body) in unrelated_errors {
@@ -1632,6 +1697,40 @@ mod tests {
                 "{case} must not clear previous_response_id",
             );
         }
+    }
+
+    #[test]
+    fn codex_previous_response_id_error_rejects_distant_plain_text_echo() {
+        let body = br#"<!doctype html>
+<html>
+<head><title>404 Not Found</title></head>
+<body>
+<h1>Unknown route</h1>
+<p>The requested endpoint is not registered on this server.</p>
+<p>Request diagnostics follow after the generic route error.</p>
+<pre>query: model=gpt-5&amp;previous_response_id=resp_old</pre>
+</body>
+</html>"#;
+
+        assert!(!matches_codex_previous_response_id_error(
+            reqwest::StatusCode::NOT_FOUND,
+            body,
+        ));
+
+        let split_semantics = br#"<!doctype html>
+<html><body><p>Previous response id</p><p>does not exist</p></body></html>"#;
+        assert!(!matches_codex_previous_response_id_error(
+            reqwest::StatusCode::NOT_FOUND,
+            split_semantics,
+        ));
+    }
+
+    #[test]
+    fn codex_previous_response_id_error_rejects_unrelated_missing_field() {
+        assert!(!matches_codex_previous_response_id_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            br#"{"error":{"message":"missing required field: input","param":"previous_response_id"}}"#,
+        ));
     }
 
     #[test]

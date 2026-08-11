@@ -139,6 +139,11 @@ beta-channel.yml:
   `force=false`. `expected_ref_sha` is a compare-and-swap precondition. Pause
   selects a previously verified safe stable/Beta Release; it never moves a tag
   or mutates Release assets.
+- Stable release preflight compares the requested canonical version with the
+  normalized `snapshot.state.promotion_high_water_version`. It must never use
+  `selected_version` as the admission floor because pause may intentionally
+  select an older safe Release while the promotion high-water remains
+  monotonic.
 
 ## 4. Validation & Error Matrix
 
@@ -155,6 +160,7 @@ beta-channel.yml:
 | Late cleanup races with a newer channel transition | Re-read channel+epoch under the guard; preserve the newer valid resource |
 | Beta tag/source/asset/Release identity differs at any gate | Abort before publication or pointer update |
 | Pointer CAS loses or pause target is not verified/current | Fail closed; do not force-update the branch |
+| Stable release version is not above the normalized promotion high-water | Abort stable publication preflight, even when pause selected an older safe tag |
 
 Frontend code branches on typed error prefixes, never on prose after the
 prefix.
@@ -175,6 +181,9 @@ prefix.
   A newer transition may already have returned to that channel with a new epoch.
 - Bad: retry an install with the same `rid`; every install attempt consumes it
   before any other validation.
+- Bad: compare a stable candidate with `selected_version` after pause. That
+  value describes the currently served safe target, not the historical
+  promotion admission floor.
 
 ## 6. Tests Required
 
@@ -197,6 +206,9 @@ prefix.
   self-tests. Pointer timestamp fixtures must exercise the workflow's actual
   `Date.toISOString()` shape with non-zero milliseconds, while retaining valid
   second-only and `.000Z` cases and rejecting impossible or non-canonical dates.
+  The workflow contract test must assert stable preflight reads
+  `promotion_high_water_version` from the normalized snapshot and must reject
+  any comparison against `selected_version`.
 - Regenerate bindings and run frontend type/lint/unit tests, Rust fmt/check/
   Clippy/tests, release self-tests, and `git diff --check`.
 
@@ -240,4 +252,19 @@ discard_resources_for_channel(channel_requested_by_the_old_command);
 let _guard = lock_update_channel_transition();
 let (channel, epoch) = read_latest_canonical_channel_and_epoch()?;
 discard_resources_where(|resource| (resource.channel, resource.epoch) != (channel, epoch));
+```
+
+### Wrong
+
+```js
+assertStrictlyAdvances(releaseVersion, snapshot.state.selected_version);
+```
+
+### Correct
+
+```js
+assertStrictlyAdvances(
+  releaseVersion,
+  snapshot.state.promotion_high_water_version,
+);
 ```

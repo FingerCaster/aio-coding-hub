@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { compareReleaseVersions } from "./release-contract.mjs";
 import {
   RELEASE_CANDIDATE_MANIFEST,
   EXPECTED_RELEASE_ASSET_NAMES,
@@ -772,6 +773,71 @@ assert.ok(
   "pointer job block is bounded"
 );
 const channelJob = releaseWorkflow.slice(channelJobStart, channelJobEnd);
+const stablePreflightSource = channelJob.match(
+  /function shouldSkipStablePointerPromotion\([\s\S]*?\n {12}\}(?=\n)/
+)?.[0];
+assert.ok(stablePreflightSource, "stable pointer preflight function must be extractable");
+const shouldSkipStablePointerPromotion = Function(
+  "compareReleaseVersions",
+  `"use strict";\n${stablePreflightSource}\nreturn shouldSkipStablePointerPromotion;`
+)(compareReleaseVersions);
+for (const snapshot of [
+  {
+    state: {
+      selected_version: "0.60.40",
+      promotion_high_water_version: "0.60.42-beta.2",
+    },
+  },
+  {
+    state: {
+      selected_version: "0.60.39",
+      promotion_high_water_version: "0.60.42-beta.2",
+    },
+  },
+]) {
+  assert.equal(
+    shouldSkipStablePointerPromotion({
+      releaseChannel: "stable",
+      releaseVersion: "0.60.41",
+      snapshot,
+    }),
+    true,
+    "successive pauses must skip a public stable release that cannot advance promotion high-water"
+  );
+}
+assert.equal(
+  shouldSkipStablePointerPromotion({
+    releaseChannel: "stable",
+    releaseVersion: "0.60.42",
+    snapshot: {
+      state: {
+        selected_version: "0.60.40",
+        promotion_high_water_version: "0.60.42-beta.2",
+      },
+    },
+  }),
+  false,
+  "a stable release above promotion high-water must still publish the pointer"
+);
+assert.equal(
+  shouldSkipStablePointerPromotion({
+    releaseChannel: "beta",
+    releaseVersion: "0.60.41-beta.1",
+    snapshot: {
+      state: {
+        selected_version: "0.60.40",
+        promotion_high_water_version: "0.60.42-beta.2",
+      },
+    },
+  }),
+  false,
+  "the stable preflight must not alter Beta promotion behavior"
+);
+assert.match(
+  channelJob,
+  /if \(\s*shouldSkipStablePointerPromotion\([\s\S]*?\)\s*\) \{[\s\S]*?core\.notice\([\s\S]*?return;\s*\}/,
+  "a true stable preflight decision must return before channel CAS"
+);
 assert.match(
   channelJob,
   /RELEASE_CHANNEL: \$\{\{ needs\.release-please\.outputs\.release_channel \}\}/,
@@ -781,6 +847,16 @@ assert.match(
   channelJob,
   /action: 'promote'/,
   "published stable and Beta releases use promotion CAS"
+);
+assert.match(
+  channelJob,
+  /compareReleaseVersions\(\s*releaseVersion,\s*snapshot\.state\.promotion_high_water_version,\s*\) <= 0/,
+  "stable publication preflight must compare against the normalized promotion high-water version"
+);
+assert.doesNotMatch(
+  channelJob,
+  /snapshot\.state\.selected_version/,
+  "stable publication preflight must not regress to the pause-selected version"
 );
 assert.doesNotMatch(channelJob, /release_channel == 'beta'/, "pointer job must not be Beta-only");
 assert.equal(

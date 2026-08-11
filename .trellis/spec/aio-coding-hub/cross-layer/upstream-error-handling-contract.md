@@ -102,6 +102,20 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   errors. Strict buffered validation rejects semantic frames after completion,
   unknown or unparseable semantic frames before completion, and `[DONE]` unless
   exactly one valid completion preceded it.
+- Strict buffered validation uses a structured safe subset, not an event-name
+  allowlist. Before completion it accepts only lifecycle framing and coherent
+  assistant `output_text` message/content events whose `event:` name matches
+  the JSON `type`; forbidden or mixed reasoning, summary, commentary,
+  `encrypted_content`, refusal, function/tool/MCP/custom-tool, audio, or unknown
+  payloads fail closed even when their outer event name is official. Lifecycle
+  snapshots must not carry visible output. A refusal or homogeneous set of
+  coherent function calls is accepted only as classified final content inside
+  the single validated `response.completed` payload; a supplied item status
+  must be `completed`. Echo-capable response fields such as instructions,
+  input, tools, and metadata must be absent/null or structurally empty; numeric
+  usage details, including reasoning-token counts, remain valid metadata. Live
+  streaming keeps its existing byte-preserving behavior and does not apply this
+  final-only subset prematurely.
 - Guard expiry and prefix-cap release commit one attempt only; the post-commit
   firewall still protects subsequent terminal frames. Never splice output from
   another Provider after commit. Preserve the existing 20 MiB aggregate guard,
@@ -188,6 +202,12 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 | Valid post-commit passthrough exception | Forward the complete original terminal frame once, then end |
 | Partial, malformed, invalid UTF-8, or >1 MiB frame | Fail closed without forwarding unclassified tail bytes |
 | Response ID changes, completion loses a known ID, or completion repeats | Fail closed without forwarding the invalid terminal frame |
+| Known pre-completion event carries reasoning, commentary, encrypted, refusal, tool/function, mixed, or unknown content | Strict buffered validation fails closed; event-name recognition alone is insufficient |
+| Single validated completion carries only classified final refusal content | Accept the final refusal while preserving response-ID/completion rules |
+| Single validated completion carries only coherent final function calls | Accept them only when required call identity/name/arguments are present and any status is `completed` |
+| Lifecycle snapshot carries non-empty output, or final output mixes text/refusal/function kinds | Fail closed instead of replaying duplicated or mixed visible content |
+| Response snapshot echoes instructions/non-empty input, tools, or metadata | Fail closed; those fields are not part of the selected assistant result |
+| Response usage contains numeric reasoning-token counts in the known usage shape | Preserve it as usage metadata; do not classify token counts as reasoning content |
 | Infinite-retry attempt lacks an exact key and one Provider usage sample is pending | Consume that exact sample once; never duplicate it in a later keyed projection |
 | Infinite-retry keyless attempt has multiple pending samples for one Provider | Do not guess; record unknown usage and mark attribution incomplete |
 | Normalized bridge emits Codex terminal frame | Apply the same classifier/firewall as native final wire |
@@ -230,6 +250,13 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   oversized/partial fail-closed behavior, downstream abort, one completed frame,
   `[DONE]` order, canonical response-ID continuity, duplicate-completion failure,
   monotonic completion state, usage, 20 MiB limit, and no content duplication.
+  Strict-validator cases must reject a known event carrying
+  `encrypted_content`, reasoning-summary/refusal deltas, reasoning or function
+  output items, non-empty lifecycle output, echoed instructions/non-empty
+  metadata, incomplete final function calls, mixed final payload kinds, and
+  mixed commentary; they must accept a coherent pure `output_text` transcript,
+  safe numeric usage details, a classified final-only refusal, and a homogeneous
+  coherent final-only function-call payload.
 - Infinite final-wire tests use paused time to prove continuous chunks cannot
   reset the 500 ms wall-clock deadline, a shorter idle timeout remains
   distinguishable, and every eligibility-supported path participates in the
@@ -295,4 +322,16 @@ relay(chunk_without_complete_frame_check);
 raw_tracker.ingest(chunk);
 let visible = terminal_firewall.ingest(chunk);
 relay(visible.bytes);
+```
+
+```rust
+// Wrong: an official outer event name makes every nested payload safe.
+if KNOWN_RESPONSE_EVENTS.contains(event_name) {
+    replay(frame);
+}
+
+// Correct: strict replay validates the event/type pair and nested semantic
+// content against the final-visible safe subset.
+validate_strict_final_visible_frame(event_name, data)?;
+replay(frame);
 ```

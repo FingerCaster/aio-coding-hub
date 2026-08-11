@@ -1156,6 +1156,20 @@ jobs:
             const { publishReleaseChannel, readReleaseChannelSnapshot } = await import(
               pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts', 'release-channel.mjs')).href,
             );
+            function shouldSkipStablePointerPromotion({
+              releaseChannel,
+              releaseVersion,
+              snapshot,
+            }) {
+              return (
+                releaseChannel === 'stable' &&
+                snapshot &&
+                compareReleaseVersions(
+                  releaseVersion,
+                  snapshot.state.promotion_high_water_version,
+                ) <= 0
+              );
+            }
             const runId = Number(process.env.RUN_ID);
             const runAttempt = Number(process.env.RUN_ATTEMPT);
             const manifest = await verifyReleaseCandidate({
@@ -1174,15 +1188,14 @@ jobs:
               repo: context.repo.repo,
             });
             if (
-              process.env.RELEASE_CHANNEL === 'stable' &&
-              snapshot &&
-              compareReleaseVersions(
-                process.env.RELEASE_VERSION,
-                snapshot.state.selected_version,
-              ) <= 0
+              shouldSkipStablePointerPromotion({
+                releaseChannel: process.env.RELEASE_CHANNEL,
+                releaseVersion: process.env.RELEASE_VERSION,
+                snapshot,
+              })
             ) {
               core.notice(
-                `Stable ${process.env.RELEASE_VERSION} does not advance Beta pointer ${snapshot.state.selected_version}.`,
+                `Stable ${process.env.RELEASE_VERSION} does not advance Beta pointer promotion high-water ${snapshot.state.promotion_high_water_version}.`,
               );
               return;
             }

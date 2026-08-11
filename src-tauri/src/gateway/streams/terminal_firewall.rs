@@ -252,6 +252,12 @@ impl CodexTerminalFirewall {
                 if self.completion_seen {
                     return FrameDecision::FailClosed("semantic_frame_after_completed");
                 }
+                if !has_consistent_codex_event_type(&event_name, &data) {
+                    return FrameDecision::FailClosed("unknown_semantic_frame");
+                }
+                if !is_safe_strict_replay_frame(&event_name, &data) {
+                    return FrameDecision::FailClosed("unsafe_replay_frame");
+                }
             }
 
             let response_id = canonical_response_id(&event_name, &data).map(str::to_owned);
@@ -363,6 +369,529 @@ fn is_valid_completion_frame(data: &serde_json::Value) -> bool {
         == Some("completed")
 }
 
+fn has_consistent_codex_event_type(event_name: &str, data: &serde_json::Value) -> bool {
+    let Some(data) = data.as_object() else {
+        return false;
+    };
+    data.get("type").and_then(serde_json::Value::as_str) == Some(event_name)
+}
+
+fn is_sensitive_replay_entry(key: &str, value: &serde_json::Value) -> bool {
+    let key = key.to_ascii_lowercase();
+    let safe_reasoning_metric =
+        matches!(key.as_str(), "reasoning_tokens" | "reasoningtokens") && value.as_u64().is_some();
+    let named_sensitive_payload = (key == "encrypted_content"
+        || key == "commentary"
+        || key == "refusal"
+        || key == "summary"
+        || (key.starts_with("reasoning") && !safe_reasoning_metric)
+        || key.ends_with("_summary"))
+        && !value.is_null();
+    let sensitive_discriminator = matches!(key.as_str(), "type" | "phase" | "channel")
+        && value.as_str().is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value == "commentary"
+                || value == "refusal"
+                || value == "summary"
+                || value.starts_with("reasoning")
+        });
+    named_sensitive_payload || sensitive_discriminator
+}
+
+fn has_sensitive_replay_payload(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(has_sensitive_replay_payload),
+        serde_json::Value::Object(values) => values.iter().any(|(key, value)| {
+            is_sensitive_replay_entry(key, value) || has_sensitive_replay_payload(value)
+        }),
+        _ => false,
+    }
+}
+
+fn has_only_keys(value: &serde_json::Map<String, serde_json::Value>, allowed: &[&str]) -> bool {
+    value.keys().all(|key| allowed.contains(&key.as_str()))
+}
+
+fn is_missing_or_empty_array(value: Option<&serde_json::Value>) -> bool {
+    value.is_none_or(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty))
+}
+
+fn is_missing_or_null(value: Option<&serde_json::Value>) -> bool {
+    value.is_none_or(serde_json::Value::is_null)
+}
+
+fn is_missing_or_empty_object(value: Option<&serde_json::Value>) -> bool {
+    value.is_none_or(|value| {
+        value.is_null() || value.as_object().is_some_and(serde_json::Map::is_empty)
+    })
+}
+
+const SAFE_RESPONSE_SNAPSHOT_KEYS: &[&str] = &[
+    "background",
+    "billing",
+    "completed_at",
+    "conversation",
+    "created_at",
+    "error",
+    "id",
+    "incomplete_details",
+    "input",
+    "instructions",
+    "max_output_tokens",
+    "max_tool_calls",
+    "metadata",
+    "model",
+    "object",
+    "output",
+    "parallel_tool_calls",
+    "previous_response_id",
+    "prompt",
+    "prompt_cache_key",
+    "prompt_cache_retention",
+    "reasoning",
+    "safety_identifier",
+    "service_tier",
+    "status",
+    "store",
+    "temperature",
+    "text",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p",
+    "truncation",
+    "usage",
+    "user",
+];
+
+fn optional_field_matches(
+    response: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    predicate: fn(&serde_json::Value) -> bool,
+) -> bool {
+    response
+        .get(key)
+        .is_none_or(|value| value.is_null() || predicate(value))
+}
+
+fn is_nonempty_string(value: &serde_json::Value) -> bool {
+    value.as_str().is_some_and(|value| !value.is_empty())
+}
+
+fn is_nonnegative_integer(value: &serde_json::Value) -> bool {
+    value.as_u64().is_some()
+}
+
+fn is_safe_text_configuration(value: &serde_json::Value) -> bool {
+    if value.is_null() {
+        return true;
+    }
+    let Some(text) = value.as_object() else {
+        return false;
+    };
+    if !has_only_keys(text, &["format", "verbosity"])
+        || text
+            .get("verbosity")
+            .is_some_and(|verbosity| !matches!(verbosity.as_str(), Some("low" | "medium" | "high")))
+    {
+        return false;
+    }
+    text.get("format").is_none_or(|format| {
+        format.as_object().is_some_and(|format| {
+            has_only_keys(format, &["type"])
+                && format.get("type").and_then(serde_json::Value::as_str) == Some("text")
+        })
+    })
+}
+
+fn is_safe_token_details(value: Option<&serde_json::Value>, allowed: &[&str]) -> bool {
+    value.is_none_or(|value| {
+        value.is_null()
+            || value.as_object().is_some_and(|details| {
+                has_only_keys(details, allowed)
+                    && details.values().all(|value| value.as_u64().is_some())
+            })
+    })
+}
+
+fn is_safe_usage(value: &serde_json::Value) -> bool {
+    if value.is_null() {
+        return true;
+    }
+    let Some(usage) = value.as_object() else {
+        return false;
+    };
+    has_only_keys(
+        usage,
+        &[
+            "input_tokens",
+            "input_tokens_details",
+            "output_tokens",
+            "output_tokens_details",
+            "total_tokens",
+        ],
+    ) && ["input_tokens", "output_tokens", "total_tokens"]
+        .iter()
+        .all(|key| optional_field_matches(usage, key, is_nonnegative_integer))
+        && is_safe_token_details(usage.get("input_tokens_details"), &["cached_tokens"])
+        && is_safe_token_details(usage.get("output_tokens_details"), &["reasoning_tokens"])
+}
+
+fn has_safe_response_auxiliary_fields(
+    response: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let string_fields = [
+        "id",
+        "model",
+        "object",
+        "previous_response_id",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "safety_identifier",
+        "service_tier",
+        "status",
+        "truncation",
+        "user",
+    ];
+    let boolean_fields = ["background", "parallel_tool_calls", "store"];
+    let integer_fields = [
+        "completed_at",
+        "created_at",
+        "max_output_tokens",
+        "max_tool_calls",
+        "top_logprobs",
+    ];
+    string_fields
+        .iter()
+        .all(|key| optional_field_matches(response, key, is_nonempty_string))
+        && boolean_fields
+            .iter()
+            .all(|key| optional_field_matches(response, key, serde_json::Value::is_boolean))
+        && integer_fields
+            .iter()
+            .all(|key| optional_field_matches(response, key, is_nonnegative_integer))
+        && ["temperature", "top_p"]
+            .iter()
+            .all(|key| optional_field_matches(response, key, serde_json::Value::is_number))
+        && [
+            "billing",
+            "conversation",
+            "error",
+            "incomplete_details",
+            "instructions",
+            "prompt",
+        ]
+        .iter()
+        .all(|key| is_missing_or_null(response.get(*key)))
+        && is_missing_or_empty_array(response.get("input"))
+        && is_missing_or_empty_array(response.get("tools"))
+        && is_missing_or_empty_object(response.get("metadata"))
+        && response.get("text").is_none_or(is_safe_text_configuration)
+        && response.get("tool_choice").is_none_or(|tool_choice| {
+            matches!(tool_choice.as_str(), Some("auto" | "none" | "required"))
+        })
+        && response.get("usage").is_none_or(is_safe_usage)
+}
+
+fn is_safe_output_text_part(value: &serde_json::Value) -> bool {
+    let Some(part) = value.as_object() else {
+        return false;
+    };
+    has_only_keys(part, &["type", "text", "annotations", "logprobs"])
+        && part.get("type").and_then(serde_json::Value::as_str) == Some("output_text")
+        && part.get("text").is_some_and(serde_json::Value::is_string)
+        && is_missing_or_empty_array(part.get("annotations"))
+        && is_missing_or_empty_array(part.get("logprobs"))
+        && !has_sensitive_replay_payload(value)
+}
+
+fn is_safe_output_text_item(value: &serde_json::Value) -> bool {
+    let Some(item) = value.as_object() else {
+        return false;
+    };
+    if !has_only_keys(item, &["id", "type", "status", "role", "content", "phase"])
+        || item.get("type").and_then(serde_json::Value::as_str) != Some("message")
+        || item
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|role| role != "assistant")
+        || item
+            .get("phase")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|phase| phase != "final")
+    {
+        return false;
+    }
+
+    item.get("content")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|content| content.iter().all(is_safe_output_text_part))
+        && !has_sensitive_replay_payload(value)
+}
+
+fn is_safe_output_text_item_with_status(value: &serde_json::Value, status: &str) -> bool {
+    is_safe_output_text_item(value)
+        && value
+            .get("status")
+            .is_none_or(|value| value.as_str() == Some(status))
+}
+
+fn is_safe_lifecycle_response_snapshot(event_name: &str, value: &serde_json::Value) -> bool {
+    let Some(response) = value.as_object() else {
+        return false;
+    };
+    has_only_keys(response, SAFE_RESPONSE_SNAPSHOT_KEYS)
+        && has_safe_response_auxiliary_fields(response)
+        && is_missing_or_empty_array(response.get("output"))
+        && response.get("status").is_none_or(|status| {
+            status.as_str()
+                == Some(match event_name {
+                    "response.queued" => "queued",
+                    _ => "in_progress",
+                })
+        })
+        && !has_sensitive_replay_payload(value)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FinalVisiblePayloadKind {
+    OutputText,
+    Refusal,
+    FunctionCall,
+}
+
+fn classify_final_message_item(
+    value: &serde_json::Value,
+) -> Option<Option<FinalVisiblePayloadKind>> {
+    let item = value.as_object()?;
+    if !has_only_keys(item, &["id", "type", "status", "role", "content", "phase"])
+        || item.get("type").and_then(serde_json::Value::as_str) != Some("message")
+        || item
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|role| role != "assistant")
+        || item
+            .get("phase")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|phase| phase != "final")
+        || item
+            .get("status")
+            .is_some_and(|status| status.as_str() != Some("completed"))
+    {
+        return None;
+    }
+
+    let content = item.get("content")?.as_array()?;
+    let mut visible_kind = None;
+    for part in content {
+        let part = part.as_object()?;
+        let part_kind = match part.get("type").and_then(serde_json::Value::as_str) {
+            Some("output_text")
+                if is_safe_output_text_part(&serde_json::Value::Object(part.clone())) =>
+            {
+                FinalVisiblePayloadKind::OutputText
+            }
+            Some("refusal")
+                if has_only_keys(part, &["type", "refusal"])
+                    && part
+                        .get("refusal")
+                        .is_some_and(serde_json::Value::is_string) =>
+            {
+                FinalVisiblePayloadKind::Refusal
+            }
+            _ => return None,
+        };
+        if visible_kind.is_some_and(|kind| kind != part_kind) {
+            return None;
+        }
+        visible_kind = Some(part_kind);
+    }
+    Some(visible_kind)
+}
+
+fn classify_final_output_item(
+    value: &serde_json::Value,
+) -> Option<Option<FinalVisiblePayloadKind>> {
+    if value.get("type").and_then(serde_json::Value::as_str) == Some("message") {
+        return classify_final_message_item(value);
+    }
+
+    let item = value.as_object()?;
+    if !has_only_keys(
+        item,
+        &[
+            "id",
+            "type",
+            "status",
+            "call_id",
+            "name",
+            "arguments",
+            "phase",
+        ],
+    ) || item.get("type").and_then(serde_json::Value::as_str) != Some("function_call")
+        || item
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+        || item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(str::is_empty)
+        || !item
+            .get("arguments")
+            .is_some_and(serde_json::Value::is_string)
+        || item
+            .get("phase")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|phase| phase != "final")
+        || item
+            .get("status")
+            .is_some_and(|status| status.as_str() != Some("completed"))
+        || item
+            .get("id")
+            .is_some_and(|id| id.as_str().is_none_or(str::is_empty))
+        || has_sensitive_replay_payload(value)
+    {
+        return None;
+    }
+    Some(Some(FinalVisiblePayloadKind::FunctionCall))
+}
+
+fn is_safe_completed_response_snapshot(value: &serde_json::Value) -> bool {
+    let Some(response) = value.as_object() else {
+        return false;
+    };
+    if !has_only_keys(response, SAFE_RESPONSE_SNAPSHOT_KEYS)
+        || !has_safe_response_auxiliary_fields(response)
+        || response.iter().any(|(key, value)| {
+            key != "output"
+                && (is_sensitive_replay_entry(key, value) || has_sensitive_replay_payload(value))
+        })
+    {
+        return false;
+    }
+
+    let Some(output) = response.get("output") else {
+        return true;
+    };
+    let Some(items) = output.as_array() else {
+        return false;
+    };
+    let mut visible_kind = None;
+    for item in items {
+        let Some(item_kind) = classify_final_output_item(item) else {
+            return false;
+        };
+        let Some(item_kind) = item_kind else {
+            continue;
+        };
+        if visible_kind.is_some_and(|kind| kind != item_kind) {
+            return false;
+        }
+        visible_kind = Some(item_kind);
+    }
+    true
+}
+
+fn has_safe_event_keys(data: &serde_json::Value, allowed: &[&str]) -> bool {
+    data.as_object()
+        .is_some_and(|data| has_only_keys(data, allowed))
+}
+
+fn is_safe_strict_replay_frame(event_name: &str, data: &serde_json::Value) -> bool {
+    match event_name {
+        "response.created" | "response.queued" | "response.in_progress" => {
+            has_safe_event_keys(data, &["type", "response", "sequence_number", "id"])
+                && !has_sensitive_replay_payload(data)
+                && data.get("response").is_some_and(|response| {
+                    is_safe_lifecycle_response_snapshot(event_name, response)
+                })
+        }
+        "response.completed" => {
+            has_safe_event_keys(data, &["type", "response", "sequence_number", "id"])
+                && data
+                    .get("response")
+                    .is_some_and(is_safe_completed_response_snapshot)
+        }
+        "response.output_item.added" | "response.output_item.done" => {
+            has_safe_event_keys(
+                data,
+                &[
+                    "type",
+                    "response_id",
+                    "output_index",
+                    "item",
+                    "sequence_number",
+                ],
+            ) && !has_sensitive_replay_payload(data)
+                && data.get("item").is_some_and(|item| {
+                    is_safe_output_text_item_with_status(
+                        item,
+                        if event_name == "response.output_item.added" {
+                            "in_progress"
+                        } else {
+                            "completed"
+                        },
+                    )
+                })
+        }
+        "response.content_part.added" | "response.content_part.done" => {
+            has_safe_event_keys(
+                data,
+                &[
+                    "type",
+                    "response_id",
+                    "item_id",
+                    "output_index",
+                    "content_index",
+                    "part",
+                    "sequence_number",
+                ],
+            ) && !has_sensitive_replay_payload(data)
+                && data.get("part").is_some_and(is_safe_output_text_part)
+        }
+        "response.output_text.delta" => {
+            has_safe_event_keys(
+                data,
+                &[
+                    "type",
+                    "response_id",
+                    "item_id",
+                    "output_index",
+                    "content_index",
+                    "delta",
+                    "logprobs",
+                    "obfuscation",
+                    "sequence_number",
+                ],
+            ) && !has_sensitive_replay_payload(data)
+                && data.get("delta").is_some_and(serde_json::Value::is_string)
+                && is_missing_or_empty_array(data.get("logprobs"))
+                && data
+                    .get("obfuscation")
+                    .is_none_or(serde_json::Value::is_string)
+        }
+        "response.output_text.done" => {
+            has_safe_event_keys(
+                data,
+                &[
+                    "type",
+                    "response_id",
+                    "item_id",
+                    "output_index",
+                    "content_index",
+                    "text",
+                    "logprobs",
+                    "sequence_number",
+                ],
+            ) && !has_sensitive_replay_payload(data)
+                && data.get("text").is_some_and(serde_json::Value::is_string)
+                && is_missing_or_empty_array(data.get("logprobs"))
+        }
+        _ => false,
+    }
+}
+
 fn canonical_response_id<'a>(event_name: &str, data: &'a serde_json::Value) -> Option<&'a str> {
     data.pointer("/response/id")
         .and_then(serde_json::Value::as_str)
@@ -472,6 +1001,242 @@ mod tests {
         );
 
         assert_eq!(validate_complete_codex_sse(success.as_bytes(), &[]), Ok(()));
+    }
+
+    #[test]
+    fn strict_validator_rejects_unknown_semantic_frame_without_changing_live_passthrough() {
+        let unknown = frame(
+            "response.reasoning.raw",
+            r#"{"type":"response.reasoning.raw","encrypted_content":"opaque"}"#,
+            "\n",
+        );
+        let completed = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            "\n",
+        );
+
+        assert_eq!(
+            validate_complete_codex_sse(format!("{unknown}{completed}").as_bytes(), &[]),
+            Err("unsafe_replay_frame")
+        );
+        let mismatched = frame(
+            "response.output_text.delta",
+            r#"{"type":"response.reasoning.raw","encrypted_content":"opaque"}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(format!("{mismatched}{completed}").as_bytes(), &[]),
+            Err("unknown_semantic_frame")
+        );
+        let scalar = frame("response.output_text.delta", r#""opaque""#, "\n");
+        assert_eq!(
+            validate_complete_codex_sse(format!("{scalar}{completed}").as_bytes(), &[]),
+            Err("unknown_semantic_frame")
+        );
+
+        let mut live = CodexTerminalFirewall::new(&[]);
+        let output = live.ingest(unknown.as_bytes());
+        assert_eq!(output.bytes.as_ref(), unknown.as_bytes());
+        assert!(!output.stop);
+        assert!(!output.terminal_error);
+    }
+
+    #[test]
+    fn strict_validator_rejects_non_final_or_mixed_sensitive_payloads() {
+        let completed = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            "\n",
+        );
+        let rejected = [
+            (
+                "known output-text event carrying encrypted content",
+                frame(
+                    "response.output_text.delta",
+                    r#"{"type":"response.output_text.delta","delta":"ok","encrypted_content":"opaque"}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "reasoning summary",
+                frame(
+                    "response.reasoning_summary_text.delta",
+                    r#"{"type":"response.reasoning_summary_text.delta","delta":"hidden"}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "non-final refusal",
+                frame(
+                    "response.refusal.delta",
+                    r#"{"type":"response.refusal.delta","delta":"blocked"}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "reasoning output item",
+                frame(
+                    "response.output_item.done",
+                    r#"{"type":"response.output_item.done","item":{"id":"reason_1","type":"reasoning","summary":[{"type":"summary_text","text":"hidden"}]}}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "function call output item",
+                frame(
+                    "response.output_item.done",
+                    r#"{"type":"response.output_item.done","item":{"id":"call_1","type":"function_call","call_id":"call_1","name":"shell","arguments":"{}"}}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "mixed visible commentary",
+                frame(
+                    "response.output_item.done",
+                    r#"{"type":"response.output_item.done","item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"},{"type":"commentary","text":"hidden"}]}}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "unknown field nested in lifecycle response",
+                frame(
+                    "response.created",
+                    r#"{"type":"response.created","response":{"status":"in_progress","output":[],"vendor_visible":"hidden"}}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "visible output nested in a lifecycle response",
+                frame(
+                    "response.in_progress",
+                    r#"{"type":"response.in_progress","response":{"status":"in_progress","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"must-not-replay"}]}]}}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "instructions echoed by a lifecycle response",
+                frame(
+                    "response.created",
+                    r#"{"type":"response.created","response":{"status":"in_progress","output":[],"instructions":"must-not-replay"}}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "unknown metadata nested in a lifecycle response",
+                frame(
+                    "response.created",
+                    r#"{"type":"response.created","response":{"status":"in_progress","output":[],"metadata":{"vendor_visible":"must-not-replay"}}}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "unknown field mixed into output text",
+                frame(
+                    "response.output_text.delta",
+                    r#"{"type":"response.output_text.delta","delta":"ok","vendor_visible":"hidden"}"#,
+                    "\n",
+                ),
+            ),
+            (
+                "unknown annotation mixed into output text",
+                frame(
+                    "response.output_item.done",
+                    r#"{"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[{"type":"vendor_visible","text":"hidden"}]}]}}"#,
+                    "\n",
+                ),
+            ),
+        ];
+
+        for (case, rejected_frame) in &rejected {
+            assert_eq!(
+                validate_complete_codex_sse(format!("{rejected_frame}{completed}").as_bytes(), &[],),
+                Err("unsafe_replay_frame"),
+                "{case} must fail closed",
+            );
+        }
+
+        let mut live = CodexTerminalFirewall::new(&[]);
+        let output = live.ingest(rejected[0].1.as_bytes());
+        assert_eq!(output.bytes.as_ref(), rejected[0].1.as_bytes());
+        assert!(!output.stop);
+        assert!(!output.terminal_error);
+    }
+
+    #[test]
+    fn strict_validator_accepts_plain_output_text_and_classified_final_payloads() {
+        let output_text = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-text\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+            "event: response.content_part.added\n",
+            "data: {\"type\":\"response.content_part.added\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\",\"logprobs\":[]}\n\n",
+            "event: response.output_text.done\n",
+            "data: {\"type\":\"response.output_text.done\",\"output_index\":0,\"content_index\":0,\"text\":\"hello\",\"logprobs\":[]}\n\n",
+            "event: response.content_part.done\n",
+            "data: {\"type\":\"response.content_part.done\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-text\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]}]}}\n\n"
+        );
+        assert_eq!(
+            validate_complete_codex_sse(output_text.as_bytes(), &[]),
+            Ok(())
+        );
+
+        let final_refusal = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"id":"resp-refusal","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"blocked"}]}]}}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(final_refusal.as_bytes(), &[]),
+            Ok(())
+        );
+
+        let final_with_safe_usage = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"id":"resp-usage","object":"response","status":"completed","instructions":null,"input":[],"metadata":{},"tools":[],"text":{"format":{"type":"text"}},"tool_choice":"auto","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":11,"input_tokens_details":{"cached_tokens":3},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":5},"total_tokens":18}}}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(final_with_safe_usage.as_bytes(), &[]),
+            Ok(())
+        );
+
+        let final_function_call = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"id":"resp-call","status":"completed","output":[{"type":"function_call","status":"completed","call_id":"call_1","name":"shell","arguments":"{}"}]}}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(final_function_call.as_bytes(), &[]),
+            Ok(())
+        );
+
+        let incomplete_final_function_call = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"id":"resp-call","status":"completed","output":[{"type":"function_call","status":"in_progress","call_id":"call_1","name":"shell","arguments":"{}"}]}}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(incomplete_final_function_call.as_bytes(), &[]),
+            Err("unsafe_replay_frame")
+        );
+
+        let mixed_final_payload = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"id":"resp-mixed","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},{"type":"function_call","status":"completed","call_id":"call_1","name":"shell","arguments":"{}"}]}}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(mixed_final_payload.as_bytes(), &[]),
+            Err("unsafe_replay_frame")
+        );
     }
 
     #[test]
