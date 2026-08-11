@@ -25,6 +25,8 @@ export const RELEASE_CHANNEL_STATE_SCHEMA = 2;
 const LEGACY_RELEASE_CHANNEL_STATE_SCHEMA = 1;
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
+const DEFAULT_CONFIRM_ATTEMPTS = 6;
+const DEFAULT_CONFIRM_DELAY_MS = 250;
 const REPOSITORY_SEGMENT_PATTERN = /^[A-Za-z0-9_.-]{1,100}$/;
 const OPERATOR_PATTERN = /^[^\u0000-\u001f\u007f]{1,100}$/;
 const LEGACY_STATE_KEYS = Object.freeze(
@@ -518,6 +520,21 @@ function validateTransition({ action, current, target, withdrawnTag }) {
   return normalizedWithdrawnTag;
 }
 
+function isExactCurrentPromotion({ current, target, sourceSha, owner, repo }) {
+  if (!current || current.state.action !== "promote") return false;
+  return (
+    current.state.selected_channel === target.identity.channel &&
+    current.state.selected_tag === target.identity.tag &&
+    current.state.selected_version === target.identity.version &&
+    current.state.release_id === target.release.id &&
+    current.state.release_url === releaseUrl(owner, repo, target.identity.tag) &&
+    current.state.source_sha === sourceSha &&
+    current.state.manifest_sha256 === target.manifestDigest &&
+    current.state.withdrawn_tag === null &&
+    current.state.promotion_high_water_version === target.identity.version
+  );
+}
+
 function buildState({
   action,
   current,
@@ -589,6 +606,20 @@ export async function publishReleaseChannel({
     sourceSha,
     candidateManifest,
   });
+  // A retry can observe a commit created by an earlier attempt after that attempt
+  // reported a stale ref read. Treat the exact same verified promotion as a
+  // successful no-op so the CAS pointer remains single-writer and rerunnable.
+  if (
+    normalizedAction === "promote" &&
+    isExactCurrentPromotion({ current, target, sourceSha, owner, repo })
+  ) {
+    return {
+      previousRefSha: current.refSha,
+      newRefSha: current.refSha,
+      state: current.state,
+      idempotent: true,
+    };
+  }
   const normalizedWithdrawnTag = validateTransition({
     action: normalizedAction,
     current,
@@ -677,4 +708,34 @@ export async function publishReleaseChannel({
     });
   }
   return { previousRefSha: current?.refSha ?? null, newRefSha, state };
+}
+
+export async function waitForReleaseChannelSnapshot({
+  github,
+  owner,
+  repo,
+  expectedRefSha,
+  attempts = DEFAULT_CONFIRM_ATTEMPTS,
+  delayMs = DEFAULT_CONFIRM_DELAY_MS,
+  sleep = (duration) => new Promise((resolve) => setTimeout(resolve, duration)),
+}) {
+  const expected = requireNullableSha(expectedRefSha, "Expected release channel ref SHA");
+  if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 10) {
+    throw new Error("Release channel confirmation attempts are invalid");
+  }
+  if (!Number.isFinite(delayMs) || delayMs < 0 || delayMs > 5000) {
+    throw new Error("Release channel confirmation delay is invalid");
+  }
+  if (typeof sleep !== "function") {
+    throw new Error("Release channel confirmation sleeper is invalid");
+  }
+  let snapshot = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    snapshot = await readReleaseChannelSnapshot({ github, owner, repo });
+    if ((snapshot?.refSha ?? null) === expected) return snapshot;
+    if (attempt + 1 < attempts) {
+      await sleep(delayMs * 2 ** attempt);
+    }
+  }
+  return snapshot;
 }

@@ -140,9 +140,12 @@ beta-channel.yml:
   without lowering it. A later stable Release still advances the Beta pointer
   when its canonical version is strictly above that same high-water mark.
 - Pointer writes use the Git Data API with the old commit as parent and
-  `force=false`. `expected_ref_sha` is a compare-and-swap precondition. Pause
-  selects a previously verified safe stable/Beta Release; it never moves a tag
-  or mutates Release assets.
+  `force=false`. `expected_ref_sha` is a compare-and-swap precondition. The
+  post-write ref confirmation must tolerate bounded GitHub ref-read eventual
+  consistency, and an exact repeat of the already selected tag/source/manifest
+  is an idempotent success without creating a second commit. Pause selects a
+  previously verified safe stable/Beta Release; it never moves a tag or mutates
+  Release assets.
 - Stable release preflight compares the requested canonical version with the
   normalized `snapshot.state.promotion_high_water_version`. It must never use
   `selected_version` as the admission floor because pause may intentionally
@@ -206,7 +209,8 @@ prefix.
 - Release: source, tag/channel, version overlay including the derived numeric
   WiX version and its bounds, exact 14 assets, promotion,
   signing-secret scope, strict UTF-8 manifest/signatures, pointer state/parent,
-  CAS race, repeated pause without high-water rollback, stable advancement
+  CAS race, bounded post-write ref confirmation retry, exact repeated promote
+  idempotency, repeated pause without high-water rollback, stable advancement
   after withdrawal, support matrix, stable default, Homebrew, and CI scope
   self-tests. Pointer timestamp fixtures must exercise the workflow's actual
   `Date.toISOString()` shape with non-zero milliseconds, while retaining valid

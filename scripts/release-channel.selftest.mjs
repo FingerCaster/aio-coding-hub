@@ -8,6 +8,7 @@ import {
   parseReleaseChannelState,
   publishReleaseChannel,
   readReleaseChannelSnapshot,
+  waitForReleaseChannelSnapshot,
 } from "./release-channel.mjs";
 import { EXPECTED_RELEASE_ASSET_NAMES } from "./release-promotion.mjs";
 import { OFFICIAL_RELEASE_TARGETS } from "./support-matrix.mjs";
@@ -302,6 +303,46 @@ assert.ok(
 let snapshot = await readReleaseChannelSnapshot({ github: fixture.github, owner, repo });
 assert.equal(snapshot.refSha, first.newRefSha);
 assert.equal(snapshot.manifestText, betaOne.manifestText, "pointer must preserve Release bytes");
+const idempotentFirst = await publishReleaseChannel({
+  github: fixture.github,
+  fetchImpl: fixture.fetch,
+  owner,
+  repo,
+  action: "promote",
+  tag: "aio-coding-hub-v0.60.41-beta.1",
+  sourceSha,
+  expectedRefSha: first.newRefSha,
+  ...workflow,
+  updatedAt: "2026-08-10T00:00:01.000Z",
+});
+assert.equal(idempotentFirst.idempotent, true, "repeating an exact promotion must be a no-op");
+assert.equal(idempotentFirst.newRefSha, first.newRefSha);
+let staleReads = 2;
+const eventuallyConsistentGithub = {
+  ...fixture.github,
+  rest: {
+    ...fixture.github.rest,
+    git: {
+      ...fixture.github.rest.git,
+      getRef: async (args) => {
+        if (staleReads > 0) {
+          staleReads -= 1;
+          throw apiError(404, "stale ref read");
+        }
+        return fixture.github.rest.git.getRef(args);
+      },
+    },
+  },
+};
+const confirmedAfterRetry = await waitForReleaseChannelSnapshot({
+  github: eventuallyConsistentGithub,
+  owner,
+  repo,
+  expectedRefSha: first.newRefSha,
+  attempts: 3,
+  delayMs: 0,
+});
+assert.equal(confirmedAfterRetry.refSha, first.newRefSha);
 const legacyState = JSON.parse(snapshot.stateText);
 legacyState.schema_version = 1;
 delete legacyState.promotion_high_water_version;

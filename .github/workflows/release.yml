@@ -1153,7 +1153,11 @@ jobs:
             const { verifyReleaseCandidate } = await import(
               pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts', 'release-promotion.mjs')).href,
             );
-            const { publishReleaseChannel, readReleaseChannelSnapshot } = await import(
+            const {
+              publishReleaseChannel,
+              readReleaseChannelSnapshot,
+              waitForReleaseChannelSnapshot,
+            } = await import(
               pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts', 'release-channel.mjs')).href,
             );
             function shouldSkipStablePointerPromotion({
@@ -1214,10 +1218,11 @@ jobs:
               operator: context.actor,
               updatedAt: new Date().toISOString(),
             });
-            const confirmed = await readReleaseChannelSnapshot({
+            const confirmed = await waitForReleaseChannelSnapshot({
               github,
               owner: context.repo.owner,
               repo: context.repo.repo,
+              expectedRefSha: result.newRefSha,
             });
             if (confirmed?.refSha !== result.newRefSha) {
               core.setFailed('Release channel ref did not retain the verified CAS commit.');
