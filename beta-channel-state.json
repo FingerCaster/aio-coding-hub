@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "action": "promote",
+  "selected_channel": "beta",
+  "selected_tag": "aio-coding-hub-v0.60.41-beta.2",
+  "selected_version": "0.60.41-beta.2",
+  "release_id": 368661363,
+  "release_url": "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.60.41-beta.2",
+  "source_sha": "99956fd2c4581449e8c5c337234e3b6b8bc2db6b",
+  "manifest_sha256": "8305e434def6d95855f51be885fbf589ab24d965ac73d66f511ca025b0f35b92",
+  "previous_ref_sha": null,
+  "previous_selected_tag": null,
+  "withdrawn_tag": null,
+  "promotion_high_water_version": "0.60.41-beta.2",
+  "workflow_run_id": 31505898362,
+  "workflow_run_attempt": 1,
+  "operator": "FingerCaster",
+  "updated_at": "2026-08-11T15:36:34.917Z"
+}
