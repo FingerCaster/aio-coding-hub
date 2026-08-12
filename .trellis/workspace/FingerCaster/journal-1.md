@@ -1225,3 +1225,39 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 36: 修复 Cyber 透传默认值并发布 Beta 3
+
+**Date**: 2026-08-12
+**Task**: 修复 Cyber 透传默认值并发布 Beta 3
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/cyber-passthrough-beta-record`
+
+### Summary
+
+修复旧版空透传规则迁移后缺少 high-risk cyber，并从不可变 main SHA 发布及独立验收 v0.60.41-beta.3。
+
+### Main Changes
+
+- 新增 schema 62 迁移，仅为旧 schema 的语义空全局规则补回 high-risk cyber，并保留当前 schema 用户主动清空。
+- 配置导入复用严格迁移、校验、CAS 与原子写入；补齐 Rust 和前端回归测试及跨层规范。
+- 合并 PR #32，并从 d295ef53dafb63adde1892613523d65cde967b8b 发布 aio-coding-hub-v0.60.41-beta.3。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `640956e5` | (see git log) |
+| `d295ef53` | (see git log) |
+| `2f4e2089` | (see git log) |
+
+### Testing
+
+- [OK] 前端 305 文件、2820 测试及 Rust 2815 测试通过，另有 lint、typecheck、clippy、bindings、规范和发布合同门禁。
+- [OK] 隔离桌面 smoke 验证 schema61 空规则迁移并持久化到 schema62，UI 显示 high-risk cyber。
+- [OK] 发布后核对 14 个资产大小与 SHA256、latest-beta 指针、四平台签名对应关系及 stable 通道隔离。
+
+### Status
+
+[OK] **Completed**

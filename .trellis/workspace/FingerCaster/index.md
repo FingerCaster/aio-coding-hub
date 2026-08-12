@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 35
-- **Last Active**: 2026-08-10
+- **Total Sessions**: 36
+- **Last Active**: 2026-08-12
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1227 | Active |
+| `journal-1.md` | ~1263 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 36 | 2026-08-12 | 修复 Cyber 透传默认值并发布 Beta 3 | `640956e5`, `d295ef53`, `2f4e2089` | `FingerCaster/cyber-passthrough-beta-record` |
 | 35 | 2026-08-10 | 完整 Beta 发布频道 | `f743e28c`, `bdf24388`, `67a3ed37`, `bc0b1cb2` | `FingerCaster/beta-release-channel` |
 | 34 | 2026-08-10 | 收口已完成 Trellis 任务归档 | `a04c9624` | `main` |
 | 33 | 2026-08-10 | 清理 Orca 工作区并发布 v0.60.40 | `cf3cbc1278d6a5ddc86ff3c8a6c575fd09336566`, `368ff3797120eb14b6b6ce3dfea69f7ff3474d6d`, `a8efc40d64bdac7e8cb2ba748a118d82a84fac40` | `main` |

@@ -52,13 +52,13 @@
 
 ## Acceptance Criteria
 
-- [ ] AC1：用本机当前 schema 61 空列表 fixture 启动迁移后，canonical settings 升至 schema 62 且列表为 `["high-risk cyber"]`。
-- [ ] AC2：schema 62 中用户主动清空并重启后仍为空；非空自定义列表、`enabled=false` 和 Provider override 均不变。
-- [ ] AC3：UI 聚焦测试及实际桌面 smoke test 均能在正确设置路径看到 `high-risk cyber`。
-- [ ] AC4：相关 Rust、前端、生成绑定、全量质量门禁和发布合同全部通过，且 spec 与实现一致。
-- [ ] AC5：修复经 PR 合入最新 `origin/main`，没有覆盖当前主工作区或其他并行成果。
-- [ ] AC6：下一公开 Beta 从不可变 `origin/main` SHA 构建成功，官方资产、签名、manifest、版本和 Beta 指针完整一致。
-- [ ] AC7：GitHub stable latest、稳定 updater 指针、Homebrew 及 Beta 未参与用户保持不变。
+- [x] AC1：用本机当前 schema 61 空列表 fixture 启动迁移后，canonical settings 升至 schema 62 且列表为 `["high-risk cyber"]`。
+- [x] AC2：schema 62 中用户主动清空并重启后仍为空；非空自定义列表、`enabled=false` 和 Provider override 均不变。
+- [x] AC3：UI 聚焦测试及实际桌面 smoke test 均能在正确设置路径看到 `high-risk cyber`。
+- [x] AC4：相关 Rust、前端、生成绑定、全量质量门禁和发布合同全部通过，且 spec 与实现一致。
+- [x] AC5：修复经 PR 合入最新 `origin/main`，没有覆盖当前主工作区或其他并行成果。
+- [x] AC6：下一公开 Beta 从不可变 `origin/main` SHA 构建成功，官方资产、签名、manifest、版本和 Beta 指针完整一致。
+- [x] AC7：GitHub stable latest、稳定 updater 指针、Homebrew 及 Beta 未参与用户保持不变。
 
 ## Out Of Scope
 
