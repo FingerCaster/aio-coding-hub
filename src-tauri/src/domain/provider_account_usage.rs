@@ -60,6 +60,25 @@ impl ProviderAccountUsageAdapterKind {
     }
 }
 
+pub(crate) fn apply_account_usage_cache_busting(
+    request: reqwest::RequestBuilder,
+) -> reqwest::RequestBuilder {
+    request
+        .header(reqwest::header::CACHE_CONTROL, "no-cache, no-store")
+        .header(reqwest::header::PRAGMA, "no-cache")
+}
+
+pub(crate) fn apply_account_usage_cache_busting_to_request(request: &mut reqwest::Request) {
+    request.headers_mut().insert(
+        reqwest::header::CACHE_CONTROL,
+        reqwest::header::HeaderValue::from_static("no-cache, no-store"),
+    );
+    request.headers_mut().insert(
+        reqwest::header::PRAGMA,
+        reqwest::header::HeaderValue::from_static("no-cache"),
+    );
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderAccountUsageStatus {
@@ -1425,7 +1444,7 @@ pub(crate) async fn fetch_newapi_account_usage(
     };
 
     let status = match get_newapi_json(
-        client.get(urls.status.clone()),
+        apply_account_usage_cache_busting(client.get(urls.status.clone())),
         NEWAPI_STATUS_BODY_LIMIT,
         false,
         fetched_at,
@@ -1436,7 +1455,9 @@ pub(crate) async fn fetch_newapi_account_usage(
         Err(result) => return result,
     };
     let subscription = match get_newapi_json(
-        client.get(urls.subscription.clone()).bearer_auth(api_key),
+        apply_account_usage_cache_busting(
+            client.get(urls.subscription.clone()).bearer_auth(api_key),
+        ),
         NEWAPI_SUBSCRIPTION_BODY_LIMIT,
         true,
         fetched_at,
@@ -1469,10 +1490,12 @@ pub(crate) async fn fetch_newapi_account_usage(
         }
     };
     let usage = match get_newapi_json(
-        client
-            .get(urls.usage.clone())
-            .bearer_auth(api_key)
-            .query(&[("start_date", start_date), ("end_date", end_date)]),
+        apply_account_usage_cache_busting(
+            client
+                .get(urls.usage.clone())
+                .bearer_auth(api_key)
+                .query(&[("start_date", start_date), ("end_date", end_date)]),
+        ),
         NEWAPI_USAGE_BODY_LIMIT,
         true,
         fetched_at,
@@ -1543,7 +1566,7 @@ pub(crate) async fn fetch_newapi_user_account_usage(
     };
 
     let status = match get_newapi_json(
-        client.get(urls.status),
+        apply_account_usage_cache_busting(client.get(urls.status)),
         NEWAPI_STATUS_BODY_LIMIT,
         false,
         fetched_at,
@@ -1554,10 +1577,12 @@ pub(crate) async fn fetch_newapi_user_account_usage(
         Err(result) => return result,
     };
     let account = match get_newapi_json(
-        client
-            .get(urls.account)
-            .bearer_auth(&access_token)
-            .header("New-Api-User", &user_id),
+        apply_account_usage_cache_busting(
+            client
+                .get(urls.account)
+                .bearer_auth(&access_token)
+                .header("New-Api-User", &user_id),
+        ),
         NEWAPI_ACCOUNT_BODY_LIMIT,
         true,
         fetched_at,
@@ -2897,6 +2922,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn account_usage_requests_explicitly_bypass_http_caches() {
+        let request = apply_account_usage_cache_busting(
+            reqwest::Client::new().get("https://usage.example.test/v1/usage"),
+        )
+        .build()
+        .expect("build cache-busting request");
+
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache, no-store")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::PRAGMA)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+
+        let mut request = reqwest::Client::new()
+            .get("https://usage.example.test/v1/usage")
+            .build()
+            .expect("build custom cache-busting request");
+        apply_account_usage_cache_busting_to_request(&mut request);
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache, no-store")
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::PRAGMA)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+    }
+
     #[tokio::test]
     async fn newapi_http_contract_uses_expected_urls_dates_auth_and_headers() {
         let responses = vec![
@@ -2929,6 +2998,11 @@ mod tests {
         assert_eq!(result.status, ProviderAccountUsageStatus::Available);
         let requests = requests.lock().await;
         assert_eq!(requests.len(), 3);
+        for request in requests.iter() {
+            let headers = request.to_ascii_lowercase();
+            assert!(headers.contains("cache-control: no-cache, no-store"));
+            assert!(headers.contains("pragma: no-cache"));
+        }
         assert!(requests[0].starts_with("GET /api/status HTTP/1.1"));
         assert!(requests[1].starts_with("GET /v1/dashboard/billing/subscription HTTP/1.1"));
         assert!(requests[2].starts_with(
@@ -3662,6 +3736,11 @@ mod tests {
 
         let requests = requests.lock().await;
         assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            let headers = request.to_ascii_lowercase();
+            assert!(headers.contains("cache-control: no-cache, no-store"));
+            assert!(headers.contains("pragma: no-cache"));
+        }
         assert!(requests[0].starts_with("GET /api/status "));
         assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
         assert!(!requests[0].to_ascii_lowercase().contains("new-api-user:"));

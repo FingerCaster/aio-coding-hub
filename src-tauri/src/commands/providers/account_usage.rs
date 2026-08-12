@@ -1,11 +1,12 @@
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::blocking;
 use crate::domain::provider_account_usage::{
-    build_account_usage_url, config_from_extension_values, custom_config_from_draft,
-    fetch_newapi_account_usage, fetch_newapi_user_account_usage, http_status_result,
-    parse_account_usage_response, redact_secret, NewapiQueryMode, ProviderAccountUsageAdapterKind,
-    ProviderAccountUsageConfigState, ProviderAccountUsageCustomScriptDraft,
-    ProviderAccountUsageResult, ProviderAccountUsageStatus, SUB2API_RESPONSE_BODY_LIMIT,
+    apply_account_usage_cache_busting, build_account_usage_url, config_from_extension_values,
+    custom_config_from_draft, fetch_newapi_account_usage, fetch_newapi_user_account_usage,
+    http_status_result, parse_account_usage_response, redact_secret, NewapiQueryMode,
+    ProviderAccountUsageAdapterKind, ProviderAccountUsageConfigState,
+    ProviderAccountUsageCustomScriptDraft, ProviderAccountUsageResult, ProviderAccountUsageStatus,
+    SUB2API_RESPONSE_BODY_LIMIT,
 };
 use crate::domain::provider_account_usage_script::execute_custom_account_usage;
 use tauri::Manager;
@@ -395,7 +396,7 @@ pub(crate) async fn fetch_account_usage_uncached<R: tauri::Runtime>(
             ));
         }
     };
-    let request = client.get(&url).bearer_auth(&api_key);
+    let request = build_sub2api_account_usage_request(&client, &url, &api_key);
 
     let response = match request.send().await {
         Ok(response) => response,
@@ -457,6 +458,14 @@ pub(crate) async fn fetch_account_usage_uncached<R: tauri::Runtime>(
         fetched_at,
         fetched_at,
     ))
+}
+
+fn build_sub2api_account_usage_request(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    apply_account_usage_cache_busting(client.get(url).bearer_auth(api_key))
 }
 
 #[tauri::command]
@@ -632,5 +641,27 @@ mod tests {
         let after = credential_context(provider_uuid);
 
         assert!(account_usage_provider_snapshot_matches(&before, &after));
+    }
+
+    #[test]
+    fn sub2api_account_usage_request_bypasses_http_caches() {
+        let request = build_sub2api_account_usage_request(
+            &reqwest::Client::new(),
+            "https://usage.example.test/v1/usage",
+            "synthetic-key",
+        )
+        .build()
+        .expect("build sub2api account-usage request");
+
+        assert_eq!(
+            request.headers().get(reqwest::header::CACHE_CONTROL),
+            Some(&reqwest::header::HeaderValue::from_static(
+                "no-cache, no-store"
+            ))
+        );
+        assert_eq!(
+            request.headers().get(reqwest::header::PRAGMA),
+            Some(&reqwest::header::HeaderValue::from_static("no-cache"))
+        );
     }
 }

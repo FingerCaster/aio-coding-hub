@@ -30,6 +30,18 @@ useProviderAccountUsageQuery(provider: ProviderSummary, enabled?: boolean);
 The query function calls `providerAccountUsageFetch(providerId)` and returns
 `ProviderAccountUsageResult | null`.
 
+The shared remote-request cache boundary is:
+
+```rust
+pub(crate) fn apply_account_usage_cache_busting(
+    request: reqwest::RequestBuilder,
+) -> reqwest::RequestBuilder;
+
+pub(crate) fn apply_account_usage_cache_busting_to_request(
+    request: &mut reqwest::Request,
+);
+```
+
 ### 3. Contracts
 
 - Automatic initial fetch, timed refetch, and manual refresh use the exact same
@@ -54,6 +66,11 @@ The query function calls `providerAccountUsageFetch(providerId)` and returns
   backend refresh completion may also update the process-owned route
   projection described below. React remains neither a route owner nor a
   second account-usage cache.
+- Every remote account-usage request must pass through the shared cache boundary
+  immediately before sending. It sets `Cache-Control: no-cache, no-store` and
+  `Pragma: no-cache` on both `RequestBuilder` and already-built `Request`
+  values. This applies to sub2api, NewAPI billing/account, and custom adapter
+  requests; a Provider availability test is never a cache-refresh prerequisite.
 
 ### 4. Validation & Error Matrix
 
@@ -67,6 +84,7 @@ The query function calls `providerAccountUsageFetch(providerId)` and returns
 | Manual request fails | Query exposes the error; unrelated cached data is untouched |
 | Provider is disabled | No automatic fetch; existing manual/configured behavior is preserved |
 | Another provider has cached usage | Refresh leaves that exact key unchanged |
+| Remote account-usage request is built | Both cache-control directives are present before send |
 
 ### 5. Good / Base / Bad Cases
 
@@ -76,10 +94,14 @@ The query function calls `providerAccountUsageFetch(providerId)` and returns
   requests a manual refresh.
 - Base: one configured enabled provider performs its initial query and optional
   timed refetch through the shared options.
+- Good: a fresh local query forces a remote request with cache-bypass headers,
+  so an intermediary cannot reuse a stale zero-balance response.
 - Bad: manual B writes balance 9 with `setQueryData`, then older automatic A
   completes through `useQuery` and restores balance 0.
 - Bad: a successful availability test is required before account refresh, or a
   refresh invalidates circuit/provider-list state.
+- Bad: add cache headers only to one built-in adapter, or let a custom script's
+  caller-controlled headers omit them before executing its Request.
 
 ### 6. Tests Required
 
@@ -95,6 +117,9 @@ The query function calls `providerAccountUsageFetch(providerId)` and returns
 - Assert refresh does not call availability, circuit reset, provider mutation,
   reorder, duplicate, or OAuth quota operations and does not invalidate other
   caches.
+- Capture at least one request from each built-in family and a custom Request;
+  assert both `Cache-Control: no-cache, no-store` and `Pragma: no-cache` are
+  present at the final send boundary.
 - Keep disabled-provider, interval, and provider edit/delete cleanup regressions
   passing, followed by typecheck, lint, format, and diff checks.
 
@@ -120,6 +145,19 @@ return queryClient.fetchQuery({ ...options, staleTime: 0 });
 
 Cancellation establishes the new ordering boundary, and the forced shared
 query remains the only cache writer.
+
+For the remote request boundary:
+
+```rust
+let request = apply_account_usage_cache_busting(client.get(url));
+let custom_request = validate_and_build_request(...)?;
+client.execute(custom_request).await?;
+```
+
+The first line is required for builder-based built-in calls. The custom request
+constructor applies the Request-level helper before returning, so callers
+cannot forget it at execution time. A new IPC request without these headers is
+not an authoritative refresh guarantee.
 
 ## Scenario: Explicit Account-Usage Route Gate And Recovery
 

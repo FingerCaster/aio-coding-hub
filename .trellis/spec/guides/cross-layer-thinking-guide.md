@@ -181,6 +181,10 @@ After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)
 - [ ] Verified error handling at each boundary
 - [ ] Checked data survives round-trip
+- [ ] For a user-visible forced refresh, enumerated every cache boundary
+      (UI/query, process snapshot, in-flight work, HTTP proxy/CDN, and upstream
+      service) and proved the final network request cannot reuse a stale
+      response or depend on an unrelated probe/write to become fresh
 - [ ] Checked that consumers import shared decoders / projections instead of
       casting payload fields locally
 - [ ] Checked that derived state points back to the source event identifier
