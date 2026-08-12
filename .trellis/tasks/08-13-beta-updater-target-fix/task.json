@@ -1,0 +1,29 @@
+{
+  "id": "beta-updater-target-fix",
+  "name": "beta-updater-target-fix",
+  "title": "修复 Beta updater 平台 target 映射",
+  "description": "修复 Windows Beta 更新检查将 Tauri OS target 与静态清单平台键错误比较的问题，补跨平台回归并发布修复版 Beta。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P1",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-13",
+  "completedAt": null,
+  "branch": "FingerCaster/beta-updater-target-fix",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/beta-updater-target-fix",
+    "base_sha": "54e422373383ab3bfc34c10177c1ff639fb088ec"
+  }
+}

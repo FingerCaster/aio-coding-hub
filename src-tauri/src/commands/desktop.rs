@@ -27,11 +27,34 @@ const BETA_UPDATER_ENDPOINT: &str =
     "https://raw.githubusercontent.com/FingerCaster/aio-coding-hub/release-channels/latest-beta.json";
 const RELEASES_BASE_URL: &str = "https://github.com/FingerCaster/aio-coding-hub/releases";
 const RELEASE_TAG_PREFIX: &str = "aio-coding-hub-v";
-const OFFICIAL_UPDATER_PLATFORMS: [&str; 4] = [
-    "windows-x86_64",
-    "darwin-x86_64",
-    "darwin-aarch64",
-    "linux-x86_64",
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OfficialUpdaterPlatform {
+    manifest_key: &'static str,
+    os_target: &'static str,
+    asset_name: &'static str,
+}
+
+const OFFICIAL_UPDATER_PLATFORMS: [OfficialUpdaterPlatform; 4] = [
+    OfficialUpdaterPlatform {
+        manifest_key: "windows-x86_64",
+        os_target: "windows",
+        asset_name: "aio-coding-hub-win64.msi",
+    },
+    OfficialUpdaterPlatform {
+        manifest_key: "darwin-x86_64",
+        os_target: "darwin",
+        asset_name: "aio-coding-hub-macos-intel.tar.gz",
+    },
+    OfficialUpdaterPlatform {
+        manifest_key: "darwin-aarch64",
+        os_target: "darwin",
+        asset_name: "aio-coding-hub-macos-arm.tar.gz",
+    },
+    OfficialUpdaterPlatform {
+        manifest_key: "linux-x86_64",
+        os_target: "linux",
+        asset_name: "aio-coding-hub-linux-amd64.AppImage",
+    },
 ];
 const UPDATER_ERROR_BETA_FRESH_CHECK_FAILED: &str = "UPDATER_BETA_FRESH_CHECK_FAILED";
 const UPDATER_ERROR_CANDIDATE_STALE: &str = "UPDATER_CANDIDATE_STALE";
@@ -114,6 +137,7 @@ pub(crate) struct DesktopUpdaterMetadata {
 struct UpdaterCandidateIdentity {
     version: String,
     target: String,
+    manifest_key: String,
     download_url: String,
     signature_sha256: String,
 }
@@ -411,14 +435,16 @@ fn validate_beta_updater_manifest(
                 "beta updater manifest must use the static platforms format",
             )
         })?;
-    if !object_has_exact_keys(platforms, &OFFICIAL_UPDATER_PLATFORMS) {
+    let official_manifest_keys = OFFICIAL_UPDATER_PLATFORMS.map(|platform| platform.manifest_key);
+    if !object_has_exact_keys(platforms, &official_manifest_keys) {
         return Err(updater_error(
             UPDATER_ERROR_MANIFEST_INVALID,
             "beta updater manifest platform set does not match the official support matrix",
         ));
     }
 
-    for target in OFFICIAL_UPDATER_PLATFORMS {
+    for platform_spec in OFFICIAL_UPDATER_PLATFORMS {
+        let target = platform_spec.manifest_key;
         let platform = platforms
             .get(target)
             .and_then(serde_json::Value::as_object)
@@ -456,23 +482,23 @@ fn validate_beta_updater_manifest(
             })?;
         let url = tauri::Url::parse(url)
             .map_err(|error| updater_error(UPDATER_ERROR_MANIFEST_INVALID, error))?;
-        validate_official_download_url(&url, &release_tag, official_updater_asset_name(target)?)?;
+        validate_official_download_url(&url, &release_tag, platform_spec.asset_name)?;
     }
 
     Ok(())
 }
 
-fn official_updater_asset_name(target: &str) -> Result<&'static str, String> {
-    match target {
-        "windows-x86_64" => Ok("aio-coding-hub-win64.msi"),
-        "darwin-x86_64" => Ok("aio-coding-hub-macos-intel.tar.gz"),
-        "darwin-aarch64" => Ok("aio-coding-hub-macos-arm.tar.gz"),
-        "linux-x86_64" => Ok("aio-coding-hub-linux-amd64.AppImage"),
-        _ => Err(updater_error(
-            UPDATER_ERROR_PLATFORM_UNSUPPORTED,
-            format_args!("target {target:?} is not in the official updater matrix"),
-        )),
-    }
+fn official_updater_platform(manifest_key: &str) -> Result<OfficialUpdaterPlatform, String> {
+    OFFICIAL_UPDATER_PLATFORMS
+        .iter()
+        .copied()
+        .find(|platform| platform.manifest_key == manifest_key)
+        .ok_or_else(|| {
+            updater_error(
+                UPDATER_ERROR_PLATFORM_UNSUPPORTED,
+                format_args!("manifest key {manifest_key:?} is not in the official updater matrix"),
+            )
+        })
 }
 
 fn validate_official_download_url(
@@ -511,24 +537,25 @@ fn validate_official_download_url(
 fn updater_candidate_identity_from_parts(
     channel: crate::settings::UpdateChannel,
     version: &str,
-    target: &str,
-    expected_target: &str,
+    updater_target: &str,
+    manifest_key: &str,
     download_url: &tauri::Url,
     signature: &str,
 ) -> Result<(UpdaterCandidateIdentity, String), String> {
     let release_tag = updater_release_tag(channel, version)?;
-    if target != expected_target || signature.trim().is_empty() {
+    let platform = official_updater_platform(manifest_key)?;
+    if updater_target != platform.os_target || signature.trim().is_empty() {
         return Err(updater_error(
             UPDATER_ERROR_MANIFEST_INVALID,
-            "target must match the current platform and signature must be non-empty",
+            "updater OS target must match the current platform and signature must be non-empty",
         ));
     }
-    let expected_asset = official_updater_asset_name(expected_target)?;
-    validate_official_download_url(download_url, &release_tag, expected_asset)?;
+    validate_official_download_url(download_url, &release_tag, platform.asset_name)?;
 
     let identity = UpdaterCandidateIdentity {
         version: version.to_string(),
-        target: target.to_string(),
+        target: updater_target.to_string(),
+        manifest_key: manifest_key.to_string(),
         download_url: download_url.as_str().to_string(),
         signature_sha256: format!("{:x}", Sha256::digest(signature.as_bytes())),
     };
@@ -540,17 +567,18 @@ fn updater_candidate_identity(
     channel: crate::settings::UpdateChannel,
     update: &Update,
 ) -> Result<(UpdaterCandidateIdentity, String), String> {
-    let expected_target = tauri_plugin_updater::target().ok_or_else(|| {
+    let manifest_key = tauri_plugin_updater::target().ok_or_else(|| {
         updater_error(
             UPDATER_ERROR_PLATFORM_UNSUPPORTED,
-            "cannot determine the current updater target",
+            "cannot determine the current updater manifest key",
         )
     })?;
+    let platform = official_updater_platform(&manifest_key)?;
     updater_candidate_identity_from_parts(
         channel,
         &update.version,
         &update.target,
-        &expected_target,
+        platform.manifest_key,
         &update.download_url,
         &update.signature,
     )
@@ -1287,9 +1315,10 @@ mod tests {
         beta_updater_endpoint, desktop_open_allowed_roots, discard_stale_typed_updater_resources,
         discard_typed_resource, discard_typed_resources_where, ensure_desktop_open_path_allowed,
         ensure_fresh_beta_candidate, ensure_update_channel, ensure_update_channel_state,
-        normalize_existing_path, take_typed_resource, updater_candidate_identity_from_parts,
-        updater_version_is_prerelease, validate_beta_updater_manifest, BETA_UPDATER_ENDPOINT,
-        RELEASES_BASE_URL, UPDATER_ERROR_CANDIDATE_STALE, UPDATER_ERROR_CHANNEL_CHANGED,
+        normalize_existing_path, official_updater_platform, take_typed_resource,
+        updater_candidate_identity_from_parts, updater_version_is_prerelease,
+        validate_beta_updater_manifest, BETA_UPDATER_ENDPOINT, RELEASES_BASE_URL,
+        UPDATER_ERROR_CANDIDATE_STALE, UPDATER_ERROR_CHANNEL_CHANGED,
         UPDATER_ERROR_MANIFEST_INVALID, UPDATER_ERROR_RESOURCE_CLOSED,
         UPDATER_ERROR_RESOURCE_INVALID,
     };
@@ -1529,7 +1558,7 @@ mod tests {
         let (identity, release_url) = updater_candidate_identity_from_parts(
             settings::UpdateChannel::Beta,
             "0.60.41-beta.2",
-            "windows-x86_64",
+            "windows",
             "windows-x86_64",
             &beta_url,
             "signed-candidate",
@@ -1548,7 +1577,7 @@ mod tests {
         assert!(updater_candidate_identity_from_parts(
             settings::UpdateChannel::Beta,
             "0.60.41",
-            "windows-x86_64",
+            "windows",
             "windows-x86_64",
             &stable_on_beta,
             "signed-stable",
@@ -1558,7 +1587,7 @@ mod tests {
         let error = updater_candidate_identity_from_parts(
             settings::UpdateChannel::Stable,
             "0.60.41-beta.2",
-            "windows-x86_64",
+            "windows",
             "windows-x86_64",
             &beta_url,
             "signed-candidate",
@@ -1570,7 +1599,7 @@ mod tests {
         let error = updater_candidate_identity_from_parts(
             settings::UpdateChannel::Beta,
             "0.60.41-beta.2",
-            "windows-x86_64",
+            "windows",
             "windows-x86_64",
             &arbitrary,
             "signed-candidate",
@@ -1585,7 +1614,7 @@ mod tests {
         let error = updater_candidate_identity_from_parts(
             settings::UpdateChannel::Beta,
             "0.60.41-beta.2",
-            "windows-x86_64",
+            "windows",
             "windows-x86_64",
             &wrong_asset,
             "signed-candidate",
@@ -1596,10 +1625,21 @@ mod tests {
         let error = updater_candidate_identity_from_parts(
             settings::UpdateChannel::Beta,
             "0.60.41-beta.2",
-            "darwin-aarch64",
+            "darwin",
             "windows-x86_64",
             &beta_url,
             "signed-candidate",
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+
+        let error = updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Beta,
+            "0.60.41-beta.2",
+            "windows",
+            "windows-x86_64",
+            &beta_url,
+            "  \t",
         )
         .unwrap_err();
         assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
@@ -1615,7 +1655,7 @@ mod tests {
             let error = updater_candidate_identity_from_parts(
                 settings::UpdateChannel::Beta,
                 version,
-                "windows-x86_64",
+                "windows",
                 "windows-x86_64",
                 &url,
                 "signed-candidate",
@@ -1626,12 +1666,52 @@ mod tests {
     }
 
     #[test]
+    fn updater_platform_mapping_separates_os_targets_manifest_keys_and_assets() {
+        for (manifest_key, os_target, asset_name) in [
+            ("windows-x86_64", "windows", "aio-coding-hub-win64.msi"),
+            (
+                "darwin-x86_64",
+                "darwin",
+                "aio-coding-hub-macos-intel.tar.gz",
+            ),
+            (
+                "darwin-aarch64",
+                "darwin",
+                "aio-coding-hub-macos-arm.tar.gz",
+            ),
+            (
+                "linux-x86_64",
+                "linux",
+                "aio-coding-hub-linux-amd64.AppImage",
+            ),
+        ] {
+            let platform = official_updater_platform(manifest_key).expect("supported platform");
+            assert_eq!(platform.os_target, os_target);
+            assert_eq!(platform.asset_name, asset_name);
+        }
+        assert!(official_updater_platform("windows").is_err());
+        assert!(official_updater_platform("windows-aarch64").is_err());
+    }
+
+    #[test]
     fn updater_candidate_contract_pins_every_official_platform_asset() {
-        for (target, asset) in [
-            ("windows-x86_64", "aio-coding-hub-win64.msi"),
-            ("darwin-x86_64", "aio-coding-hub-macos-intel.tar.gz"),
-            ("darwin-aarch64", "aio-coding-hub-macos-arm.tar.gz"),
-            ("linux-x86_64", "aio-coding-hub-linux-amd64.AppImage"),
+        for (os_target, manifest_key, asset) in [
+            ("windows", "windows-x86_64", "aio-coding-hub-win64.msi"),
+            (
+                "darwin",
+                "darwin-x86_64",
+                "aio-coding-hub-macos-intel.tar.gz",
+            ),
+            (
+                "darwin",
+                "darwin-aarch64",
+                "aio-coding-hub-macos-arm.tar.gz",
+            ),
+            (
+                "linux",
+                "linux-x86_64",
+                "aio-coding-hub-linux-amd64.AppImage",
+            ),
         ] {
             let url = tauri::Url::parse(&format!(
                 "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v1.2.3/{asset}"
@@ -1640,8 +1720,8 @@ mod tests {
             updater_candidate_identity_from_parts(
                 settings::UpdateChannel::Stable,
                 "1.2.3",
-                target,
-                target,
+                os_target,
+                manifest_key,
                 &url,
                 "signed-candidate",
             )
@@ -1658,7 +1738,7 @@ mod tests {
         let (expected, _) = updater_candidate_identity_from_parts(
             settings::UpdateChannel::Beta,
             "0.60.41-beta.2",
-            "windows-x86_64",
+            "windows",
             "windows-x86_64",
             &url,
             "signature-a",
@@ -1675,6 +1755,11 @@ mod tests {
             {
                 let mut value = expected.clone();
                 value.target = "windows-aarch64-nsis".to_string();
+                value
+            },
+            {
+                let mut value = expected.clone();
+                value.manifest_key = "windows-aarch64".to_string();
                 value
             },
             {
