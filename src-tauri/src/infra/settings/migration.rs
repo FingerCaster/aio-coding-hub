@@ -1519,6 +1519,36 @@ fn migrate_add_codex_infinite_retry_test(
     changed
 }
 
+fn migrate_restore_cyber_passthrough(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if schema_version_present && settings.schema_version >= SCHEMA_VERSION_RESTORE_CYBER_PASSTHROUGH
+    {
+        return false;
+    }
+
+    let mut changed = migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_RESTORE_CYBER_PASSTHROUGH,
+    );
+    if settings
+        .upstream_retry_policy
+        .stream_internal_errors
+        .passthrough_keywords
+        .is_empty()
+    {
+        settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .push(DEFAULT_CYBER_PASSTHROUGH_KEYWORD.to_string());
+        changed = true;
+    }
+    changed
+}
+
 pub(super) fn sanitize_codex_infinite_retry_test(settings: &mut AppSettings) -> bool {
     if settings.codex_infinite_retry_test_interval_ms <= MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
         return false;
@@ -1572,9 +1602,13 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_stream_terminal_firewall,
     migrate_stream_terminal_firewall_legacy_fields,
     migrate_add_codex_infinite_retry_test,
+    migrate_restore_cyber_passthrough,
 ];
 
-fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
+pub(crate) fn migrate_to_current_schema(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
     let mut changed = false;
     for migration in SETTINGS_MIGRATIONS {
         changed |= migration(settings, schema_version_present);
@@ -1587,7 +1621,7 @@ pub(super) fn repair_settings(
     schema_version_present: bool,
     raw_settings_json: &serde_json::Value,
 ) -> AppResult<bool> {
-    let mut repaired = apply_settings_migrations(settings, schema_version_present);
+    let mut repaired = migrate_to_current_schema(settings, schema_version_present);
     repaired |= sanitize_log_retention_days(settings);
     repaired |= sanitize_request_log_retention_days(settings);
     repaired |= sanitize_failover_settings(settings);
@@ -2570,6 +2604,151 @@ mod tests {
                 .stream_internal_errors
                 .passthrough_keywords,
             vec!["vendor passthrough"]
+        );
+    }
+
+    #[test]
+    fn migrate_restore_cyber_passthrough_backfills_empty_legacy_schemas() {
+        for schema_version in [
+            SCHEMA_VERSION_ADD_UPDATE_CHANNEL,
+            SCHEMA_VERSION_ADD_STREAM_TERMINAL_FIREWALL,
+            SCHEMA_VERSION_MIGRATE_STREAM_TERMINAL_FIREWALL,
+            SCHEMA_VERSION_ADD_CODEX_INFINITE_RETRY_TEST,
+        ] {
+            let mut settings = AppSettings {
+                schema_version,
+                ..Default::default()
+            };
+            settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords
+                .clear();
+
+            assert!(migrate_to_current_schema(&mut settings, true));
+            assert_eq!(
+                settings.schema_version,
+                SCHEMA_VERSION_RESTORE_CYBER_PASSTHROUGH
+            );
+            assert_eq!(
+                settings
+                    .upstream_retry_policy
+                    .stream_internal_errors
+                    .passthrough_keywords,
+                vec![DEFAULT_CYBER_PASSTHROUGH_KEYWORD]
+            );
+        }
+    }
+
+    #[test]
+    fn migrate_restore_cyber_passthrough_backfills_missing_schema_and_semantically_empty_legacy() {
+        let mut missing_schema = AppSettings::default();
+        missing_schema
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .clear();
+
+        assert!(migrate_to_current_schema(&mut missing_schema, false));
+        assert_eq!(missing_schema.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            missing_schema
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords,
+            vec![DEFAULT_CYBER_PASSTHROUGH_KEYWORD]
+        );
+
+        let mut whitespace_only = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_INFINITE_RETRY_TEST,
+            ..Default::default()
+        };
+        whitespace_only
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords = vec![" \t ".to_string(), "\n".to_string()];
+
+        assert!(migrate_to_current_schema(&mut whitespace_only, true));
+        assert_eq!(whitespace_only.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            whitespace_only
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords,
+            vec![DEFAULT_CYBER_PASSTHROUGH_KEYWORD]
+        );
+    }
+
+    #[test]
+    fn migrate_restore_cyber_passthrough_preserves_current_empty_and_custom_legacy_values() {
+        for schema_version in [SCHEMA_VERSION_RESTORE_CYBER_PASSTHROUGH, SCHEMA_VERSION + 1] {
+            let mut settings = AppSettings {
+                schema_version,
+                ..Default::default()
+            };
+            settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords
+                .clear();
+
+            assert!(!migrate_to_current_schema(&mut settings, true));
+            assert!(settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords
+                .is_empty());
+        }
+
+        let mut custom = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_INFINITE_RETRY_TEST,
+            ..Default::default()
+        };
+        custom
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords = vec!["vendor passthrough".to_string()];
+
+        assert!(migrate_to_current_schema(&mut custom, true));
+        assert_eq!(custom.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            custom
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords,
+            vec!["vendor passthrough"]
+        );
+    }
+
+    #[test]
+    fn migrate_restore_cyber_passthrough_preserves_disabled_and_is_idempotent() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_INFINITE_RETRY_TEST,
+            ..Default::default()
+        };
+        settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .clear();
+        settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .enabled = false;
+
+        assert!(migrate_to_current_schema(&mut settings, true));
+        assert!(
+            !settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .enabled
+        );
+        let migrated = serde_json::to_value(&settings).expect("serialize migrated settings");
+
+        assert!(!migrate_to_current_schema(&mut settings, true));
+        assert_eq!(
+            serde_json::to_value(&settings).expect("serialize repeated migration"),
+            migrated
         );
     }
 

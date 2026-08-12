@@ -517,8 +517,14 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         None
     };
 
-    let mut settings_to_write: settings::AppSettings = serde_json::from_str(&settings)
+    let raw_settings: serde_json::Value = serde_json::from_str(&settings)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid settings bundle: {e}"))?;
+    let schema_version_present = raw_settings.get("schema_version").is_some();
+    let mut settings_to_write: settings::AppSettings = serde_json::from_value(raw_settings)
+        .map_err(|e| format!("SEC_INVALID_INPUT: invalid settings bundle: {e}"))?;
+    if !schema_version_present || settings_to_write.schema_version < settings::SCHEMA_VERSION {
+        settings::migrate_to_current_schema(&mut settings_to_write, schema_version_present);
+    }
     if imports_model_routing {
         settings::normalize_model_routing_policy_for_write(
             &mut settings_to_write.model_routing_policy,

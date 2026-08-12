@@ -47,9 +47,9 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 - New retry-policy defaults expose only the behavior-bearing HTTP 400 capacity
   content rule. Native 5xx handling does not require visible `502` / `503` /
   `504` status-only rows. Stream terminal handling defaults to enabled with
-  `high-risk cyber` as its sole passthrough exception. An explicitly persisted
-  empty list stays empty. Connect, timeout, and read transport retries remain
-  selected by default.
+  `high-risk cyber` as its sole passthrough exception. Settings schema 62
+  preserves an explicitly persisted empty list. Connect, timeout, and read
+  transport retries remain selected by default.
 - `stream_internal_errors.enabled` is the sole master switch for every new
   terminal action. Missing/new values default to `true`; an explicit persisted
   `false` is preserved. `true` enables classification, pre-commit retry or
@@ -144,15 +144,20 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   and verbose stream evidence contain no upstream terminal message, code, type,
   or matched keyword. Internal events/request logs retain bounded, redacted
   evidence.
-- Settings schema is `59`. Reads merge old `non_retry_keywords` into
+- Settings schema is `62`. Reads merge old `non_retry_keywords` into
   `passthrough_keywords` and old `retry_keywords` into hidden
   `legacy_retry_keywords`; canonical writes emit neither old field. When both
   the canonical passthrough field and its legacy alias are missing, reads use
-  the `high-risk cyber` default; either field being explicitly present,
-  including as an empty list, preserves the persisted choice. Provider shares
-  read v1-v3 and export strict v4. Unknown/future versions and old field names
-  inside v4 are explicitly rejected so older clients cannot silently discard
-  the new semantics.
+  the `high-risk cyber` default. Canonical global settings at schema 61 or
+  earlier receive a one-time migration from an empty passthrough list to the
+  shared `high-risk cyber` default; schema 62 or later preserves an explicit
+  empty list. The migration leaves a non-empty custom list, the stream master
+  switch, and every complete Provider override unchanged. Old settings inside
+  config bundles run through the same migration before the existing atomic
+  whole-snapshot CAS, while current-schema imports preserve explicit empty.
+  Provider shares read v1-v3 and export strict v4. Unknown/future versions and
+  old field names inside v4 are explicitly rejected so older clients cannot
+  silently discard the new semantics.
 - The persisted global `AppSettings.upstream_retry_policy` decoder is a
   compatibility boundary: additive future policy and stream-policy fields are
   ignored while known valid fields are retained, and malformed content falls
@@ -231,9 +236,11 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 ### 6. Tests Required
 
 - Persistence tests assert missing master switch defaults `true`, explicit old
-  `false` survives schema 59 migration, both old keyword fields migrate to the
-  correct new field, canonical writes omit old names, and invalid writes remain
-  bounded and strict.
+  `false` survives migration, both old keyword fields migrate to the correct
+  new field, schema 58-61 empty global passthrough lists receive the one-time
+  Cyber default, schema 62 empty stays empty across reload, old config imports
+  share that migration, canonical writes omit old names, and invalid writes
+  remain bounded and strict.
 - Provider-share tests read v1-v3, export deterministic strict v4, round-trip
   passthrough/legacy fields, and explicitly reject future versions, v4 old field
   aliases, and unknown nested fields.
@@ -265,9 +272,9 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   later keyed projection without double counting, orphaned pending usage at a
   round boundary, final client usage isolation, and unchanged non-test behavior.
 - Default-policy tests keep Rust and TypeScript aligned: only the HTTP 400
-  capacity content rule is prefilled, passthrough and hidden legacy lists are
-  empty, the stream master switch is enabled, and the three transport retry
-  kinds remain selected.
+  capacity content rule is prefilled, passthrough contains only the shared
+  `high-risk cyber` default, the hidden legacy list is empty, the stream master
+  switch is enabled, and the three transport retry kinds remain selected.
 - Use paused time for guard and backoff boundaries. Assert same-Provider waits
   exactly once and Provider switching waits zero.
 - Frontend tests cover segmented mode switching, retry/rewrite save ownership,

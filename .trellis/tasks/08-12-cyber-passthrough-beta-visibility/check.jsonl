@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"复核默认 Cyber 透传、显式空列表、Provider override 与终态行为没有漂移。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"复核迁移幂等、原子写入、导入和并发 settings writer 安全。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"复核 Beta 资产、签名、manifest、指针和 stable 隔离。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"复核 origin/main 可达性、不可变发布源和发布后独立验证。"}

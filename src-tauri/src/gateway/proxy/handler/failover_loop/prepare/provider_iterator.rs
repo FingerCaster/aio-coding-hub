@@ -609,15 +609,21 @@ mod tests {
             enabled: true,
             http_rules: vec![UpstreamHttpRetryRule::status_only(429)],
             transport_errors: vec![UpstreamTransportRetryKind::Connect],
-            stream_internal_errors: Default::default(),
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: true,
+                passthrough_keywords: Vec::new(),
+                legacy_retry_keywords: Vec::new(),
+            },
             max_retries: 3,
             backoff_ms: 750,
             counts_toward_circuit_breaker: true,
         };
-        assert_eq!(
-            effective_upstream_retry_policy(&global, Some(&provider_override)),
-            provider_override
-        );
+        let effective = effective_upstream_retry_policy(&global, Some(&provider_override));
+        assert_eq!(effective, provider_override);
+        assert!(effective
+            .stream_internal_errors
+            .passthrough_keywords
+            .is_empty());
 
         let explicitly_disabled = UpstreamRetryPolicy {
             enabled: false,

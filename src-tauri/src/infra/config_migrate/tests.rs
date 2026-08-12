@@ -234,6 +234,118 @@ fn prepare_config_import_normalizes_beta_participation_to_stable() {
 }
 
 #[test]
+fn prepare_config_import_applies_cyber_passthrough_settings_schema_migration() {
+    let mut legacy_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut legacy = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    legacy["schema_version"] = serde_json::json!(61);
+    legacy["upstream_retry_policy"]["stream_internal_errors"]["enabled"] = serde_json::json!(false);
+    legacy["upstream_retry_policy"]["stream_internal_errors"]["passthrough_keywords"] =
+        serde_json::json!([]);
+    legacy_bundle.settings = serde_json::to_string(&legacy).expect("legacy settings");
+
+    let migrated = prepare_config_import(legacy_bundle).expect("prepare legacy settings import");
+    assert_eq!(
+        migrated.settings_to_write.schema_version,
+        settings::SCHEMA_VERSION
+    );
+    assert!(
+        !migrated
+            .settings_to_write
+            .upstream_retry_policy
+            .stream_internal_errors
+            .enabled
+    );
+    assert_eq!(
+        migrated
+            .settings_to_write
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords,
+        vec!["high-risk cyber"]
+    );
+
+    let mut missing_schema_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut missing_schema = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    missing_schema
+        .as_object_mut()
+        .expect("settings object")
+        .remove("schema_version");
+    missing_schema["upstream_retry_policy"]["stream_internal_errors"]["passthrough_keywords"] =
+        serde_json::json!([]);
+    missing_schema_bundle.settings =
+        serde_json::to_string(&missing_schema).expect("missing-schema settings");
+
+    let migrated_missing_schema = prepare_config_import(missing_schema_bundle)
+        .expect("prepare missing-schema settings import");
+    assert_eq!(
+        migrated_missing_schema
+            .settings_to_write
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords,
+        vec!["high-risk cyber"]
+    );
+
+    let mut current_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut current = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    current["upstream_retry_policy"]["stream_internal_errors"]["passthrough_keywords"] =
+        serde_json::json!([]);
+    current_bundle.settings = serde_json::to_string(&current).expect("current settings");
+
+    let preserved = prepare_config_import(current_bundle).expect("prepare current settings import");
+    assert!(preserved
+        .settings_to_write
+        .upstream_retry_policy
+        .stream_internal_errors
+        .passthrough_keywords
+        .is_empty());
+}
+
+#[test]
+fn config_import_persists_legacy_cyber_passthrough_migration() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut legacy = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    legacy["schema_version"] = serde_json::json!(61);
+    legacy["upstream_retry_policy"]["stream_internal_errors"]["passthrough_keywords"] =
+        serde_json::json!([]);
+    bundle.settings = serde_json::to_string(&legacy).expect("legacy settings");
+
+    config_import(&app, &test_app.db, bundle).expect("import legacy settings");
+
+    let canonical = settings::read(&app).expect("read imported settings");
+    assert_eq!(canonical.schema_version, settings::SCHEMA_VERSION);
+    assert_eq!(
+        canonical
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords,
+        vec!["high-risk cyber"]
+    );
+}
+
+#[test]
+fn config_import_current_schema_still_uses_strict_retry_policy_validation() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("read previous settings");
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut current = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    current["upstream_retry_policy"]["http_rules"][0]["status_code"] = serde_json::json!(399);
+    bundle.settings = serde_json::to_string(&current).expect("invalid current settings");
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("strict settings writer must reject an invalid current retry policy");
+    assert_eq!(error.code(), "SEC_INVALID_INPUT");
+    assert_eq!(
+        serde_json::to_value(settings::read(&app).expect("read settings after rejected import"))
+            .expect("serialize settings after rejected import"),
+        serde_json::to_value(previous).expect("serialize previous settings")
+    );
+}
+
+#[test]
 fn config_export_always_serializes_stable_update_channel() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();

@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"定义 Codex 流终态防火墙、透传例外、默认值与跨层测试合同。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"约束 canonical settings 迁移、原子持久化、字段所有权与并发写入。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"约束 Beta 版本选择、不可变 source SHA、Release flags、指针 CAS 与稳定频道隔离。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"确保 Rust 默认、TypeScript 投影、UI 展示、迁移和导入路径保持一致。"}

@@ -758,6 +758,96 @@ mod tests {
     }
 
     #[test]
+    fn read_migrates_schema_61_cyber_passthrough_once_and_preserves_schema_62_clear() {
+        let _env_lock = test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvVarRestore::set("AIO_CODING_HUB_HOME_DIR", home.path());
+        let _dotdir_restore = EnvVarRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-coding-hub-cyber-passthrough-migration-test",
+        );
+        clear_settings_cache();
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let path = settings_path(&handle).expect("settings path");
+        std::fs::create_dir_all(path.parent().expect("settings parent"))
+            .expect("create settings parent");
+
+        let mut legacy = serde_json::to_value(AppSettings::default()).expect("legacy settings");
+        legacy["schema_version"] = serde_json::json!(61);
+        legacy["upstream_retry_policy"]["stream_internal_errors"]["passthrough_keywords"] =
+            serde_json::json!([]);
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&legacy).expect("serialize legacy settings"),
+        )
+        .expect("write legacy settings");
+
+        let migrated = read(&handle).expect("read and migrate settings");
+        assert_eq!(migrated.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            migrated
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords,
+            vec![DEFAULT_CYBER_PASSTHROUGH_KEYWORD]
+        );
+
+        let persisted = std::fs::read(&path).expect("read persisted migration");
+        let persisted_json: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("parse persisted migration");
+        assert_eq!(persisted_json["schema_version"], SCHEMA_VERSION);
+        assert_eq!(
+            persisted_json["upstream_retry_policy"]["stream_internal_errors"]
+                ["passthrough_keywords"],
+            serde_json::json!([DEFAULT_CYBER_PASSTHROUGH_KEYWORD])
+        );
+
+        clear_settings_cache();
+        let reread = read(&handle).expect("reread migrated settings");
+        assert_eq!(reread.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            std::fs::read(&path).expect("reread persisted bytes"),
+            persisted
+        );
+
+        let (cleared, ()) = update(&handle, |settings| {
+            settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .passthrough_keywords
+                .clear();
+            Ok(())
+        })
+        .expect("clear migrated passthrough list");
+        assert_eq!(cleared.schema_version, SCHEMA_VERSION);
+        assert!(cleared
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .is_empty());
+
+        clear_settings_cache();
+        let restarted = read(&handle).expect("restart with explicit schema 62 empty list");
+        assert_eq!(restarted.schema_version, SCHEMA_VERSION);
+        assert!(restarted
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .is_empty());
+        let restarted_json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read cleared persisted settings"))
+                .expect("parse cleared persisted settings");
+        assert_eq!(
+            restarted_json["upstream_retry_policy"]["stream_internal_errors"]
+                ["passthrough_keywords"],
+            serde_json::json!([])
+        );
+        clear_settings_cache();
+    }
+
+    #[test]
     fn parse_settings_json_round_trips_disabled_provider_failback_strategy() {
         let (settings, _, _) =
             parse_settings_json(r#"{"provider_failback_strategy":"disabled"}"#).unwrap();

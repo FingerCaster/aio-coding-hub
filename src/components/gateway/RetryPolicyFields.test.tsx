@@ -1,16 +1,22 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   cloneUpstreamRetryPolicy,
+  DEFAULT_CYBER_PASSTHROUGH_KEYWORD,
   DEFAULT_UPSTREAM_RETRY_POLICY,
 } from "../../services/gateway/upstreamRetryPolicy";
-import type { UpstreamRetryPolicy } from "../../services/settings/settings";
+import { settingsGet, type UpstreamRetryPolicy } from "../../services/settings/settings";
+import { resetMswState } from "../../test/msw/state";
 import { RetryPolicyFields } from "./RetryPolicyFields";
 
-function Harness() {
+function Harness({
+  initialPolicy = DEFAULT_UPSTREAM_RETRY_POLICY,
+}: {
+  initialPolicy?: UpstreamRetryPolicy;
+}) {
   const [policy, setPolicy] = useState<UpstreamRetryPolicy>(() =>
-    cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY)
+    cloneUpstreamRetryPolicy(initialPolicy)
   );
   return (
     <>
@@ -30,6 +36,8 @@ function LegacyKeywordHarness() {
 }
 
 describe("RetryPolicyFields", () => {
+  beforeEach(() => resetMswState());
+
   it("adds, edits, disables, and deletes HTTP rules", () => {
     render(<Harness />);
 
@@ -78,8 +86,12 @@ describe("RetryPolicyFields", () => {
     expect(deleted.http_rules).toHaveLength(1);
   });
 
-  it("edits and disables the stream terminal firewall passthrough policy", () => {
-    render(<Harness />);
+  it("renders canonical settings and edits the stream terminal firewall passthrough policy", async () => {
+    const canonical = await settingsGet();
+    const canonicalKeywords =
+      canonical.upstream_retry_policy.stream_internal_errors.passthrough_keywords;
+    expect(canonicalKeywords).toEqual([DEFAULT_CYBER_PASSTHROUGH_KEYWORD]);
+    render(<Harness initialPolicy={canonical.upstream_retry_policy} />);
 
     expect(screen.getByText("网络与传输失败")).toBeInTheDocument();
     expect(screen.getByText("无法与供应商建立连接。")).toBeInTheDocument();
@@ -88,7 +100,7 @@ describe("RetryPolicyFields", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
     expect(screen.getByText(/502 \/ GW_FAKE_200/)).toBeInTheDocument();
     const passthroughKeywords = screen.getByLabelText("终态帧透传例外（每行一项）");
-    expect(passthroughKeywords).toHaveValue("high-risk cyber");
+    expect(passthroughKeywords).toHaveValue(canonicalKeywords.join("\n"));
     fireEvent.change(passthroughKeywords, { target: { value: "ticket-123\nvendor oddity" } });
 
     let edited = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as {
