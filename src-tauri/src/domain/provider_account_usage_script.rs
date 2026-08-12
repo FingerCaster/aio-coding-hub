@@ -1,9 +1,9 @@
 //! Constrained JavaScript adapter for display-only provider account usage.
 
 use crate::domain::provider_account_usage::{
-    ProviderAccountUsageAdapterKind, ProviderAccountUsageCustomConfig,
-    ProviderAccountUsageFreshness, ProviderAccountUsageResult, ProviderAccountUsageStatus,
-    CUSTOM_ACCOUNT_USAGE_MAX_SCRIPT_BYTES,
+    apply_account_usage_cache_busting_to_request, ProviderAccountUsageAdapterKind,
+    ProviderAccountUsageCustomConfig, ProviderAccountUsageFreshness, ProviderAccountUsageResult,
+    ProviderAccountUsageStatus, CUSTOM_ACCOUNT_USAGE_MAX_SCRIPT_BYTES,
 };
 use rquickjs::context::intrinsic;
 use rquickjs::{Context, Function, Object, Runtime, Value as JsValue};
@@ -881,9 +881,11 @@ fn validate_and_build_request(
         }
         builder = builder.body(body);
     }
-    builder
+    let mut request = builder
         .build()
-        .map_err(|_| CustomScriptError::InvalidRequest)
+        .map_err(|_| CustomScriptError::InvalidRequest)?;
+    apply_account_usage_cache_busting_to_request(&mut request);
+    Ok(request)
 }
 
 fn is_forbidden_request_header(name: &reqwest::header::HeaderName) -> bool {
@@ -1262,6 +1264,16 @@ mod tests {
         assert_eq!(
             built.url().origin().ascii_serialization(),
             "https://usage.example.test"
+        );
+        assert_eq!(
+            built.headers().get(reqwest::header::CACHE_CONTROL),
+            Some(&reqwest::header::HeaderValue::from_static(
+                "no-cache, no-store"
+            ))
+        );
+        assert_eq!(
+            built.headers().get(reqwest::header::PRAGMA),
+            Some(&reqwest::header::HeaderValue::from_static("no-cache"))
         );
 
         let forbidden = CustomAccountUsageRequestPlan {

@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md", "reason": "复审四平台映射、严格清单、fresh-check 与 channel 隔离"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "跨层质量检查与 generated bindings 门禁"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "复审跨层数据流和语义分离"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md", "reason": "复审 Beta 发布不可变来源与资产合同"}

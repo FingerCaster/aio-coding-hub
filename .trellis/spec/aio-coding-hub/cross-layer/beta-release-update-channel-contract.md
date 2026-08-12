@@ -105,6 +105,16 @@ beta-channel.yml:
   `windows-x86_64`, `darwin-x86_64`, `darwin-aarch64`, and `linux-x86_64`;
   every entry contains only its canonical Release asset URL and non-empty
   signature.
+- The Tauri updater exposes two different platform identities and they must
+  never be compared as if they were the same value. `Update.target` is the
+  operating-system target used by the installer (`windows`, `darwin`, or
+  `linux`), while `tauri_plugin_updater::target()` returns the architecture-
+  qualified static manifest key (`windows-x86_64`, `darwin-x86_64`,
+  `darwin-aarch64`, or `linux-x86_64`). A single official platform mapping
+  must connect the manifest key to its OS target and canonical asset name;
+  candidate identity must retain both fields. Comparing `Update.target`
+  directly with the manifest key rejects valid Windows updates with
+  `UPDATER_MANIFEST_INVALID`.
 - A `rid` is one-shot. The backend consumes it before confirmation, fresh
   check, download, or install. On any install failure the renderer removes the
   spent candidate and performs a fresh check before enabling retry.

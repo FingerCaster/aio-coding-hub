@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"质量检查必须覆盖 force fetch、late-result suppression、loading/error 和 provider isolation"}
+{"file":".trellis/spec/guides/index.md","reason":"跨层数据流、测试覆盖和敏感信息审计的共享检查要求"}
+{"file":".trellis/tasks/08-13-fix-balance-refresh/prd.md","reason":"本任务验收标准"}
+{"file":".trellis/tasks/08-13-fix-balance-refresh/design.md","reason":"本任务边界、提交顺序和回滚约束"}

@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"检查 force fetch、late result、cache isolation 和请求 header"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"检查 target 映射、fresh-check、pointer CAS 和 Stable 隔离"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"检查 PR 合入 SHA、14 assets 和 release flags"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查跨层回归、冲突和安全边界"}

@@ -1,0 +1,29 @@
+{
+  "id": "beta-balance-release",
+  "name": "beta-balance-release",
+  "title": "集成余额刷新与 Beta updater 修复并发布",
+  "description": "合并余额查询缓存修复与 Beta updater 平台映射修复，处理冲突，经质量门禁后发布递增 Beta。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P1",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-13",
+  "completedAt": null,
+  "branch": "FingerCaster/beta-balance-integration",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/beta-balance-integration",
+    "base_sha": "54e422373383ab3bfc34c10177c1ff639fb088ec"
+  }
+}

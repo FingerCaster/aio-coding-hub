@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md", "reason": "不可变 SHA 发布与发布后核验约束"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "分析 OS target 与 manifest key 的跨层边界"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md", "reason": "Beta updater target、manifest、channel 与安装一致性合同"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "跨层变更入口与质量门禁"}

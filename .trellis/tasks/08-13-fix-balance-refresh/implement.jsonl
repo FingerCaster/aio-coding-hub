@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"账户用量自动、定时、手动刷新及 runtime force/route 共享契约"}
+{"file":".trellis/tasks/archive/2026-08/08-08-fix-zero-balance-manual-refresh-regression/design.md","reason":"上次零余额手动刷新回归的 runtime force epoch 设计，作为当前实现对照"}
+{"file":".trellis/tasks/archive/2026-08/08-08-fix-zero-balance-manual-refresh-regression/bug-analysis.md","reason":"上次回归根因、覆盖缺口和防复发要求"}
+{"file":".trellis/tasks/archive/2026-08/08-08-fix-zero-balance-manual-refresh-regression/research/runtime-refresh-chain.md","reason":"IPC 到 runtime 的已核实刷新链路和可证伪假设"}
