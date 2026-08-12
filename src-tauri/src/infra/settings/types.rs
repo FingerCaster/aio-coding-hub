@@ -755,7 +755,7 @@ mod tests {
     use super::{
         AppSettings, ModelRoutingPolicy, UpdateChannel, UpstreamRetryPolicy,
         UpstreamStreamInternalErrorPolicy, UpstreamTransportRetryKind,
-        DEFAULT_CAPACITY_RETRY_KEYWORD, DEFAULT_CYBER_PASSTHROUGH_KEYWORD,
+        DEFAULT_CAPACITY_RETRY_KEYWORD, DEFAULT_CYBER_PASSTHROUGH_KEYWORD, SCHEMA_VERSION,
     };
 
     #[test]
@@ -854,6 +854,40 @@ mod tests {
         assert!(serialized.get("retry_keywords").is_none());
         assert!(serialized.get("non_retry_keywords").is_none());
         assert_eq!(serialized["enabled"], false);
+    }
+
+    #[test]
+    fn current_settings_schema_deserializes_an_explicit_empty_passthrough_list() {
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "upstream_retry_policy": {
+                "stream_internal_errors": {
+                    "enabled": true,
+                    "passthrough_keywords": []
+                }
+            }
+        }))
+        .expect("current settings with an explicit empty passthrough list");
+
+        assert_eq!(settings.schema_version, SCHEMA_VERSION);
+        assert!(settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .is_empty());
+
+        let serialized = serde_json::to_value(&settings).expect("serialize current settings");
+        assert_eq!(
+            serialized["upstream_retry_policy"]["stream_internal_errors"]["passthrough_keywords"],
+            serde_json::json!([])
+        );
+        let reparsed: AppSettings =
+            serde_json::from_value(serialized).expect("reparse current settings");
+        assert!(reparsed
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .is_empty());
     }
 
     #[test]

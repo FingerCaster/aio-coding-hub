@@ -7,6 +7,7 @@ import { GatewayErrorCodes } from "../gatewayErrorCodes";
 import { HOME_USAGE_PERIOD_VALUES } from "../homeUsagePeriods";
 import { MAX_MODEL_NAME_LEN } from "../../schemas/providerEditorDialog";
 import { DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE } from "../../services/gateway/circuitNotice";
+import { DEFAULT_CYBER_PASSTHROUGH_KEYWORD } from "../../services/gateway/upstreamRetryPolicy";
 import { CODEX_SYSTEM_REQUEST_SPECIAL_SETTING } from "../../services/gateway/requestLogSpecialSettings";
 import { MAX_ATTEMPTS_PER_TRACE } from "../../services/gateway/traceLimits";
 import { SETTINGS_VALIDATION_LIMITS } from "../../services/settings/settingsValidation";
@@ -180,6 +181,12 @@ describe("cross-layer contracts", () => {
     expect(settings.enable_billing_header_rectifier).toBe(
       extractRustBoolConst(settingsDefaultsSource, "DEFAULT_ENABLE_BILLING_HEADER_RECTIFIER")
     );
+    expect(settings.upstream_retry_policy.stream_internal_errors.passthrough_keywords).toEqual([
+      DEFAULT_CYBER_PASSTHROUGH_KEYWORD,
+    ]);
+    expect(
+      extractRustStringConst(settingsDefaultsSource, "DEFAULT_CYBER_PASSTHROUGH_KEYWORD")
+    ).toBe(DEFAULT_CYBER_PASSTHROUGH_KEYWORD);
   });
 
   it("keeps app error codes emitted by their owning Rust modules", () => {

@@ -6,7 +6,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 61,
+      schema_version: 62,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
