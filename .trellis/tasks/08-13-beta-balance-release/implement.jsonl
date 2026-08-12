@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"余额刷新共享请求、缓存绕过、适配器和副作用隔离合同"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"Beta updater 平台映射、严格 manifest、发布和客户端验证合同"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"不可变源 SHA、资产矩阵和发布门禁"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"跨层数据流、冲突解决和敏感信息审计"}
