@@ -1,0 +1,30 @@
+{
+  "id": "cyber-passthrough-beta-visibility",
+  "name": "cyber-passthrough-beta-visibility",
+  "title": "修复并验证 Cyber 透传例外在 Beta 中可见",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-12",
+  "completedAt": "2026-08-12",
+  "branch": "FingerCaster/cyber-passthrough-beta-fix",
+  "base_branch": "main",
+  "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/cyber-passthrough-beta-fix",
+  "commit": "d295ef53dafb63adde1892613523d65cde967b8b",
+  "pr_url": "https://github.com/FingerCaster/aio-coding-hub/pull/32",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Released aio-coding-hub-v0.60.41-beta.3 from immutable origin/main SHA d295ef53dafb63adde1892613523d65cde967b8b. Release run 31584587373 and independent 14-asset/channel/stable-isolation audit passed.",
+  "meta": {
+    "release_tag": "aio-coding-hub-v0.60.41-beta.3",
+    "release_run_id": "31584587373",
+    "release_url": "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.60.41-beta.3"
+  }
+}
