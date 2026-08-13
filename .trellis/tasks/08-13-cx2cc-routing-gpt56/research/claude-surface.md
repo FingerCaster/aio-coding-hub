@@ -15,8 +15,8 @@
 > unknown 时不得宣称精确值。思考强度必须保留调用方请求的 presence/value，不能
 > 由 settings 中的固定值覆盖；本任务不移植 `e2d03792` rectifier。
 
-**审计人员：** claude-surface (Agent, cx2cc-parallel-research channel)  
-**审计时间：** 2026-08-13  
+**审计人员：** claude-surface (Agent, cx2cc-parallel-research channel)
+**审计时间：** 2026-08-13
 **审计轮次：** 第二轮（纠正第一轮错误结论，补充 R8 context window 分析）
 
 **审计基线：**
@@ -91,7 +91,7 @@
 
 ### 1.1 问题描述
 
-**用户需求（R8）：**  
+**用户需求（R8）：**
 CX2CC 需按实际 GPT 型号设置 context window，避免 Claude/Codex 调用压缩异常。
 
 **链路断裂分析：**
