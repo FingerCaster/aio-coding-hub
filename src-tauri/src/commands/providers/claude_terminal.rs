@@ -13,8 +13,33 @@ const ENV_DISABLE_TELEMETRY: &str = "DISABLE_TELEMETRY";
 const ENV_MCP_TIMEOUT: &str = "MCP_TIMEOUT";
 const ENV_ANTHROPIC_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const ENV_ANTHROPIC_AUTH_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
+const ENV_ANTHROPIC_DEFAULT_OPUS_MODEL: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
+const ENV_ANTHROPIC_DEFAULT_SONNET_MODEL: &str = "ANTHROPIC_DEFAULT_SONNET_MODEL";
+const ENV_ANTHROPIC_DEFAULT_HAIKU_MODEL: &str = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
+const ENV_CLAUDE_CODE_MAX_CONTEXT_TOKENS: &str = "CLAUDE_CODE_MAX_CONTEXT_TOKENS";
+const ENV_CLAUDE_CODE_AUTO_COMPACT_WINDOW: &str = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
+const CX2CC_CLAUDE_OPUS_MODEL_ALIAS: &str = "aio-cx2cc-opus";
+const CX2CC_CLAUDE_SONNET_MODEL_ALIAS: &str = "aio-cx2cc-sonnet";
+const CX2CC_CLAUDE_HAIKU_MODEL_ALIAS: &str = "aio-cx2cc-haiku";
 const CLAUDE_LAUNCHER_DIR_NAME: &str = "claude-launchers";
 const CLAUDE_LAUNCHER_ARTIFACT_TTL_SECS: u64 = 60 * 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeTerminalContextWindowProjection {
+    NotApplicable,
+    Exact(u64),
+    Mixed(u64),
+    Unknown(&'static str),
+}
+
+impl ClaudeTerminalContextWindowProjection {
+    fn context_window(self) -> Option<u64> {
+        match self {
+            Self::Exact(context_window) | Self::Mixed(context_window) => Some(context_window),
+            Self::NotApplicable | Self::Unknown(_) => None,
+        }
+    }
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -33,16 +58,159 @@ pub(crate) async fn provider_claude_terminal_launch_command(
 
     blocking::run("provider_claude_terminal_launch_command", move || {
         let launch = providers::claude_terminal_launch_context(&db, provider_id)?;
+        let context_window_projection = if launch.is_cx2cc {
+            match resolve_cx2cc_terminal_context_window(&app, &db, &launch) {
+                Ok(projection) => projection,
+                Err(error) => {
+                    tracing::warn!(
+                        provider_id,
+                        error_code = error.code(),
+                        "cx2cc terminal context projection unavailable; using Claude defaults"
+                    );
+                    ClaudeTerminalContextWindowProjection::Unknown("resolver_unavailable")
+                }
+            }
+        } else {
+            ClaudeTerminalContextWindowProjection::NotApplicable
+        };
+        log_context_window_projection(provider_id, context_window_projection);
         let claude_base_url = build_claude_gateway_base_url(&gateway_base_origin, provider_id);
         create_claude_terminal_launch_command(
             &app,
             provider_id,
             &claude_base_url,
             &launch.api_key_plaintext,
+            context_window_projection.context_window(),
         )
     })
     .await
     .map_err(Into::into)
+}
+
+fn resolve_cx2cc_terminal_context_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    db: &crate::db::Db,
+    launch: &providers::ClaudeTerminalLaunchContext,
+) -> crate::shared::error::AppResult<ClaudeTerminalContextWindowProjection> {
+    let settings = crate::settings::read(app)?;
+    let remote_model_ids = process_remote_model_ids(launch, &settings);
+    if remote_model_ids.is_empty() {
+        return Ok(ClaudeTerminalContextWindowProjection::Unknown(
+            "process_model_unavailable",
+        ));
+    }
+
+    let provider_identities = match launch.source_provider_id {
+        Some(provider_id) => {
+            let Some(provider_uuid) = launch.source_provider_uuid.as_ref() else {
+                return Ok(ClaudeTerminalContextWindowProjection::Unknown(
+                    "source_identity_unavailable",
+                ));
+            };
+            vec![(provider_id, provider_uuid.clone())]
+        }
+        None => providers::list_enabled_for_gateway_using_active_mode(db, "codex")?
+            .providers
+            .into_iter()
+            .map(|provider| (provider.id, provider.provider_uuid))
+            .collect(),
+    };
+    let candidates = context_window_candidates(&provider_identities, &remote_model_ids);
+
+    Ok(
+        match crate::provider_models::resolve_context_window_projection(db, &candidates)? {
+            crate::provider_models::ProviderModelContextWindowProjection::Exact {
+                context_window,
+            } => ClaudeTerminalContextWindowProjection::Exact(context_window),
+            crate::provider_models::ProviderModelContextWindowProjection::Mixed {
+                conservative_context_window,
+            } => ClaudeTerminalContextWindowProjection::Mixed(conservative_context_window),
+            crate::provider_models::ProviderModelContextWindowProjection::Unknown { reason } => {
+                ClaudeTerminalContextWindowProjection::Unknown(reason.as_str())
+            }
+        },
+    )
+}
+
+fn process_remote_model_ids(
+    launch: &providers::ClaudeTerminalLaunchContext,
+    settings: &crate::settings::AppSettings,
+) -> Vec<String> {
+    let models = [
+        launch
+            .claude_models
+            .opus_model
+            .as_deref()
+            .unwrap_or(&settings.cx2cc_fallback_model_opus),
+        launch
+            .claude_models
+            .haiku_model
+            .as_deref()
+            .unwrap_or(&settings.cx2cc_fallback_model_haiku),
+        launch
+            .claude_models
+            .sonnet_model
+            .as_deref()
+            .unwrap_or(&settings.cx2cc_fallback_model_sonnet),
+        launch
+            .claude_models
+            .main_model
+            .as_deref()
+            .unwrap_or(&settings.cx2cc_fallback_model_main),
+    ];
+    let mut unique = Vec::new();
+    for model in models {
+        if !unique.iter().any(|existing| existing == model) {
+            unique.push(model.to_string());
+        }
+    }
+    unique
+}
+
+fn context_window_candidates(
+    provider_identities: &[(i64, String)],
+    remote_model_ids: &[String],
+) -> Vec<crate::provider_models::ProviderModelContextWindowCandidate> {
+    let mut candidates = Vec::with_capacity(provider_identities.len() * remote_model_ids.len());
+    for (provider_id, provider_uuid) in provider_identities {
+        for remote_model_id in remote_model_ids {
+            candidates.push(
+                crate::provider_models::ProviderModelContextWindowCandidate {
+                    provider_id: *provider_id,
+                    provider_uuid: provider_uuid.clone(),
+                    remote_model_id: remote_model_id.clone(),
+                },
+            );
+        }
+    }
+    candidates
+}
+
+fn log_context_window_projection(
+    provider_id: i64,
+    projection: ClaudeTerminalContextWindowProjection,
+) {
+    match projection {
+        ClaudeTerminalContextWindowProjection::NotApplicable => {}
+        ClaudeTerminalContextWindowProjection::Exact(context_window) => tracing::info!(
+            provider_id,
+            projection = "exact",
+            context_window,
+            "cx2cc terminal context projected"
+        ),
+        ClaudeTerminalContextWindowProjection::Mixed(context_window) => tracing::info!(
+            provider_id,
+            projection = "mixed",
+            context_window,
+            "cx2cc terminal context projected conservatively"
+        ),
+        ClaudeTerminalContextWindowProjection::Unknown(reason) => tracing::info!(
+            provider_id,
+            projection = "unknown",
+            reason,
+            "cx2cc terminal context not projected; using Claude defaults"
+        ),
+    }
 }
 
 fn ensure_gateway_base_origin(
@@ -151,6 +319,7 @@ fn create_claude_terminal_launch_command<R: tauri::Runtime>(
     provider_id: i64,
     base_url: &str,
     api_key_plaintext: &str,
+    context_window: Option<u64>,
 ) -> crate::shared::error::AppResult<String> {
     let now = crate::shared::time::now_unix_seconds();
     let pid = std::process::id();
@@ -159,7 +328,7 @@ fn create_claude_terminal_launch_command<R: tauri::Runtime>(
     let (config_path, script_path) =
         claude_launch_artifact_paths(&artifact_dir, provider_id, pid, now);
 
-    let settings_json = build_claude_settings_json(base_url, api_key_plaintext)?;
+    let settings_json = build_claude_settings_json(base_url, api_key_plaintext, context_window)?;
     write_claude_launcher_file(&config_path, settings_json, false)
         .map_err(|e| format!("SYSTEM_ERROR: write claude settings failed: {e}"))?;
 
@@ -187,17 +356,46 @@ fn build_claude_launch_assets(script_path: &Path, config_path: &Path) -> (String
 fn build_claude_settings_json(
     base_url: &str,
     api_key_plaintext: &str,
+    context_window: Option<u64>,
 ) -> crate::shared::error::AppResult<String> {
-    let value = json!({
-        "env": {
-            ENV_CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-            ENV_DISABLE_ERROR_REPORTING: "1",
-            ENV_DISABLE_TELEMETRY: "1",
-            ENV_MCP_TIMEOUT: "60000",
-            ENV_ANTHROPIC_BASE_URL: base_url,
-            ENV_ANTHROPIC_AUTH_TOKEN: api_key_plaintext,
-        }
-    });
+    let mut env = serde_json::Map::from_iter([
+        (
+            ENV_CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC.to_string(),
+            json!("1"),
+        ),
+        (ENV_DISABLE_ERROR_REPORTING.to_string(), json!("1")),
+        (ENV_DISABLE_TELEMETRY.to_string(), json!("1")),
+        (ENV_MCP_TIMEOUT.to_string(), json!("60000")),
+        (ENV_ANTHROPIC_BASE_URL.to_string(), json!(base_url)),
+        (
+            ENV_ANTHROPIC_AUTH_TOKEN.to_string(),
+            json!(api_key_plaintext),
+        ),
+    ]);
+    if let Some(context_window) = context_window {
+        let context_window = context_window.to_string();
+        env.insert(
+            ENV_ANTHROPIC_DEFAULT_OPUS_MODEL.to_string(),
+            json!(CX2CC_CLAUDE_OPUS_MODEL_ALIAS),
+        );
+        env.insert(
+            ENV_ANTHROPIC_DEFAULT_SONNET_MODEL.to_string(),
+            json!(CX2CC_CLAUDE_SONNET_MODEL_ALIAS),
+        );
+        env.insert(
+            ENV_ANTHROPIC_DEFAULT_HAIKU_MODEL.to_string(),
+            json!(CX2CC_CLAUDE_HAIKU_MODEL_ALIAS),
+        );
+        env.insert(
+            ENV_CLAUDE_CODE_MAX_CONTEXT_TOKENS.to_string(),
+            json!(context_window),
+        );
+        env.insert(
+            ENV_CLAUDE_CODE_AUTO_COMPACT_WINDOW.to_string(),
+            json!(context_window),
+        );
+    }
+    let value = json!({ "env": env });
 
     serde_json::to_string_pretty(&value)
         .map_err(|e| format!("SYSTEM_ERROR: serialize claude settings failed: {e}").into())
@@ -333,6 +531,18 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     use tempfile::tempdir;
 
+    fn cx2cc_launch_context(
+        models: crate::providers::ClaudeModels,
+    ) -> providers::ClaudeTerminalLaunchContext {
+        providers::ClaudeTerminalLaunchContext {
+            api_key_plaintext: "cx2cc-test".to_string(),
+            is_cx2cc: true,
+            claude_models: models,
+            source_provider_id: None,
+            source_provider_uuid: None,
+        }
+    }
+
     #[test]
     fn bash_single_quote_escapes_single_quote() {
         assert_eq!(bash_single_quote("a'b"), "'a'\"'\"'b'");
@@ -345,7 +555,8 @@ mod tests {
 
     #[test]
     fn build_settings_contains_required_envs() {
-        let json_text = build_claude_settings_json("https://example.com", "sk-test").unwrap();
+        let json_text =
+            build_claude_settings_json("https://example.com", "sk-test", Some(1_000_000)).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json_text).unwrap();
         let env = value
             .get("env")
@@ -377,6 +588,142 @@ mod tests {
         assert_eq!(
             env.get(ENV_ANTHROPIC_AUTH_TOKEN).and_then(|v| v.as_str()),
             Some("sk-test")
+        );
+        assert_eq!(
+            env.get(ENV_CLAUDE_CODE_MAX_CONTEXT_TOKENS)
+                .and_then(|v| v.as_str()),
+            Some("1000000")
+        );
+        assert_eq!(
+            env.get(ENV_CLAUDE_CODE_AUTO_COMPACT_WINDOW)
+                .and_then(|v| v.as_str()),
+            Some("1000000")
+        );
+        assert_eq!(
+            env.get(ENV_ANTHROPIC_DEFAULT_OPUS_MODEL)
+                .and_then(|v| v.as_str()),
+            Some(CX2CC_CLAUDE_OPUS_MODEL_ALIAS)
+        );
+        assert_eq!(
+            env.get(ENV_ANTHROPIC_DEFAULT_SONNET_MODEL)
+                .and_then(|v| v.as_str()),
+            Some(CX2CC_CLAUDE_SONNET_MODEL_ALIAS)
+        );
+        assert_eq!(
+            env.get(ENV_ANTHROPIC_DEFAULT_HAIKU_MODEL)
+                .and_then(|v| v.as_str()),
+            Some(CX2CC_CLAUDE_HAIKU_MODEL_ALIAS)
+        );
+        assert!(!env.contains_key("ANTHROPIC_MODEL"));
+        assert!(!env.contains_key("DISABLE_COMPACT"));
+    }
+
+    #[test]
+    fn build_settings_omits_context_envs_when_projection_is_unknown() {
+        let json_text = build_claude_settings_json("https://example.com", "sk-test", None).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json_text).unwrap();
+        let env = value
+            .get("env")
+            .and_then(|v| v.as_object())
+            .expect("env object");
+
+        assert!(!env.contains_key(ENV_CLAUDE_CODE_MAX_CONTEXT_TOKENS));
+        assert!(!env.contains_key(ENV_CLAUDE_CODE_AUTO_COMPACT_WINDOW));
+        assert!(!env.contains_key(ENV_ANTHROPIC_DEFAULT_OPUS_MODEL));
+        assert!(!env.contains_key(ENV_ANTHROPIC_DEFAULT_SONNET_MODEL));
+        assert!(!env.contains_key(ENV_ANTHROPIC_DEFAULT_HAIKU_MODEL));
+        assert!(!env.contains_key("ANTHROPIC_MODEL"));
+        assert!(!env.contains_key("DISABLE_COMPACT"));
+    }
+
+    #[test]
+    fn cx2cc_family_aliases_activate_unknown_models_without_losing_mapper_family() {
+        for (alias, family) in [
+            (CX2CC_CLAUDE_OPUS_MODEL_ALIAS, "opus"),
+            (CX2CC_CLAUDE_SONNET_MODEL_ALIAS, "sonnet"),
+            (CX2CC_CLAUDE_HAIKU_MODEL_ALIAS, "haiku"),
+        ] {
+            assert!(!alias.starts_with("claude-"));
+            assert!(!alias.to_ascii_lowercase().contains("[1m]"));
+            assert!(alias.contains(family));
+        }
+    }
+
+    #[test]
+    fn process_projection_uses_the_mapper_target_when_all_slots_match() {
+        let settings = crate::settings::AppSettings {
+            cx2cc_fallback_model_opus: "gpt-fallback".to_string(),
+            cx2cc_fallback_model_sonnet: "gpt-fallback".to_string(),
+            cx2cc_fallback_model_haiku: "gpt-fallback".to_string(),
+            cx2cc_fallback_model_main: "gpt-fallback".to_string(),
+            ..Default::default()
+        };
+        let launch = cx2cc_launch_context(crate::providers::ClaudeModels {
+            main_model: Some("gpt-5.6".to_string()),
+            haiku_model: Some("gpt-5.6".to_string()),
+            sonnet_model: Some("gpt-5.6".to_string()),
+            opus_model: Some("gpt-5.6".to_string()),
+            reasoning_model: Some("not-used-by-cx2cc-mapper".to_string()),
+        });
+
+        assert_eq!(
+            process_remote_model_ids(&launch, &settings),
+            vec!["gpt-5.6"]
+        );
+    }
+
+    #[test]
+    fn process_projection_includes_each_distinct_mapper_target() {
+        let settings = crate::settings::AppSettings {
+            cx2cc_fallback_model_opus: "gpt-5.6".to_string(),
+            cx2cc_fallback_model_sonnet: "gpt-5.6".to_string(),
+            cx2cc_fallback_model_haiku: "gpt-5.6".to_string(),
+            cx2cc_fallback_model_main: "gpt-5.6".to_string(),
+            ..Default::default()
+        };
+        let launch = cx2cc_launch_context(crate::providers::ClaudeModels {
+            opus_model: Some("gpt-5.6-sol".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            process_remote_model_ids(&launch, &settings),
+            vec!["gpt-5.6-sol", "gpt-5.6"]
+        );
+    }
+
+    #[test]
+    fn context_projection_queries_every_mapper_target_for_every_provider() {
+        let providers = [
+            (1, "provider-one".to_string()),
+            (2, "provider-two".to_string()),
+        ];
+        let models = ["gpt-5.6-sol".to_string(), "gpt-5.6".to_string()];
+
+        assert_eq!(
+            context_window_candidates(&providers, &models),
+            vec![
+                crate::provider_models::ProviderModelContextWindowCandidate {
+                    provider_id: 1,
+                    provider_uuid: "provider-one".to_string(),
+                    remote_model_id: "gpt-5.6-sol".to_string(),
+                },
+                crate::provider_models::ProviderModelContextWindowCandidate {
+                    provider_id: 1,
+                    provider_uuid: "provider-one".to_string(),
+                    remote_model_id: "gpt-5.6".to_string(),
+                },
+                crate::provider_models::ProviderModelContextWindowCandidate {
+                    provider_id: 2,
+                    provider_uuid: "provider-two".to_string(),
+                    remote_model_id: "gpt-5.6-sol".to_string(),
+                },
+                crate::provider_models::ProviderModelContextWindowCandidate {
+                    provider_id: 2,
+                    provider_uuid: "provider-two".to_string(),
+                    remote_model_id: "gpt-5.6".to_string(),
+                },
+            ]
         );
     }
 

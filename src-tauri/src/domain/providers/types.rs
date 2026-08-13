@@ -348,6 +348,10 @@ pub(crate) struct ClaudeTerminalLaunchContext {
     /// The credential to pass as ANTHROPIC_API_KEY to `claude` CLI.
     /// For `api_key` mode this is the stored api_key; for `oauth` mode it is the OAuth access token.
     pub api_key_plaintext: String,
+    pub is_cx2cc: bool,
+    pub claude_models: ClaudeModels,
+    pub source_provider_id: Option<i64>,
+    pub source_provider_uuid: Option<String>,
 }
 
 impl ProviderForGateway {
