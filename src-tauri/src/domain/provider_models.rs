@@ -196,6 +196,7 @@ pub(crate) enum ProviderModelContextWindowUnknownReason {
     CatalogUnavailable,
     CatalogStale,
     ModelUnavailable,
+    CustomModel,
     ModelStale,
     CapabilitiesUnconfigured,
     ContextWindowUnknown,
@@ -210,6 +211,7 @@ impl ProviderModelContextWindowUnknownReason {
             Self::CatalogUnavailable => "catalog_unavailable",
             Self::CatalogStale => "catalog_stale",
             Self::ModelUnavailable => "model_unavailable",
+            Self::CustomModel => "custom_model",
             Self::ModelStale => "model_stale",
             Self::CapabilitiesUnconfigured => "capabilities_unconfigured",
             Self::ContextWindowUnknown => "context_window_unknown",
@@ -913,26 +915,33 @@ WHERE provider_id = ?1 AND protocol = ?2
         let model = tx
             .query_row(
                 r#"
-SELECT stale, capabilities_configured, context_window
+SELECT source, stale, capabilities_configured, context_window
 FROM provider_models
 WHERE provider_id = ?1 AND remote_model_id = ?2
 "#,
                 params![candidate.provider_id, candidate.remote_model_id],
                 |row| {
                     Ok((
-                        row.get::<_, i64>(0)? != 0,
+                        row.get::<_, String>(0)?,
                         row.get::<_, i64>(1)? != 0,
-                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get::<_, Option<i64>>(3)?,
                     ))
                 },
             )
             .optional()
             .map_err(|error| db_err!("failed to query context window model: {error}"))?;
-        let Some((model_stale, capabilities_configured, context_window)) = model else {
+        let Some((model_source, model_stale, capabilities_configured, context_window)) = model
+        else {
             return Ok(ProviderModelContextWindowProjection::Unknown {
                 reason: ProviderModelContextWindowUnknownReason::ModelUnavailable,
             });
         };
+        if model_source != "discovered" {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::CustomModel,
+            });
+        }
         if model_stale {
             return Ok(ProviderModelContextWindowProjection::Unknown {
                 reason: ProviderModelContextWindowUnknownReason::ModelStale,
@@ -1772,7 +1781,7 @@ INSERT INTO provider_models(
   model_uuid, provider_id, remote_model_id, source, stale, last_seen_at,
   created_at, updated_at, capabilities_configured,
   supported_reasoning_efforts_json, default_reasoning_effort, context_window
-) VALUES (?1, ?2, ?3, 'manual', ?4, NULL, 1, 1, ?5, '[]', NULL, ?6)
+) VALUES (?1, ?2, ?3, 'discovered', ?4, 1, 1, 1, ?5, '[]', NULL, ?6)
 "#,
             params![
                 crate::shared::uuid::new_uuid_v4(),
@@ -2350,6 +2359,40 @@ INSERT INTO provider_models(
             )
             .expect("resolve partially unknown candidates"),
             ProviderModelContextWindowUnknownReason::ModelUnavailable,
+        );
+    }
+
+    #[test]
+    fn context_window_projection_fails_closed_for_custom_models() {
+        let test_app = ModelTestApp::new();
+        let provider_id = test_app.seed_provider_named("Context custom model");
+        seed_context_catalog(&test_app, provider_id, false);
+        seed_context_model(
+            &test_app,
+            provider_id,
+            "future-custom-model",
+            false,
+            true,
+            Some(1_000_000),
+        );
+        let conn = test_app.db.open_connection().expect("open context db");
+        conn.execute(
+            "UPDATE provider_models SET source = 'manual', last_seen_at = NULL WHERE provider_id = ?1",
+            params![provider_id],
+        )
+        .expect("mark context model as custom");
+
+        assert_unknown_projection(
+            resolve_context_window_projection(
+                &test_app.db,
+                &[context_candidate(
+                    &test_app,
+                    provider_id,
+                    "future-custom-model",
+                )],
+            )
+            .expect("resolve custom context model"),
+            ProviderModelContextWindowUnknownReason::CustomModel,
         );
     }
 
