@@ -539,14 +539,14 @@ mod tests {
     }
 
     #[test]
-    fn cx2cc_final_responses_shape_is_rewritten() {
+    fn ordinary_responses_route_rewrites_final_wire_shape() {
         let outcome = apply(
             &route(Some("gpt-5.4"), Some("medium")),
             "/v1/responses",
             None,
-            &Bytes::from_static(br#"{"model":"claude-sonnet"}"#),
+            &Bytes::from_static(br#"{"model":"source"}"#),
         )
-        .expect("apply route after CX2CC conversion");
+        .expect("apply ordinary Responses route");
 
         let root: Value = serde_json::from_slice(&outcome.body).expect("json body");
         assert_eq!(root["model"], "gpt-5.4");

@@ -16,6 +16,14 @@ mod tests {
         }
     }
 
+    fn cx2cc_ctx_with_legacy_effort() -> BridgeContext {
+        let mut ctx = cx2cc_ctx();
+        ctx.cx2cc_settings.model_reasoning_effort = Some("medium".to_string());
+        ctx.cx2cc_settings.service_tier = Some("flex".to_string());
+        ctx.cx2cc_settings.disable_response_storage = true;
+        ctx
+    }
+
     #[test]
     fn registry_only_exposes_the_surviving_builtin_bridge() {
         let types = registry::available_bridge_types();
@@ -57,6 +65,46 @@ mod tests {
             "input_text"
         );
         assert_eq!(translated.body["input"][0]["content"][0]["text"], "Hello");
+    }
+
+    #[test]
+    fn cx2cc_preserves_effort_presence_without_legacy_overwrite() {
+        let bridge = get_bridge("cx2cc").unwrap();
+        let translate = |extra: serde_json::Value| {
+            let mut body = json!({
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
+            body.as_object_mut()
+                .expect("request object")
+                .extend(extra.as_object().expect("extra fields").clone());
+            bridge
+                .translate_request(body, &cx2cc_ctx_with_legacy_effort())
+                .expect("translate Anthropic request")
+                .body
+        };
+
+        let absent = translate(json!({}));
+        assert!(absent.get("reasoning").is_none());
+        assert_eq!(absent["service_tier"], "flex");
+        assert_eq!(absent["store"], false);
+
+        let disabled = translate(json!({
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "high"}
+        }));
+        assert!(disabled.get("reasoning").is_none());
+
+        let explicit = translate(json!({
+            "output_config": {"effort": "high"}
+        }));
+        assert_eq!(explicit["reasoning"]["effort"], "high");
+
+        let unknown = translate(json!({
+            "output_config": {"effort": "future-effort"}
+        }));
+        assert_eq!(unknown["reasoning"]["effort"], "future-effort");
     }
 
     #[test]

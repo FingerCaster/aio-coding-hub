@@ -14,7 +14,6 @@ pub(crate) struct OpenAIResponsesOutbound;
 
 #[derive(Debug, Clone, Copy)]
 struct ResponsesOutboundSettings<'a> {
-    model_reasoning_effort: Option<&'a str>,
     service_tier: Option<&'a str>,
     disable_response_storage: bool,
     drop_stop_sequences: bool,
@@ -24,7 +23,6 @@ struct ResponsesOutboundSettings<'a> {
 impl<'a> From<&'a Cx2ccSettings> for ResponsesOutboundSettings<'a> {
     fn from(settings: &'a Cx2ccSettings) -> Self {
         Self {
-            model_reasoning_effort: settings.model_reasoning_effort.as_deref(),
             service_tier: settings.service_tier.as_deref(),
             disable_response_storage: settings.disable_response_storage,
             drop_stop_sequences: settings.drop_stop_sequences,
@@ -235,9 +233,7 @@ fn apply_responses_metadata(
     ir: &InternalRequest,
     settings: &ResponsesOutboundSettings<'_>,
 ) {
-    if let Some(value) = ir.metadata.extra.get("reasoning") {
-        result["reasoning"] = value.clone();
-    } else if let Some(effort) = settings.model_reasoning_effort {
+    if let IRReasoningConfig::Effort(effort) = &ir.metadata.reasoning {
         result["reasoning"] = json!({ "effort": effort });
     }
 
@@ -1479,10 +1475,10 @@ mod tests {
 
     #[test]
     fn ir_to_request_preserves_responses_metadata() {
-        let mut metadata = IRMetadata::default();
-        metadata
-            .extra
-            .insert("reasoning".to_string(), json!({"effort": "high"}));
+        let mut metadata = IRMetadata {
+            reasoning: IRReasoningConfig::Effort("high".to_string()),
+            ..Default::default()
+        };
         metadata
             .extra
             .insert("service_tier".to_string(), json!("flex"));
@@ -1512,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn ir_to_request_injects_configured_responses_metadata() {
+    fn ir_to_request_keeps_non_reasoning_settings_without_legacy_effort() {
         let ir = InternalRequest {
             model: "gpt-5".into(),
             messages: vec![IRMessage {
@@ -1536,9 +1532,35 @@ mod tests {
 
         let result = ir_to_request(&ir, &settings).unwrap();
 
-        assert_eq!(result["reasoning"], json!({"effort": "medium"}));
+        assert!(result.get("reasoning").is_none());
         assert_eq!(result["service_tier"], json!("flex"));
         assert_eq!(result["store"], json!(false));
+    }
+
+    #[test]
+    fn ir_to_request_omits_reasoning_when_explicitly_disabled() {
+        let ir = InternalRequest {
+            model: "gpt-5".into(),
+            messages: vec![],
+            system: None,
+            tools: vec![],
+            tool_choice: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: vec![],
+            stream: false,
+            metadata: IRMetadata {
+                reasoning: IRReasoningConfig::Disabled,
+                ..Default::default()
+            },
+        };
+        let mut settings = default_settings();
+        settings.model_reasoning_effort = Some("high".to_string());
+
+        let result = ir_to_request(&ir, &settings).unwrap();
+
+        assert!(result.get("reasoning").is_none());
     }
 
     // ── response_to_ir ────────────────────────────────────────────────
