@@ -42,6 +42,7 @@ pub(super) struct PreparedProvider {
     pub(super) bridge_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_codex_session_id: Option<String>,
+    pub(super) internal_codex_reentry: Option<cx2cc_preparation::InternalCodexReentry>,
     pub(super) circuit_snapshot: crate::circuit_breaker::CircuitSnapshot,
     pub(super) dispatch_ownership:
         Option<std::sync::Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
@@ -84,6 +85,18 @@ pub(super) enum PreparationOutcome {
     Ready(Box<PreparedProvider>),
     ReadyLimitReached,
     Skipped,
+}
+
+fn configured_model_route_for_request<T>(
+    cx2cc_active: bool,
+    trusted_internal_reentry: bool,
+    resolve: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    if cx2cc_active || trusted_internal_reentry {
+        None
+    } else {
+        resolve()
+    }
 }
 
 /// Structured skip reason used by CX2CC preparation and other skip paths.
@@ -261,6 +274,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     let mut bridge_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_codex_session_id: Option<String> = None;
+    let mut internal_codex_reentry = None;
     if is_cx2cc_bridge {
         let outcome = cx2cc_preparation::prepare(cx2cc_preparation::Cx2ccPreparationInput {
             ctx,
@@ -282,6 +296,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
                 cx2cc_source = result.cx2cc_source;
                 bridge_source = cx2cc_source.clone();
                 cx2cc_codex_session_id = result.cx2cc_codex_session_id;
+                internal_codex_reentry = result.internal_codex_reentry;
                 effective_credential = result.effective_credential;
                 provider_base_url_base = result.provider_base_url_base;
                 upstream_forwarded_path = result.upstream_forwarded_path;
@@ -374,16 +389,22 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         );
     }
 
-    let configured_model_route = crate::gateway::configured_model_route::resolve(
-        &input.cli_key,
-        &input.method_hint,
-        &input.forwarded_path,
-        input.requested_model.as_deref(),
-        input.managed_model_route.is_some(),
-        &input.model_routing_policy,
-        provider.model_routing_policy_override.as_ref(),
-        provider_id,
-        &provider_name_base,
+    let configured_model_route = configured_model_route_for_request(
+        cx2cc_active,
+        input.trusted_internal_reentry.is_some(),
+        || {
+            crate::gateway::configured_model_route::resolve(
+                &input.cli_key,
+                &input.method_hint,
+                &input.forwarded_path,
+                input.requested_model.as_deref(),
+                input.managed_model_route.is_some(),
+                &input.model_routing_policy,
+                provider.model_routing_policy_override.as_ref(),
+                provider_id,
+                &provider_name_base,
+            )
+        },
     );
 
     let request_body_mutated_before_attempt = input.request_body_state.is_mutated()
@@ -419,6 +440,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         bridge_source,
         cx2cc_source,
         cx2cc_codex_session_id,
+        internal_codex_reentry,
         circuit_snapshot,
         dispatch_ownership,
         anthropic_stream_requested,
@@ -488,8 +510,9 @@ fn effective_upstream_retry_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        codex_body_has_previous_response_id, configured_transient_retry_budget,
-        effective_upstream_retry_policy, provider_max_attempts_for_request, IterationCounters,
+        codex_body_has_previous_response_id, configured_model_route_for_request,
+        configured_transient_retry_budget, effective_upstream_retry_policy,
+        provider_max_attempts_for_request, IterationCounters,
     };
     use crate::settings::{UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamTransportRetryKind};
 
@@ -632,6 +655,36 @@ mod tests {
         assert_eq!(
             effective_upstream_retry_policy(&global, Some(&explicitly_disabled)),
             explicitly_disabled
+        );
+    }
+
+    #[test]
+    fn cx2cc_first_hop_skips_configured_route_resolution() {
+        let called = std::cell::Cell::new(false);
+        let route = configured_model_route_for_request(true, false, || {
+            called.set(true);
+            Some("must-not-replace-mapper-model")
+        });
+        assert_eq!(route, None);
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn trusted_reentry_skips_configured_route_resolution() {
+        let called = std::cell::Cell::new(false);
+        let route = configured_model_route_for_request(false, true, || {
+            called.set(true);
+            Some("must-not-replace-mapper-model")
+        });
+        assert_eq!(route, None);
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn ordinary_request_keeps_configured_route_resolution() {
+        assert_eq!(
+            configured_model_route_for_request(false, false, || Some("configured-model")),
+            Some("configured-model")
         );
     }
 }

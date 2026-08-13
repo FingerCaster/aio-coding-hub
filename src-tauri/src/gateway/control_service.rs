@@ -77,6 +77,8 @@ impl GatewayControlService {
             binding.bind_host.as_str(),
             binding.base_host.as_str(),
         )?;
+        let direct_internal_reentry_client =
+            super::http_client::build_direct_internal_reentry_client()?;
 
         let background_tasks = GatewayBackgroundTasks::start(app.clone(), db.clone());
         let circuit = build_circuit_breaker(&db, cfg, background_tasks.circuit_persist_tx());
@@ -84,7 +86,6 @@ impl GatewayControlService {
         let recent_errors = Arc::new(Mutex::new(RecentErrorCache::default()));
         let plugin_pipeline = load_gateway_plugin_pipeline(&db);
         let active_requests = Arc::new(ActiveRequestRegistry::default());
-
         let state = GatewayAppState {
             app: app.clone(),
             db: db.clone(),
@@ -95,6 +96,10 @@ impl GatewayControlService {
             recent_errors: recent_errors.clone(),
             latency_cache: Arc::new(Mutex::new(ProviderBaseUrlPingCache::default())),
             plugin_pipeline: plugin_pipeline.clone(),
+            internal_reentry: Arc::new(
+                crate::gateway::internal_reentry::InternalReentryRegistry::default(),
+            ),
+            direct_internal_reentry_client,
             #[cfg(test)]
             http_client_override: None,
             active_requests: active_requests.clone(),

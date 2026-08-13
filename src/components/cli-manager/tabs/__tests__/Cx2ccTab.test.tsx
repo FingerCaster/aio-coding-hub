@@ -241,60 +241,26 @@ describe("components/cli-manager/tabs/Cx2ccTab", () => {
     expect(toast).toHaveBeenCalledWith("服务层级不能包含控制字符");
   });
 
-  it("renders reasoning effort radio group with correct value", () => {
+  it("omits the legacy fixed reasoning effort control without rewriting its value", () => {
     const persistSettings = vi.fn().mockResolvedValue(null);
     render(
       <CliManagerCx2ccTab
-        appSettings={createAppSettings({ cx2cc_model_reasoning_effort: "high" })}
+        appSettings={createAppSettings({ cx2cc_model_reasoning_effort: "ultra" })}
         commonSettingsSaving={false}
         onPersistCommonSettings={persistSettings}
       />
     );
 
-    const highRadio = screen.getByRole("radio", { name: "high" });
-    expect(highRadio).toBeChecked();
-  });
+    expect(screen.queryByText("推理强度")).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(screen.queryByText("ultra")).not.toBeInTheDocument();
 
-  it("persists reasoning effort change", () => {
-    const persistSettings = vi.fn().mockResolvedValue(null);
-    render(
-      <CliManagerCx2ccTab
-        appSettings={createAppSettings({ cx2cc_model_reasoning_effort: "medium" })}
-        commonSettingsSaving={false}
-        onPersistCommonSettings={persistSettings}
-      />
-    );
+    const serviceTierInput = screen.getByDisplayValue("fast");
+    fireEvent.change(serviceTierInput, { target: { value: "standard" } });
+    fireEvent.blur(serviceTierInput);
 
-    const lowRadio = screen.getByRole("radio", { name: "low" });
-    fireEvent.click(lowRadio);
-
-    expect(lowRadio).toBeChecked();
     expect(persistSettings).toHaveBeenCalledWith({
-      cx2cc_model_reasoning_effort: "low",
-    });
-  });
-
-  it("updates reasoning effort UI immediately when leaving default", () => {
-    const persistSettings = vi.fn().mockResolvedValue(null);
-    render(
-      <CliManagerCx2ccTab
-        appSettings={createAppSettings({ cx2cc_model_reasoning_effort: "" })}
-        commonSettingsSaving={false}
-        onPersistCommonSettings={persistSettings}
-      />
-    );
-
-    const defaultRadio = screen.getByRole("radio", { name: "默认 / 不注入" });
-    const highRadio = screen.getByRole("radio", { name: "high" });
-
-    expect(defaultRadio).toBeChecked();
-
-    fireEvent.click(highRadio);
-
-    expect(highRadio).toBeChecked();
-    expect(defaultRadio).not.toBeChecked();
-    expect(persistSettings).toHaveBeenCalledWith({
-      cx2cc_model_reasoning_effort: "high",
+      cx2cc_service_tier: "standard",
     });
   });
 
@@ -411,10 +377,7 @@ describe("components/cli-manager/tabs/Cx2ccTab", () => {
       expect(switchEl).toBeDisabled();
     });
 
-    const radios = screen.getAllByRole("radio");
-    radios.forEach((radio) => {
-      expect(radio).toBeDisabled();
-    });
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
   });
 
   it("disables controls when appSettings is null", () => {
@@ -447,7 +410,7 @@ describe("components/cli-manager/tabs/Cx2ccTab", () => {
     );
 
     expect(screen.getByDisplayValue("old-model")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "low" })).toBeChecked();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
 
     rerender(
       <CliManagerCx2ccTab
@@ -461,6 +424,6 @@ describe("components/cli-manager/tabs/Cx2ccTab", () => {
     );
 
     expect(screen.getByDisplayValue("new-model")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "xhigh" })).toBeChecked();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
   });
 });

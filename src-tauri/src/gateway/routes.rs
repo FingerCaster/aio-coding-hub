@@ -1731,6 +1731,12 @@ INSERT INTO codex_managed_profiles(
             recent_errors: Arc::new(Mutex::new(RecentErrorCache::default())),
             latency_cache: Arc::new(Mutex::new(ProviderBaseUrlPingCache::default())),
             plugin_pipeline: GatewayPluginPipeline::empty_shared(),
+            internal_reentry: Arc::new(
+                crate::gateway::internal_reentry::InternalReentryRegistry::default(),
+            ),
+            direct_internal_reentry_client:
+                crate::gateway::http_client::build_direct_internal_reentry_client()
+                    .expect("route tests direct internal reentry http client"),
             http_client_override: Some(
                 reqwest::Client::builder()
                     .no_proxy()

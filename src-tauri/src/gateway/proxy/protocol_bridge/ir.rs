@@ -133,9 +133,21 @@ pub(crate) enum IRToolChoice {
     ResponsesNative { raw: Value },
 }
 
+/// Request-level reasoning configuration with presence preserved across adapters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum IRReasoningConfig {
+    #[default]
+    Absent,
+    Disabled,
+    Enabled(Option<String>),
+    Adaptive(Option<String>),
+    Effort(String),
+}
+
 /// Escape hatch for protocol-specific fields that do not have a common mapping.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct IRMetadata {
+    pub reasoning: IRReasoningConfig,
     pub extra: HashMap<String, Value>,
 }
 

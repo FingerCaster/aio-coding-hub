@@ -9,6 +9,59 @@ use super::*;
 use crate::app::gateway_runtime_access::app_gateway_status;
 use crate::gateway::proxy::protocol_bridge::{self, BridgeContext};
 
+/// In-process authorization for the single legal CX2CC reentry into this gateway.
+///
+/// The fields and constructor stay private to this module, so an inbound HTTP
+/// request cannot manufacture or propagate this intent.
+#[derive(Clone, Debug)]
+pub(super) struct InternalCodexReentry {
+    trace_id: String,
+    provider_id: i64,
+    method: axum::http::Method,
+    url: reqwest::Url,
+    consumed: std::sync::Arc<std::sync::OnceLock<()>>,
+}
+
+impl InternalCodexReentry {
+    fn new(trace_id: &str, provider_id: i64, gateway_base_url: &str) -> Result<Self, String> {
+        Ok(Self {
+            trace_id: trace_id.to_string(),
+            provider_id,
+            method: axum::http::Method::POST,
+            url: build_target_url(gateway_base_url, "/v1/responses", None)?,
+            consumed: std::sync::Arc::new(std::sync::OnceLock::new()),
+        })
+    }
+
+    fn matches(
+        &self,
+        trace_id: &str,
+        provider_id: i64,
+        method: &axum::http::Method,
+        url: &reqwest::Url,
+    ) -> bool {
+        self.trace_id == trace_id
+            && self.provider_id == provider_id
+            && self.method == *method
+            && self.url == *url
+    }
+
+    pub(super) fn consume_and_match(
+        intent: &mut Option<Self>,
+        trace_id: &str,
+        provider_id: i64,
+        method: &axum::http::Method,
+        url: &reqwest::Url,
+    ) -> bool {
+        let Some(intent) = intent.take() else {
+            return false;
+        };
+        // PreparedProvider is cloneable for response handling. All clones share
+        // this consumption cell so none can duplicate or replay the capability.
+        intent.consumed.set(()).is_ok() && intent.matches(trace_id, provider_id, method, url)
+    }
+}
+
 /// All CX2CC-related state produced by preparation.
 pub(super) struct Cx2ccResult {
     pub(super) cx2cc_active: bool,
@@ -22,6 +75,7 @@ pub(super) struct Cx2ccResult {
     pub(super) strip_request_content_encoding: bool,
     pub(super) use_codex_chatgpt_backend: bool,
     pub(super) codex_chatgpt_account_id: Option<String>,
+    pub(super) internal_codex_reentry: Option<InternalCodexReentry>,
 }
 
 pub(super) struct Cx2ccPreparationInput<'a, R: tauri::Runtime = tauri::Wry> {
@@ -51,6 +105,7 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
         source_provider_base_url,
         mut use_codex_chatgpt_backend,
         mut codex_chatgpt_account_id,
+        internal_codex_reentry,
     ) = if let Some(source_id) = args.source_id {
         let source_result = crate::providers::get_source_provider_for_gateway(
             &args.input.state.db,
@@ -156,6 +211,7 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
             provider_base_url_base,
             args.use_codex_chatgpt_backend,
             args.codex_chatgpt_account_id.clone(),
+            None,
         )
     } else {
         let gateway_base_url = app_gateway_status(&args.input.state.app).base_url;
@@ -167,6 +223,20 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
                 reason: "cx2cc local codex gateway base_url missing".to_string(),
             });
         };
+        let internal_codex_reentry = match InternalCodexReentry::new(
+            &args.input.trace_id,
+            args.provider_id,
+            &gateway_base_url,
+        ) {
+            Ok(intent) => intent,
+            Err(err) => {
+                return Cx2ccOutcome::Skipped(SkipReason {
+                    error_category: "config",
+                    error_code: GatewayErrorCode::InvalidBaseUrl.as_str(),
+                    reason: format!("cx2cc local codex gateway base_url invalid: {err}"),
+                });
+            }
+        };
 
         (
             None,
@@ -176,6 +246,7 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
             format!("{}/v1", gateway_base_url.trim_end_matches('/')),
             false,
             None,
+            Some(internal_codex_reentry),
         )
     };
 
@@ -334,5 +405,94 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
         strip_request_content_encoding,
         use_codex_chatgpt_backend,
         codex_chatgpt_account_id,
+        internal_codex_reentry,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InternalCodexReentry;
+    use axum::http::Method;
+
+    #[test]
+    fn internal_codex_reentry_matches_only_the_bound_responses_request() {
+        let intent =
+            InternalCodexReentry::new("trace-1", 42, "http://127.0.0.1:8317").expect("intent");
+        let exact = reqwest::Url::parse("http://127.0.0.1:8317/v1/responses").expect("url");
+
+        assert!(intent.matches("trace-1", 42, &Method::POST, &exact));
+        assert!(!intent.matches("trace-2", 42, &Method::POST, &exact));
+        assert!(!intent.matches("trace-1", 43, &Method::POST, &exact));
+        assert!(!intent.matches("trace-1", 42, &Method::GET, &exact));
+
+        for rejected in [
+            "http://127.0.0.1:8318/v1/responses",
+            "http://localhost:8317/v1/responses",
+            "https://127.0.0.1:8317/v1/responses",
+            "http://127.0.0.1:8317/v1/chat/completions",
+            "http://127.0.0.1:8317/v1/responses?second_hop=true",
+        ] {
+            let rejected = reqwest::Url::parse(rejected).expect("url");
+            assert!(!intent.matches("trace-1", 42, &Method::POST, &rejected));
+        }
+    }
+
+    #[test]
+    fn internal_codex_reentry_is_consumed_once_even_when_the_target_is_wrong() {
+        let exact = reqwest::Url::parse("http://127.0.0.1:8317/v1/responses").expect("url");
+        let mut exact_intent = Some(
+            InternalCodexReentry::new("trace-1", 42, "http://127.0.0.1:8317").expect("intent"),
+        );
+
+        assert!(InternalCodexReentry::consume_and_match(
+            &mut exact_intent,
+            "trace-1",
+            42,
+            &Method::POST,
+            &exact,
+        ));
+        assert!(!InternalCodexReentry::consume_and_match(
+            &mut exact_intent,
+            "trace-1",
+            42,
+            &Method::POST,
+            &exact,
+        ));
+
+        let mut wrong_target_intent = Some(
+            InternalCodexReentry::new("trace-1", 42, "http://127.0.0.1:8317").expect("intent"),
+        );
+        assert!(!InternalCodexReentry::consume_and_match(
+            &mut wrong_target_intent,
+            "trace-1",
+            42,
+            &Method::GET,
+            &exact,
+        ));
+        assert!(wrong_target_intent.is_none());
+    }
+
+    #[test]
+    fn internal_codex_reentry_clones_share_single_consumption() {
+        let exact = reqwest::Url::parse("http://127.0.0.1:8317/v1/responses").expect("url");
+        let intent =
+            InternalCodexReentry::new("trace-1", 42, "http://127.0.0.1:8317").expect("intent");
+        let mut first = Some(intent.clone());
+        let mut clone = Some(intent);
+
+        assert!(InternalCodexReentry::consume_and_match(
+            &mut first,
+            "trace-1",
+            42,
+            &Method::POST,
+            &exact,
+        ));
+        assert!(!InternalCodexReentry::consume_and_match(
+            &mut clone,
+            "trace-1",
+            42,
+            &Method::POST,
+            &exact,
+        ));
+    }
 }

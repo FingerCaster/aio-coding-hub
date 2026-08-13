@@ -1,4 +1,5 @@
 import { FREE_TAG } from "../../constants/providers";
+import { CX2CC_PROVIDER_DEFAULT_MODEL } from "../../constants/cx2cc";
 import type { ProviderEditorDialogFormInput } from "../../schemas/providerEditorDialog";
 import {
   getProviderTypeInfo,
@@ -30,7 +31,6 @@ export const DEFAULT_FORM_VALUES: ProviderEditorDialogFormInput = {
 
 export const CX2CC_GLOBAL_SOURCE_VALUE = "__codex_gateway__";
 export const CX2CC_PROXY_TOKEN = "aio-coding-hub";
-export const CX2CC_DEFAULT_MODEL = "gpt-5.5";
 const CX2CC_MODEL_MAPPING_KEYS = [
   "main_model",
   "reasoning_model",
@@ -91,7 +91,7 @@ export function normalizeCx2ccModelName(value: string | null | undefined) {
 
 export function withCx2ccDefaultModel(
   value: ClaudeModels,
-  defaultModel = CX2CC_DEFAULT_MODEL
+  defaultModel = CX2CC_PROVIDER_DEFAULT_MODEL
 ): ClaudeModels {
   return {
     ...value,
@@ -108,7 +108,7 @@ export function resolveCx2ccDefaultModelSelectValue(value: ClaudeModels) {
     normalizeCx2ccModelName(value[key])
   );
   const configuredValues = normalizedValues.filter((model): model is string => model != null);
-  if (configuredValues.length === 0) return CX2CC_DEFAULT_MODEL;
+  if (configuredValues.length === 0) return CX2CC_PROVIDER_DEFAULT_MODEL;
 
   const firstModel = normalizedValues[0];
   if (firstModel && normalizedValues.every((model) => model === firstModel)) {

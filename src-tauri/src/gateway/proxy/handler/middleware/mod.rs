@@ -34,6 +34,7 @@ pub(super) use request_fingerprint::RequestFingerprintMiddleware;
 pub(super) use runtime_settings_reader::RuntimeSettingsMiddleware;
 pub(super) use warmup_interceptor::WarmupInterceptorMiddleware;
 
+use crate::gateway::internal_reentry::TrustedInternalReentry;
 use crate::gateway::proxy::request_body::GatewayRequestBody;
 use crate::gateway::proxy::request_context::{
     effective_first_byte_timeout_secs, RequestContextParts,
@@ -66,6 +67,7 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) req_method: Method,
     pub(super) method_hint: String,
     pub(super) query: Option<String>,
+    pub(super) trusted_internal_reentry: Option<TrustedInternalReentry>,
     pub(super) trace_id: String,
     pub(super) started: Instant,
     pub(super) created_at_ms: i64,
@@ -141,6 +143,7 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             req_method: self.req_method,
             method_hint: self.method_hint,
             query: self.query,
+            trusted_internal_reentry: self.trusted_internal_reentry,
             trace_id: self.trace_id,
             started: self.started,
             created_at_ms: self.created_at_ms,

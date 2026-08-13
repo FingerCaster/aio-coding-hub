@@ -1,0 +1,17 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"跨层任务入口与预开发清单"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/configured-model-routing-contract.md","reason":"CX2CC 必须跳过 mapping/rewrite 且普通 route 不回归"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"候选、failover、attempt identity 与 route projection"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md","reason":"provider-scoped model/context 能力与 managed route 边界"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"legacy effort/settings 字段所有权和并发写入"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"稳定发布前的版本、SHA、资产验证"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"Beta 频道、manifest、pointer 与回滚"}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Rust gateway/provider 预开发清单"}
+{"file":".trellis/spec/guides/index.md","reason":"共享 thinking guide 索引"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"bridge、transport、UI、catalog 跨层数据流审计"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"模型/effort 常量和 resolver 复用规则"}
+{"file":".trellis/spec/guides/upstream-merge-scope-guide.md","reason":"upstream 只做集成和显式 fork 决策"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/upstream-diff.md", "reason": "已校正的 upstream 分类与不移植清单"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/route-thinking.md", "reason": "CX2CC 二次路由和思考透传证据"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/model-ui.md", "reason": "GPT-5.6 型号和 Responses effort 能力证据"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/loopback.md", "reason": "合法内部再入口与真实递归边界"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/claude-surface.md", "reason": "已校正的 launcher/context 能力证据"}

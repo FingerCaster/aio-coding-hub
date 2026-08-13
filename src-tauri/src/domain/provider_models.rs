@@ -181,6 +181,57 @@ pub(crate) struct ManagedModelBinding {
     pub(crate) remote_model_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ProviderModelContextWindowCandidate {
+    pub(crate) provider_id: i64,
+    pub(crate) provider_uuid: String,
+    pub(crate) remote_model_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderModelContextWindowUnknownReason {
+    NoCandidates,
+    ProviderUnavailable,
+    ProviderIdentityChanged,
+    CatalogUnavailable,
+    CatalogStale,
+    ModelUnavailable,
+    CustomModel,
+    ModelStale,
+    CapabilitiesUnconfigured,
+    ContextWindowUnknown,
+}
+
+impl ProviderModelContextWindowUnknownReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NoCandidates => "no_candidates",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::ProviderIdentityChanged => "provider_identity_changed",
+            Self::CatalogUnavailable => "catalog_unavailable",
+            Self::CatalogStale => "catalog_stale",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::CustomModel => "custom_model",
+            Self::ModelStale => "model_stale",
+            Self::CapabilitiesUnconfigured => "capabilities_unconfigured",
+            Self::ContextWindowUnknown => "context_window_unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderModelContextWindowProjection {
+    Exact {
+        context_window: u64,
+    },
+    Mixed {
+        conservative_context_window: u64,
+    },
+    Unknown {
+        reason: ProviderModelContextWindowUnknownReason,
+    },
+}
+
 #[derive(Clone)]
 struct CatalogProvider {
     provider_id: i64,
@@ -771,6 +822,163 @@ pub fn get(
     tx.commit()
         .map_err(|error| db_err!("failed to finish provider model read transaction: {error}"))?;
     Ok(catalog)
+}
+
+pub(crate) fn resolve_context_window_projection(
+    db: &db::Db,
+    candidates: &[ProviderModelContextWindowCandidate],
+) -> AppResult<ProviderModelContextWindowProjection> {
+    if candidates.is_empty() {
+        return Ok(ProviderModelContextWindowProjection::Unknown {
+            reason: ProviderModelContextWindowUnknownReason::NoCandidates,
+        });
+    }
+
+    let mut conn = db.open_connection()?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| db_err!("failed to start context window projection: {error}"))?;
+    let mut seen = HashSet::new();
+    let mut windows = Vec::new();
+
+    for candidate in candidates {
+        if !seen.insert(candidate.clone()) {
+            continue;
+        }
+
+        let provider = tx
+            .query_row(
+                r#"
+SELECT provider_uuid, cli_key, enabled, source_provider_id, bridge_type
+FROM providers
+WHERE id = ?1
+"#,
+                params![candidate.provider_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| db_err!("failed to query context window provider: {error}"))?;
+        let Some((provider_uuid, cli_key, enabled, source_provider_id, bridge_type)) = provider
+        else {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::ProviderUnavailable,
+            });
+        };
+        if provider_uuid != candidate.provider_uuid {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::ProviderIdentityChanged,
+            });
+        }
+        if candidate.provider_id <= 0
+            || !crate::shared::uuid::is_canonical_uuid_v4(&candidate.provider_uuid)
+            || cli_key != "codex"
+            || !enabled
+            || source_provider_id.is_some()
+            || bridge_type.is_some()
+        {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::ProviderUnavailable,
+            });
+        }
+
+        let catalog_stale = tx
+            .query_row(
+                r#"
+SELECT stale
+FROM provider_model_catalogs
+WHERE provider_id = ?1 AND protocol = ?2
+"#,
+                params![candidate.provider_id, DISCOVERY_PROTOCOL],
+                |row| Ok(row.get::<_, i64>(0)? != 0),
+            )
+            .optional()
+            .map_err(|error| db_err!("failed to query context window catalog: {error}"))?;
+        let Some(catalog_stale) = catalog_stale else {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::CatalogUnavailable,
+            });
+        };
+        if catalog_stale {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::CatalogStale,
+            });
+        }
+
+        let model = tx
+            .query_row(
+                r#"
+SELECT source, stale, capabilities_configured, context_window
+FROM provider_models
+WHERE provider_id = ?1 AND remote_model_id = ?2
+"#,
+                params![candidate.provider_id, candidate.remote_model_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)? != 0,
+                        row.get::<_, i64>(2)? != 0,
+                        row.get::<_, Option<i64>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| db_err!("failed to query context window model: {error}"))?;
+        let Some((model_source, model_stale, capabilities_configured, context_window)) = model
+        else {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::ModelUnavailable,
+            });
+        };
+        if model_source != "discovered" {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::CustomModel,
+            });
+        }
+        if model_stale {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::ModelStale,
+            });
+        }
+        if !capabilities_configured {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::CapabilitiesUnconfigured,
+            });
+        }
+        let Some(context_window) = context_window.filter(|value| {
+            (MODEL_CONTEXT_WINDOW_MIN_TOKENS..=MODEL_CONTEXT_WINDOW_MAX_TOKENS).contains(value)
+        }) else {
+            return Ok(ProviderModelContextWindowProjection::Unknown {
+                reason: ProviderModelContextWindowUnknownReason::ContextWindowUnknown,
+            });
+        };
+        windows.push(context_window as u64);
+    }
+
+    tx.commit()
+        .map_err(|error| db_err!("failed to finish context window projection: {error}"))?;
+
+    let Some(minimum) = windows.iter().copied().min() else {
+        return Ok(ProviderModelContextWindowProjection::Unknown {
+            reason: ProviderModelContextWindowUnknownReason::NoCandidates,
+        });
+    };
+    if windows.iter().all(|window| *window == minimum) {
+        Ok(ProviderModelContextWindowProjection::Exact {
+            context_window: minimum,
+        })
+    } else {
+        Ok(ProviderModelContextWindowProjection::Mixed {
+            conservative_context_window: minimum,
+        })
+    }
 }
 
 pub fn manual_upsert(
@@ -1493,14 +1701,19 @@ mod tests {
         }
 
         fn seed_provider(&self) -> i64 {
+            self.seed_provider_named("Model Test")
+        }
+
+        fn seed_provider_named(&self, name: &str) -> i64 {
             let conn = self.db.open_connection().expect("open db");
+            let provider_uuid = crate::shared::uuid::new_uuid_v4();
             conn.execute(
                 r#"
 INSERT INTO providers(
   provider_uuid, cli_key, name, base_url, api_key_plaintext, created_at, updated_at
-) VALUES (?1, 'codex', 'Model Test', 'https://example.invalid/v1', 'key', 1, 1)
+) VALUES (?1, 'codex', ?2, 'https://example.invalid/v1', 'key', 1, 1)
 "#,
-                params![crate::shared::uuid::new_uuid_v4()],
+                params![provider_uuid, name],
             )
             .expect("insert provider");
             conn.last_insert_rowid()
@@ -1523,6 +1736,73 @@ INSERT INTO providers(
             }
             crate::test_support::clear_settings_cache();
         }
+    }
+
+    fn context_candidate(
+        test_app: &ModelTestApp,
+        provider_id: i64,
+        remote_model_id: &str,
+    ) -> ProviderModelContextWindowCandidate {
+        let provider_uuid = direct_codex_provider_metadata(&test_app.db, provider_id)
+            .expect("read context provider")
+            .provider_uuid;
+        ProviderModelContextWindowCandidate {
+            provider_id,
+            provider_uuid,
+            remote_model_id: remote_model_id.to_string(),
+        }
+    }
+
+    fn seed_context_catalog(test_app: &ModelTestApp, provider_id: i64, catalog_stale: bool) {
+        let conn = test_app.db.open_connection().expect("open context db");
+        conn.execute(
+            r#"
+INSERT INTO provider_model_catalogs(
+  provider_id, protocol, stale, last_attempt_at, last_success_at, last_error_code
+) VALUES (?1, ?2, ?3, 1, 1, NULL)
+"#,
+            params![provider_id, DISCOVERY_PROTOCOL, i64::from(catalog_stale)],
+        )
+        .expect("insert context catalog");
+    }
+
+    fn seed_context_model(
+        test_app: &ModelTestApp,
+        provider_id: i64,
+        remote_model_id: &str,
+        model_stale: bool,
+        capabilities_configured: bool,
+        context_window: Option<i64>,
+    ) {
+        let conn = test_app.db.open_connection().expect("open context db");
+        conn.execute(
+            r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, last_seen_at,
+  created_at, updated_at, capabilities_configured,
+  supported_reasoning_efforts_json, default_reasoning_effort, context_window
+) VALUES (?1, ?2, ?3, 'discovered', ?4, 1, 1, 1, ?5, '[]', NULL, ?6)
+"#,
+            params![
+                crate::shared::uuid::new_uuid_v4(),
+                provider_id,
+                remote_model_id,
+                i64::from(model_stale),
+                i64::from(capabilities_configured),
+                context_window,
+            ],
+        )
+        .expect("insert context model");
+    }
+
+    fn assert_unknown_projection(
+        projection: ProviderModelContextWindowProjection,
+        expected: ProviderModelContextWindowUnknownReason,
+    ) {
+        assert_eq!(
+            projection,
+            ProviderModelContextWindowProjection::Unknown { reason: expected }
+        );
     }
 
     async fn spawn_raw_response_server(
@@ -1993,6 +2273,238 @@ INSERT INTO providers(
             .is_empty());
         assert_eq!(no_reasoning.models[0].default_reasoning_effort, None);
         assert_eq!(no_reasoning.models[0].context_window, None);
+    }
+
+    #[test]
+    fn context_window_projection_resolves_exact_source_and_same_window_candidates() {
+        let test_app = ModelTestApp::new();
+        let first_id = test_app.seed_provider_named("Context exact first");
+        let second_id = test_app.seed_provider_named("Context exact second");
+        for provider_id in [first_id, second_id] {
+            seed_context_catalog(&test_app, provider_id, false);
+            seed_context_model(
+                &test_app,
+                provider_id,
+                "gpt-5.6",
+                false,
+                true,
+                Some(1_000_000),
+            );
+        }
+
+        let first = context_candidate(&test_app, first_id, "gpt-5.6");
+        assert_eq!(
+            resolve_context_window_projection(&test_app.db, std::slice::from_ref(&first))
+                .expect("resolve specified source"),
+            ProviderModelContextWindowProjection::Exact {
+                context_window: 1_000_000,
+            }
+        );
+        let candidates = [
+            first.clone(),
+            context_candidate(&test_app, second_id, "gpt-5.6"),
+            first,
+        ];
+        assert_eq!(
+            resolve_context_window_projection(&test_app.db, &candidates)
+                .expect("resolve same-window candidates"),
+            ProviderModelContextWindowProjection::Exact {
+                context_window: 1_000_000,
+            }
+        );
+    }
+
+    #[test]
+    fn context_window_projection_uses_conservative_minimum_for_mixed_candidates() {
+        let test_app = ModelTestApp::new();
+        let first_id = test_app.seed_provider_named("Context mixed first");
+        let second_id = test_app.seed_provider_named("Context mixed second");
+        seed_context_catalog(&test_app, first_id, false);
+        seed_context_model(&test_app, first_id, "gpt-5.6", false, true, Some(1_000_000));
+        seed_context_catalog(&test_app, second_id, false);
+        seed_context_model(&test_app, second_id, "gpt-5.6", false, true, Some(400_000));
+
+        let projection = resolve_context_window_projection(
+            &test_app.db,
+            &[
+                context_candidate(&test_app, first_id, "gpt-5.6"),
+                context_candidate(&test_app, second_id, "gpt-5.6"),
+            ],
+        )
+        .expect("resolve mixed candidates");
+        assert_eq!(
+            projection,
+            ProviderModelContextWindowProjection::Mixed {
+                conservative_context_window: 400_000,
+            }
+        );
+    }
+
+    #[test]
+    fn context_window_projection_fails_closed_when_any_candidate_is_unknown() {
+        let test_app = ModelTestApp::new();
+        let known_id = test_app.seed_provider_named("Context known");
+        let unknown_id = test_app.seed_provider_named("Context unknown");
+        seed_context_catalog(&test_app, known_id, false);
+        seed_context_model(&test_app, known_id, "gpt-5.6", false, true, Some(1_000_000));
+        seed_context_catalog(&test_app, unknown_id, false);
+
+        assert_unknown_projection(
+            resolve_context_window_projection(
+                &test_app.db,
+                &[
+                    context_candidate(&test_app, known_id, "gpt-5.6"),
+                    context_candidate(&test_app, unknown_id, "gpt-5.6"),
+                ],
+            )
+            .expect("resolve partially unknown candidates"),
+            ProviderModelContextWindowUnknownReason::ModelUnavailable,
+        );
+    }
+
+    #[test]
+    fn context_window_projection_fails_closed_for_custom_models() {
+        let test_app = ModelTestApp::new();
+        let provider_id = test_app.seed_provider_named("Context custom model");
+        seed_context_catalog(&test_app, provider_id, false);
+        seed_context_model(
+            &test_app,
+            provider_id,
+            "future-custom-model",
+            false,
+            true,
+            Some(1_000_000),
+        );
+        let conn = test_app.db.open_connection().expect("open context db");
+        conn.execute(
+            "UPDATE provider_models SET source = 'manual', last_seen_at = NULL WHERE provider_id = ?1",
+            params![provider_id],
+        )
+        .expect("mark context model as custom");
+
+        assert_unknown_projection(
+            resolve_context_window_projection(
+                &test_app.db,
+                &[context_candidate(
+                    &test_app,
+                    provider_id,
+                    "future-custom-model",
+                )],
+            )
+            .expect("resolve custom context model"),
+            ProviderModelContextWindowUnknownReason::CustomModel,
+        );
+    }
+
+    #[test]
+    fn context_window_projection_fails_closed_for_catalog_and_model_uncertainty() {
+        let cases = [
+            (
+                false,
+                false,
+                false,
+                false,
+                None,
+                ProviderModelContextWindowUnknownReason::CatalogUnavailable,
+            ),
+            (
+                true,
+                true,
+                false,
+                true,
+                Some(1_000_000),
+                ProviderModelContextWindowUnknownReason::CatalogStale,
+            ),
+            (
+                true,
+                false,
+                false,
+                false,
+                None,
+                ProviderModelContextWindowUnknownReason::ModelUnavailable,
+            ),
+            (
+                true,
+                false,
+                true,
+                true,
+                Some(1_000_000),
+                ProviderModelContextWindowUnknownReason::ModelStale,
+            ),
+            (
+                true,
+                false,
+                false,
+                false,
+                None,
+                ProviderModelContextWindowUnknownReason::CapabilitiesUnconfigured,
+            ),
+            (
+                true,
+                false,
+                false,
+                true,
+                None,
+                ProviderModelContextWindowUnknownReason::ContextWindowUnknown,
+            ),
+        ];
+
+        for (catalog_exists, catalog_stale, model_stale, configured, window, expected) in cases {
+            let test_app = ModelTestApp::new();
+            let provider_id = test_app.seed_provider();
+            if catalog_exists {
+                seed_context_catalog(&test_app, provider_id, catalog_stale);
+            }
+            if catalog_exists
+                && !catalog_stale
+                && expected != ProviderModelContextWindowUnknownReason::ModelUnavailable
+            {
+                seed_context_model(
+                    &test_app,
+                    provider_id,
+                    "gpt-5.6",
+                    model_stale,
+                    configured,
+                    window,
+                );
+            }
+            let candidate = context_candidate(&test_app, provider_id, "gpt-5.6");
+            assert_unknown_projection(
+                resolve_context_window_projection(&test_app.db, &[candidate])
+                    .expect("resolve unknown context"),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn context_window_projection_fails_closed_for_missing_and_changed_provider_identity() {
+        let test_app = ModelTestApp::new();
+        assert_unknown_projection(
+            resolve_context_window_projection(&test_app.db, &[]).expect("empty candidates"),
+            ProviderModelContextWindowUnknownReason::NoCandidates,
+        );
+
+        let missing = ProviderModelContextWindowCandidate {
+            provider_id: 999_999,
+            provider_uuid: crate::shared::uuid::new_uuid_v4(),
+            remote_model_id: "gpt-5.6".to_string(),
+        };
+        assert_unknown_projection(
+            resolve_context_window_projection(&test_app.db, &[missing]).expect("missing provider"),
+            ProviderModelContextWindowUnknownReason::ProviderUnavailable,
+        );
+
+        let provider_id = test_app.seed_provider();
+        let changed = ProviderModelContextWindowCandidate {
+            provider_id,
+            provider_uuid: crate::shared::uuid::new_uuid_v4(),
+            remote_model_id: "gpt-5.6".to_string(),
+        };
+        assert_unknown_projection(
+            resolve_context_window_projection(&test_app.db, &[changed]).expect("changed identity"),
+            ProviderModelContextWindowUnknownReason::ProviderIdentityChanged,
+        );
     }
 
     #[test]

@@ -765,6 +765,8 @@ pub(crate) fn claude_terminal_launch_context(
         Option<String>,
         Option<i64>,
         Option<String>,
+        String,
+        Option<String>,
     );
 
     if provider_id <= 0 {
@@ -776,16 +778,19 @@ pub(crate) fn claude_terminal_launch_context(
         .query_row(
             r#"
 SELECT
-  cli_key,
-  base_url,
-  base_urls_json,
-  api_key_plaintext,
-  auth_mode,
-  oauth_access_token,
-  source_provider_id,
-  bridge_type
-FROM providers
-WHERE id = ?1
+  p.cli_key,
+  p.base_url,
+  p.base_urls_json,
+  p.api_key_plaintext,
+  p.auth_mode,
+  p.oauth_access_token,
+  p.source_provider_id,
+  source.provider_uuid,
+  p.claude_models_json,
+  p.bridge_type
+FROM providers p
+LEFT JOIN providers source ON source.id = p.source_provider_id
+WHERE p.id = ?1
 "#,
             params![provider_id],
             |row| {
@@ -798,6 +803,8 @@ WHERE id = ?1
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
                 ))
             },
         )
@@ -811,7 +818,9 @@ WHERE id = ?1
         api_key_plaintext,
         auth_mode,
         oauth_access_token,
-        _source_provider_id,
+        source_provider_id,
+        source_provider_uuid,
+        claude_models_json,
         bridge_type,
     )) = row
     else {
@@ -870,6 +879,10 @@ WHERE id = ?1
 
     Ok(ClaudeTerminalLaunchContext {
         api_key_plaintext: effective_credential,
+        is_cx2cc,
+        claude_models: claude_models_from_json(&claude_models_json),
+        source_provider_id,
+        source_provider_uuid,
     })
 }
 

@@ -11,6 +11,9 @@ use super::{is_claude_count_tokens_request, is_codex_model_discovery_request};
 
 use crate::gateway::active_requests::ActiveRequestStart;
 use crate::gateway::events::{emit_gateway_debug_log_lazy, emit_request_start_event};
+use crate::gateway::internal_reentry::{
+    InternalReentryRegistry, TrustedInternalReentry, INTERNAL_REENTRY_HEADER,
+};
 use crate::gateway::proxy::should_seed_in_progress_request_log;
 use crate::gateway::response_fixer;
 use crate::gateway::util::{
@@ -19,7 +22,7 @@ use crate::gateway::util::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::Request,
+    http::{HeaderMap, Method, Request},
     response::Response,
 };
 use std::sync::{Arc, Mutex};
@@ -46,6 +49,19 @@ type SpecialSettings = Arc<Mutex<Vec<serde_json::Value>>>;
 
 fn new_special_settings() -> SpecialSettings {
     Arc::new(Mutex::new(Vec::new()))
+}
+
+fn consume_internal_reentry_header(
+    registry: &InternalReentryRegistry,
+    headers: &mut HeaderMap,
+    cli_key: &str,
+    method: &Method,
+    forwarded_path: &str,
+    query: Option<&str>,
+) -> Option<TrustedInternalReentry> {
+    let header = headers.remove(INTERNAL_REENTRY_HEADER)?;
+    let nonce = header.to_str().ok()?;
+    registry.consume(nonce, cli_key, method, forwarded_path, query)
 }
 
 // ---------------------------------------------------------------------------
@@ -166,10 +182,18 @@ where
     let is_codex_model_discovery =
         is_codex_model_discovery_request(&cli_key, &method, &forwarded_path);
 
-    let (headers, body) = {
+    let (mut headers, body) = {
         let (parts, b) = req.into_parts();
         (parts.headers, b)
     };
+    let trusted_internal_reentry = consume_internal_reentry_header(
+        &state.internal_reentry,
+        &mut headers,
+        &cli_key,
+        &method,
+        &forwarded_path,
+        query.as_deref(),
+    );
 
     let forced_provider_id = extract_forced_provider_id(&headers);
     let session_binding_request = state.session.begin_binding_request();
@@ -182,6 +206,7 @@ where
         req_method: method,
         method_hint,
         query,
+        trusted_internal_reentry,
         trace_id,
         started,
         created_at_ms,
@@ -395,7 +420,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::abort_guard_from_proxy_context;
     use super::early_error::{
         build_early_error_log_ctx, early_error_contract,
         respond_provider_selection_failed_with_spawn,
@@ -415,6 +439,10 @@ mod tests {
     use super::register_active_request_from_proxy_context;
     use super::request_fingerprint::build_request_fingerprints;
     use super::runtime_settings::handler_runtime_settings;
+    use super::{
+        abort_guard_from_proxy_context, consume_internal_reentry_header, InternalReentryRegistry,
+        INTERNAL_REENTRY_HEADER,
+    };
     use crate::gateway::active_requests::ActiveRequestRegistry;
     use crate::gateway::codex_session_id::CodexSessionIdCache;
     use crate::gateway::plugins::pipeline::GatewayPluginPipeline;
@@ -481,9 +509,54 @@ mod tests {
             recent_errors: Arc::new(Mutex::new(RecentErrorCache::default())),
             latency_cache: Arc::new(Mutex::new(ProviderBaseUrlPingCache::default())),
             plugin_pipeline: GatewayPluginPipeline::empty_shared(),
+            internal_reentry: Arc::new(
+                crate::gateway::internal_reentry::InternalReentryRegistry::default(),
+            ),
+            direct_internal_reentry_client:
+                crate::gateway::http_client::build_direct_internal_reentry_client()
+                    .expect("handler tests direct internal reentry http client"),
             http_client_override: None,
             active_requests,
         }
+    }
+
+    #[test]
+    fn internal_reentry_header_is_removed_and_consumed_once() {
+        let registry = InternalReentryRegistry::default();
+        let nonce = registry.issue(42, "outer-trace").expect("nonce");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            INTERNAL_REENTRY_HEADER,
+            HeaderValue::from_str(&nonce).expect("header"),
+        );
+
+        let trusted = consume_internal_reentry_header(
+            &registry,
+            &mut headers,
+            "codex",
+            &Method::POST,
+            "/v1/responses",
+            None,
+        )
+        .expect("trusted reentry");
+        assert_eq!(trusted.bridge_provider_id, 42);
+        assert_eq!(trusted.origin_trace_id, "outer-trace");
+        assert!(!headers.contains_key(INTERNAL_REENTRY_HEADER));
+
+        headers.insert(
+            INTERNAL_REENTRY_HEADER,
+            HeaderValue::from_str(&nonce).expect("header"),
+        );
+        assert!(consume_internal_reentry_header(
+            &registry,
+            &mut headers,
+            "codex",
+            &Method::POST,
+            "/v1/responses",
+            None,
+        )
+        .is_none());
+        assert!(!headers.contains_key(INTERNAL_REENTRY_HEADER));
     }
 
     #[test]
@@ -506,6 +579,7 @@ mod tests {
             req_method: Method::POST,
             method_hint: "POST".to_string(),
             query: Some("beta=1".to_string()),
+            trusted_internal_reentry: None,
             trace_id: "trace-start-active".to_string(),
             started: Instant::now(),
             created_at_ms: 1_700_000_000_000,
@@ -578,6 +652,7 @@ mod tests {
             req_method: Method::POST,
             method_hint: "POST".to_string(),
             query: None,
+            trusted_internal_reentry: None,
             trace_id: "trace-unobserved".to_string(),
             started: Instant::now(),
             created_at_ms: 1_700_000_000_000,
@@ -641,6 +716,7 @@ mod tests {
             req_method: Method::POST,
             method_hint: "POST".to_string(),
             query: None,
+            trusted_internal_reentry: None,
             trace_id: trace_id.to_string(),
             started: Instant::now(),
             created_at_ms: 1_700_000_000_000,
@@ -989,7 +1065,10 @@ mod tests {
         assert!(runtime.verbose_provider_error);
         assert!(!runtime.intercept_warmup);
         assert!(runtime.enable_thinking_signature_rectifier);
-        assert_eq!(runtime.cx2cc_settings.fallback_model_main, "gpt-5.4");
+        assert_eq!(
+            runtime.cx2cc_settings.fallback_model_main,
+            settings::DEFAULT_CX2CC_FALLBACK_MODEL
+        );
         assert!(runtime.cx2cc_settings.disable_response_storage);
         assert!(runtime.enable_response_fixer);
         assert_eq!(

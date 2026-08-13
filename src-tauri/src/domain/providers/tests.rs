@@ -164,6 +164,45 @@ fn get_source_provider_for_gateway_keeps_cx2cc_source_enabled_requirement() {
     assert!(err.to_string().contains("source provider not found"));
 }
 
+#[test]
+fn claude_terminal_launch_context_keeps_cx2cc_mapper_and_source_identity() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers-cx2cc-launch-context.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut source_params = default_provider_params("Codex source");
+    source_params.cli_key = "codex".to_string();
+    let source = upsert(&db, source_params).expect("insert codex source");
+
+    let mut bridge_params = default_provider_params("CX2CC bridge");
+    bridge_params.base_urls.clear();
+    bridge_params.api_key = None;
+    bridge_params.source_provider_id = Some(source.id);
+    bridge_params.bridge_type = Some(CX2CC_BRIDGE_TYPE.to_string());
+    bridge_params.claude_models = Some(ClaudeModels {
+        main_model: Some("gpt-5.6".to_string()),
+        reasoning_model: Some("ignored-reasoning-slot".to_string()),
+        haiku_model: Some("gpt-5.6-luna".to_string()),
+        sonnet_model: Some("gpt-5.6-terra".to_string()),
+        opus_model: Some("gpt-5.6-sol".to_string()),
+    });
+    let bridge = upsert(&db, bridge_params).expect("insert cx2cc bridge");
+
+    let launch = claude_terminal_launch_context(&db, bridge.id).expect("launch context");
+    assert!(launch.is_cx2cc);
+    assert_eq!(launch.source_provider_id, Some(source.id));
+    assert_eq!(
+        launch.source_provider_uuid.as_deref(),
+        Some(source.provider_uuid.as_str())
+    );
+    assert_eq!(
+        launch.claude_models.opus_model.as_deref(),
+        Some("gpt-5.6-sol")
+    );
+    assert_eq!(launch.claude_models.main_model.as_deref(), Some("gpt-5.6"));
+    assert_eq!(launch.api_key_plaintext, format!("cx2cc-{}", bridge.id));
+}
+
 // -- DailyResetMode::parse --
 
 #[test]

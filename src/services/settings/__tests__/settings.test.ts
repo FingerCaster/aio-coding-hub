@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CX2CC_PROVIDER_DEFAULT_MODEL } from "../../../constants/cx2cc";
 import { tauriInvoke } from "../../../test/mocks/tauri";
 import { createTestAppSettings } from "../../../test/fixtures/settings";
 import { setTauriRuntime } from "../../../test/utils/tauriRuntime";
@@ -129,7 +130,7 @@ describe("services/settings/settings", () => {
       codexOauthCompatibleProxyMode: true,
       providerFailbackStrategy: "natural",
       naturalProbeMaxWaitSeconds: 300,
-      cx2CcFallbackModelMain: "gpt-5.4",
+      cx2CcFallbackModelMain: CX2CC_PROVIDER_DEFAULT_MODEL,
       upstreamProxyPassword: { mode: "clear" },
       upstreamErrorResponseRules: [expect.objectContaining({ name: "限额响应" })],
     });

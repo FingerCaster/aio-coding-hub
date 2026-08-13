@@ -1,0 +1,28 @@
+{
+  "id": "cx2cc-routing-gpt56",
+  "name": "cx2cc-routing-gpt56",
+  "title": "修复 CX2CC 路由与 GPT-5.6 配置",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "gateway,protocol-bridge,provider-models,frontend,release",
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-08-14",
+  "branch": "FingerCaster/cx2cc-beta-integration",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "quality_gate": "pnpm check:prepush (15/15)"
+  }
+}

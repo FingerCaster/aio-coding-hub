@@ -377,6 +377,15 @@ where
             });
         }
     };
+    // Matching consumes the typed intent. It only authorizes the exact self-loop
+    // exception below; ordinary target validation still runs for every request.
+    let authorized_internal_reentry = cx2cc_preparation::InternalCodexReentry::consume_and_match(
+        &mut prepared.internal_codex_reentry,
+        &input.trace_id,
+        prepared.provider_id,
+        &input.req_method,
+        &url,
+    );
     // Resolve first, but defer returning its result until after the authoritative
     // enabled-state read so the outer Provider switch remains the master gate.
     // The enabled-state read is therefore also the final async preparation step.
@@ -413,8 +422,28 @@ where
             return PreparedSendOutcome::ProviderEnableCheckFailed;
         }
     }
-    let validated_target = match target_validation {
-        Ok(target) => target,
+    let pinned_client = match target_validation {
+        Ok(target) => match target.into_pinned_client() {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(
+                    trace_id = %input.trace_id,
+                    cli_key = %input.cli_key,
+                    provider_id = prepared.provider_id,
+                    retry_index,
+                    error,
+                    "failed to build DNS-pinned Provider target client"
+                );
+                return PreparedSendOutcome::ProviderTargetRejected(
+                    crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
+                );
+            }
+        },
+        Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop)
+            if authorized_internal_reentry =>
+        {
+            None
+        }
         Err(error) => {
             tracing::warn!(
                 trace_id = %input.trace_id,
@@ -425,22 +454,6 @@ where
                 "provider target rejected before upstream send"
             );
             return PreparedSendOutcome::ProviderTargetRejected(error);
-        }
-    };
-    let pinned_client = match validated_target.into_pinned_client() {
-        Ok(client) => client,
-        Err(error) => {
-            tracing::warn!(
-                trace_id = %input.trace_id,
-                cli_key = %input.cli_key,
-                provider_id = prepared.provider_id,
-                retry_index,
-                error,
-                "failed to build DNS-pinned Provider target client"
-            );
-            return PreparedSendOutcome::ProviderTargetRejected(
-                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
-            );
         }
     };
     if let Some((route, priced_cli_key, outcome)) = configured_route_marker.as_ref() {
@@ -463,6 +476,26 @@ where
         &headers,
         &upstream_body,
     );
+    if authorized_internal_reentry {
+        let Some(nonce) = ctx
+            .state
+            .internal_reentry
+            .issue(prepared.provider_id, &input.trace_id)
+        else {
+            return PreparedSendOutcome::ProviderTargetRejected(
+                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
+            );
+        };
+        let Ok(value) = axum::http::HeaderValue::from_str(&nonce) else {
+            return PreparedSendOutcome::ProviderTargetRejected(
+                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
+            );
+        };
+        headers.insert(
+            crate::gateway::internal_reentry::INTERNAL_REENTRY_HEADER,
+            value,
+        );
+    }
 
     let timing = AttemptTiming {
         attempt_started_ms,
@@ -470,7 +503,11 @@ where
     };
 
     let dispatch_ownership = prepared.dispatch_ownership.clone();
-    let client = pinned_client.unwrap_or_else(|| ctx.state.client());
+    let client = if authorized_internal_reentry {
+        ctx.state.direct_internal_reentry_client()
+    } else {
+        pinned_client.unwrap_or_else(|| ctx.state.client())
+    };
     let send_result = send::send_upstream_with_first_byte_timeout(
         client,
         input.req_method.clone(),

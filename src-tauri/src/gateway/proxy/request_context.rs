@@ -2,6 +2,7 @@
 
 use super::abort_guard::RequestAbortGuard;
 use super::request_body::GatewayRequestBody;
+use crate::gateway::internal_reentry::TrustedInternalReentry;
 use crate::gateway::response_fixer;
 use crate::gateway::runtime::GatewayAppState;
 use crate::gateway::util::{strip_hop_headers, RequestedModelLocation};
@@ -20,6 +21,7 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) req_method: Method,
     pub(super) method_hint: String,
     pub(super) query: Option<String>,
+    pub(super) trusted_internal_reentry: Option<TrustedInternalReentry>,
     pub(super) trace_id: String,
     pub(super) started: Instant,
     pub(super) created_at_ms: i64,
@@ -95,6 +97,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             req_method,
             method_hint,
             query,
+            trusted_internal_reentry,
             trace_id,
             started,
             created_at_ms,
@@ -175,6 +178,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             req_method,
             method_hint,
             query,
+            trusted_internal_reentry,
             trace_id,
             started,
             created_at_ms,
@@ -317,6 +321,7 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) req_method: Method,
     pub(super) method_hint: String,
     pub(super) query: Option<String>,
+    pub(super) trusted_internal_reentry: Option<TrustedInternalReentry>,
     pub(super) trace_id: String,
     pub(super) started: Instant,
     pub(super) created_at_ms: i64,

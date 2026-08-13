@@ -145,9 +145,6 @@ pub(super) fn apply_cx2cc_request_settings(
     responses_body: &mut serde_json::Value,
     cx2cc_settings: &crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
 ) {
-    if let Some(ref effort) = cx2cc_settings.model_reasoning_effort {
-        responses_body["reasoning"] = serde_json::json!({ "effort": effort });
-    }
     if let Some(ref tier) = cx2cc_settings.service_tier {
         responses_body["service_tier"] = serde_json::json!(tier);
     }
@@ -159,6 +156,26 @@ pub(super) fn apply_cx2cc_request_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cx2cc_request_settings_leave_reasoning_owned_by_the_request() {
+        let mut body = serde_json::json!({
+            "reasoning": {"effort": "future-effort"},
+            "store": true
+        });
+        let settings = crate::gateway::proxy::cx2cc::settings::Cx2ccSettings {
+            model_reasoning_effort: Some("medium".to_string()),
+            service_tier: Some("flex".to_string()),
+            disable_response_storage: true,
+            ..Default::default()
+        };
+
+        apply_cx2cc_request_settings(&mut body, &settings);
+
+        assert_eq!(body["reasoning"]["effort"], "future-effort");
+        assert_eq!(body["service_tier"], "flex");
+        assert_eq!(body["store"], false);
+    }
 
     fn attempt(
         provider_index: Option<u32>,

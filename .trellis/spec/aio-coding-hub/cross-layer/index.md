@@ -17,6 +17,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Configured model routing contract](./configured-model-routing-contract.md):
   exact original-model matching, global/provider three-state policy, final-wire
   protocol rewrites, pre-send failover, and provider-scoped audit/cost basis.
+- [CX2CC routing contract](./cx2cc-routing-contract.md): single-owner model
+  mapping, reasoning presence, provider-scoped context projection, shared
+  defaults, and authenticated direct one-hop local gateway reentry.
 - [Upstream error handling contract](./upstream-error-handling-contract.md):
   configured retry budgets, native Codex SSE recovery, terminal HTTP response
   rewriting, bounded diagnostics, and the shared segmented settings entry.
@@ -117,6 +120,20 @@ When changing configured model routing:
    health/circuit/account/session mutation, or a second client request.
 5. Recheck settings 57, SQLite 45, Provider share v4, config bundle v4, and
    generated TypeScript bindings together.
+
+When changing CX2CC routing, reasoning, model presets, context projection, or
+local gateway reentry:
+
+1. Read [CX2CC routing contract](./cx2cc-routing-contract.md).
+2. Trace the original model through the four-slot mapper, first-hop route
+   isolation, authenticated second-hop isolation, final wire model, and cost
+   marker.
+3. Trace reasoning presence through inbound IR and Responses output without
+   consulting the legacy persisted effort field.
+4. Validate provider UUID/model identity, discovered-source trust, mixed and
+   unknown context behavior, and terminal environment omission together.
+5. Verify nonce issue/consume order, header stripping, fingerprint order,
+   direct/no-proxy/no-redirect transport, and ordinary self-loop rejection.
 
 When changing provider deletion or request-log provider identity:
 
@@ -288,6 +305,10 @@ When changing usage folders, development-time estimates, or provider metrics tre
   matching, Provider replace/suppress semantics, all supported wire protocols,
   compressed/plugin ordering, failure isolation, original-model audit, final
   Provider marker ownership, and no source-price fallback.
+- When changing CX2CC, verify the four-slot mapper remains the only model owner,
+  reasoning presence is preserved without legacy fallback, context is trusted
+  only from discovered provider-scoped rows, authenticated local reentry skips
+  second-hop mapping, and the private nonce cannot traverse a proxy or redirect.
 - When changing upstream error handling, verify retry/rewrite save isolation,
   shared retry budget/backoff, pre-commit-only stream recovery, terminal-only
   HTTP rewrite, client/attempt status separation, and bounded redacted evidence.

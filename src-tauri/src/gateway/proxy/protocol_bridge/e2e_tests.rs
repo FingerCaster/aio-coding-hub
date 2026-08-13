@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::gateway::proxy::protocol_bridge::{get_bridge, registry, BridgeContext};
+    use crate::settings::DEFAULT_CX2CC_FALLBACK_MODEL;
     use serde_json::json;
 
     fn cx2cc_ctx() -> BridgeContext {
@@ -14,6 +15,14 @@ mod tests {
             stream_requested: false,
             is_chatgpt_backend: false,
         }
+    }
+
+    fn cx2cc_ctx_with_legacy_settings() -> BridgeContext {
+        let mut ctx = cx2cc_ctx();
+        ctx.cx2cc_settings.model_reasoning_effort = Some("medium".to_string());
+        ctx.cx2cc_settings.service_tier = Some("flex".to_string());
+        ctx.cx2cc_settings.disable_response_storage = true;
+        ctx
     }
 
     #[test]
@@ -48,7 +57,7 @@ mod tests {
             .expect("translate Anthropic request");
 
         assert_eq!(translated.target_path, "/v1/responses");
-        assert_eq!(translated.body["model"], "gpt-5.4");
+        assert_eq!(translated.body["model"], DEFAULT_CX2CC_FALLBACK_MODEL);
         assert_eq!(translated.body["instructions"], "You are helpful.");
         assert_eq!(translated.body["max_output_tokens"], 1024);
         assert_eq!(translated.body["input"][0]["role"], "user");
@@ -57,6 +66,66 @@ mod tests {
             "input_text"
         );
         assert_eq!(translated.body["input"][0]["content"][0]["text"], "Hello");
+    }
+
+    #[test]
+    fn cx2cc_preserves_reasoning_state_and_effort_precedence() {
+        let bridge = get_bridge("cx2cc").unwrap();
+        let translate = |extra: serde_json::Value| {
+            let mut body = json!({
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
+            body.as_object_mut()
+                .expect("request object")
+                .extend(extra.as_object().expect("extra fields").clone());
+            bridge
+                .translate_request(body, &cx2cc_ctx_with_legacy_settings())
+                .expect("translate Anthropic request")
+                .body
+        };
+
+        let absent = translate(json!({}));
+        assert!(absent.get("reasoning").is_none());
+        assert_eq!(absent["service_tier"], "flex");
+        assert_eq!(absent["store"], false);
+
+        let disabled = translate(json!({
+            "thinking": {"type": "disabled"},
+            "output_config": {"effort": "high"}
+        }));
+        assert_eq!(disabled["reasoning"]["effort"], "none");
+
+        let enabled_without_effort = translate(json!({
+            "thinking": {"type": "enabled"}
+        }));
+        assert!(enabled_without_effort.get("reasoning").is_none());
+
+        let enabled_with_effort = translate(json!({
+            "thinking": {"type": "enabled"},
+            "output_config": {"effort": "high"}
+        }));
+        assert_eq!(enabled_with_effort["reasoning"]["effort"], "high");
+
+        let adaptive_without_effort = translate(json!({
+            "thinking": {"type": "adaptive"}
+        }));
+        assert!(adaptive_without_effort.get("reasoning").is_none());
+
+        let adaptive_with_unknown_effort = translate(json!({
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "future-effort"}
+        }));
+        assert_eq!(
+            adaptive_with_unknown_effort["reasoning"]["effort"],
+            "future-effort"
+        );
+
+        let unknown_effort = translate(json!({
+            "output_config": {"effort": "future-effort"}
+        }));
+        assert_eq!(unknown_effort["reasoning"]["effort"], "future-effort");
     }
 
     #[test]

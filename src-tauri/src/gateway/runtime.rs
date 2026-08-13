@@ -8,6 +8,7 @@ use tokio::sync::oneshot;
 use super::active_requests::{ActiveRequestFinishReason, ActiveRequestRegistry};
 use super::background_tasks::GatewayBackgroundTasks;
 use super::codex_session_id::CodexSessionIdCache;
+use super::internal_reentry::InternalReentryRegistry;
 use super::plugins::pipeline::GatewayPluginPipeline;
 use super::proxy::{ProviderBaseUrlPingCache, RecentErrorCache};
 use super::{GatewayProviderCircuitStatus, GatewayStatus};
@@ -22,6 +23,8 @@ pub(in crate::gateway) struct GatewayAppState<R: tauri::Runtime = tauri::Wry> {
     pub(super) recent_errors: Arc<Mutex<RecentErrorCache>>,
     pub(super) latency_cache: Arc<Mutex<ProviderBaseUrlPingCache>>,
     pub(super) plugin_pipeline: Arc<GatewayPluginPipeline>,
+    pub(super) internal_reentry: Arc<InternalReentryRegistry>,
+    pub(super) direct_internal_reentry_client: reqwest::Client,
     #[cfg(test)]
     pub(super) http_client_override: Option<reqwest::Client>,
     pub(super) active_requests: Arc<ActiveRequestRegistry>,
@@ -39,6 +42,8 @@ impl<R: tauri::Runtime> Clone for GatewayAppState<R> {
             recent_errors: self.recent_errors.clone(),
             latency_cache: self.latency_cache.clone(),
             plugin_pipeline: self.plugin_pipeline.clone(),
+            internal_reentry: self.internal_reentry.clone(),
+            direct_internal_reentry_client: self.direct_internal_reentry_client.clone(),
             #[cfg(test)]
             http_client_override: self.http_client_override.clone(),
             active_requests: self.active_requests.clone(),
@@ -139,6 +144,10 @@ impl<R: tauri::Runtime> GatewayAppState<R> {
             return client.clone();
         }
         super::http_client::get()
+    }
+
+    pub(in crate::gateway) fn direct_internal_reentry_client(&self) -> reqwest::Client {
+        self.direct_internal_reentry_client.clone()
     }
 }
 

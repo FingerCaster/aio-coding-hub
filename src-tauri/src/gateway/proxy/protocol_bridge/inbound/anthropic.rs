@@ -78,6 +78,11 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
         })
         .unwrap_or_default();
 
+    let metadata = IRMetadata {
+        reasoning: parse_reasoning_config(&body),
+        ..Default::default()
+    };
+
     Ok(InternalRequest {
         model,
         messages,
@@ -89,8 +94,22 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
         top_p,
         stop_sequences,
         stream,
-        metadata: IRMetadata::default(),
+        metadata,
     })
+}
+
+fn parse_reasoning_config(body: &Value) -> IRReasoningConfig {
+    let effort = body
+        .pointer("/output_config/effort")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    match body.pointer("/thinking/type").and_then(Value::as_str) {
+        Some("disabled") => IRReasoningConfig::Disabled,
+        Some("enabled") => IRReasoningConfig::Enabled(effort),
+        Some("adaptive") => IRReasoningConfig::Adaptive(effort),
+        _ => effort.map(IRReasoningConfig::Effort).unwrap_or_default(),
+    }
 }
 
 fn parse_system(body: &Value) -> Option<String> {
@@ -691,6 +710,68 @@ mod tests {
         );
         assert!(
             matches!(&ir.messages[0].content[1], IRContentBlock::Text { text } if text == "Answer")
+        );
+    }
+
+    #[test]
+    fn request_reasoning_config_preserves_explicit_state_and_effort() {
+        let request = |reasoning_fields: Value| {
+            let mut body = json!({
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
+            body.as_object_mut().expect("request object").extend(
+                reasoning_fields
+                    .as_object()
+                    .expect("reasoning fields")
+                    .clone(),
+            );
+            parse_request(body, &default_settings())
+                .expect("parse request")
+                .metadata
+                .reasoning
+        };
+
+        assert_eq!(request(json!({})), IRReasoningConfig::Absent);
+        assert_eq!(
+            request(json!({"thinking": {"type": "disabled"}})),
+            IRReasoningConfig::Disabled
+        );
+        assert_eq!(
+            request(json!({"thinking": {"type": "enabled"}})),
+            IRReasoningConfig::Enabled(None)
+        );
+        assert_eq!(
+            request(json!({
+                "thinking": {"type": "enabled"},
+                "output_config": {"effort": "high"}
+            })),
+            IRReasoningConfig::Enabled(Some("high".to_string()))
+        );
+        assert_eq!(
+            request(json!({"thinking": {"type": "adaptive"}})),
+            IRReasoningConfig::Adaptive(None)
+        );
+        assert_eq!(
+            request(json!({
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "future-effort"}
+            })),
+            IRReasoningConfig::Adaptive(Some("future-effort".to_string()))
+        );
+        assert_eq!(
+            request(json!({
+                "output_config": {"effort": "future-effort"}
+            })),
+            IRReasoningConfig::Effort("future-effort".to_string())
+        );
+        assert_eq!(
+            request(json!({
+                "thinking": {"type": "disabled"},
+                "output_config": {"effort": "high"}
+            })),
+            IRReasoningConfig::Disabled
         );
     }
 

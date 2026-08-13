@@ -6,6 +6,7 @@ import { GATEWAY_EVENT_TEXT_LIMITS, gatewayEventNames } from "../gatewayEvents";
 import { GatewayErrorCodes } from "../gatewayErrorCodes";
 import { HOME_USAGE_PERIOD_VALUES } from "../homeUsagePeriods";
 import { MAX_MODEL_NAME_LEN } from "../../schemas/providerEditorDialog";
+import { CX2CC_PROVIDER_DEFAULT_MODEL } from "../cx2cc";
 import { DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE } from "../../services/gateway/circuitNotice";
 import { DEFAULT_CYBER_PASSTHROUGH_KEYWORD } from "../../services/gateway/upstreamRetryPolicy";
 import { CODEX_SYSTEM_REQUEST_SPECIAL_SETTING } from "../../services/gateway/requestLogSpecialSettings";
@@ -178,6 +179,15 @@ describe("cross-layer contracts", () => {
     expect(settings.stream_internal_error_guard_ms).toBe(
       extractRustNumericConst(settingsDefaultsSource, "DEFAULT_STREAM_INTERNAL_ERROR_GUARD_MS")
     );
+    const cx2ccDefault = extractRustStringConst(
+      settingsDefaultsSource,
+      "DEFAULT_CX2CC_FALLBACK_MODEL"
+    );
+    expect(cx2ccDefault).toBe(CX2CC_PROVIDER_DEFAULT_MODEL);
+    expect(settings.cx2cc_fallback_model_opus).toBe(cx2ccDefault);
+    expect(settings.cx2cc_fallback_model_sonnet).toBe(cx2ccDefault);
+    expect(settings.cx2cc_fallback_model_haiku).toBe(cx2ccDefault);
+    expect(settings.cx2cc_fallback_model_main).toBe(cx2ccDefault);
     expect(settings.enable_billing_header_rectifier).toBe(
       extractRustBoolConst(settingsDefaultsSource, "DEFAULT_ENABLE_BILLING_HEADER_RECTIFIER")
     );
