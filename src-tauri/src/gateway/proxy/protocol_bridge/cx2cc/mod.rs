@@ -119,6 +119,7 @@ pub(crate) fn original_anthropic_stream_requested(introspection_json: Option<&Va
 mod tests {
     use super::*;
     use crate::domain::providers::ClaudeModels;
+    use crate::settings::DEFAULT_CX2CC_FALLBACK_MODEL;
     use serde_json::json;
 
     fn default_ctx() -> BridgeContext {
@@ -142,36 +143,39 @@ mod tests {
     // ── Model mapping: default values ──────────────────────────────────────
 
     #[test]
-    fn maps_opus_to_default_o3() {
+    fn maps_opus_to_shared_default() {
         let mapper = CX2CCModelMapper;
         assert_eq!(
             mapper.map("claude-3-opus-20240229", &default_ctx()),
-            "gpt-5.4"
+            DEFAULT_CX2CC_FALLBACK_MODEL
         );
     }
 
     #[test]
-    fn maps_haiku_to_default_gpt41_mini() {
+    fn maps_haiku_to_shared_default() {
         let mapper = CX2CCModelMapper;
         assert_eq!(
             mapper.map("claude-3-haiku-20240307", &default_ctx()),
-            "gpt-5.4"
+            DEFAULT_CX2CC_FALLBACK_MODEL
         );
     }
 
     #[test]
-    fn maps_sonnet_to_default_gpt41() {
+    fn maps_sonnet_to_shared_default() {
         let mapper = CX2CCModelMapper;
         assert_eq!(
             mapper.map("claude-3-5-sonnet-20241022", &default_ctx()),
-            "gpt-5.4"
+            DEFAULT_CX2CC_FALLBACK_MODEL
         );
     }
 
     #[test]
-    fn maps_unknown_model_to_default_gpt41() {
+    fn maps_unknown_model_to_shared_default() {
         let mapper = CX2CCModelMapper;
-        assert_eq!(mapper.map("some-unknown-model", &default_ctx()), "gpt-5.4");
+        assert_eq!(
+            mapper.map("some-unknown-model", &default_ctx()),
+            DEFAULT_CX2CC_FALLBACK_MODEL
+        );
     }
 
     // ── Model mapping: custom overrides ────────────────────────────────────

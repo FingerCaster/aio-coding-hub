@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::gateway::proxy::protocol_bridge::{get_bridge, registry, BridgeContext};
+    use crate::settings::DEFAULT_CX2CC_FALLBACK_MODEL;
     use serde_json::json;
 
     fn cx2cc_ctx() -> BridgeContext {
@@ -56,7 +57,7 @@ mod tests {
             .expect("translate Anthropic request");
 
         assert_eq!(translated.target_path, "/v1/responses");
-        assert_eq!(translated.body["model"], "gpt-5.4");
+        assert_eq!(translated.body["model"], DEFAULT_CX2CC_FALLBACK_MODEL);
         assert_eq!(translated.body["instructions"], "You are helpful.");
         assert_eq!(translated.body["max_output_tokens"], 1024);
         assert_eq!(translated.body["input"][0]["role"], "user");
