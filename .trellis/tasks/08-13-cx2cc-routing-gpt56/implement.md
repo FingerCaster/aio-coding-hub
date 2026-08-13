@@ -72,4 +72,3 @@ pnpm check:generated-bindings
 - 若单条实现线无法满足安全不变量，暂不 cherry-pick 该 commit，保留其测试/报告，
   由主会话补 adapter 或回到设计阶段，不放宽 loopback/unknown fail-closed 规则。
 - 发布前任何 Beta contract 失败都停止 promotion，不修改 stable channel。
-

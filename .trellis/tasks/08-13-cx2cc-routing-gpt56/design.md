@@ -105,12 +105,11 @@ method/hop 校验并消费。网络头只用于内部 hop，入口 middleware �
 
 ## 验收测试矩阵
 
-| 层 | 正例 | 反例/回归 |
-| --- | --- | --- |
-| route | CX2CC mapper model 直达 wire | configured target 不改 CX2CC；普通 provider 仍改 |
-| thinking | effort、enabled、disabled、未知值保持 presence/value | settings legacy effort 不覆盖；历史 thinking 不冒充配置 |
-| UI/catalog | 四个 GPT-5.6 ID 可选，旧值仍可编辑 | 不把 `ultra` 当 Responses effort；动态 catalog 不被硬编码污染 |
-| context | source exact、同窗 exact、混窗 min/mixed | stale/unconfigured/unknown/catalog unavailable 不冒充容量 |
-| loopback | 精确内部一次跳转成功 | 直接 self-loop、重放、第二跳、错误 authority/path/method 拒绝 |
-| release | 生成绑定和 beta manifest 可复现 | stable latest/Homebrew/非目标平台不被改写 |
-
+| 层         | 正例                                                 | 反例/回归                                                     |
+| ---------- | ---------------------------------------------------- | ------------------------------------------------------------- |
+| route      | CX2CC mapper model 直达 wire                         | configured target 不改 CX2CC；普通 provider 仍改              |
+| thinking   | effort、enabled、disabled、未知值保持 presence/value | settings legacy effort 不覆盖；历史 thinking 不冒充配置       |
+| UI/catalog | 四个 GPT-5.6 ID 可选，旧值仍可编辑                   | 不把 `ultra` 当 Responses effort；动态 catalog 不被硬编码污染 |
+| context    | source exact、同窗 exact、混窗 min/mixed             | stale/unconfigured/unknown/catalog unavailable 不冒充容量     |
+| loopback   | 精确内部一次跳转成功                                 | 直接 self-loop、重放、第二跳、错误 authority/path/method 拒绝 |
+| release    | 生成绑定和 beta manifest 可复现                      | stable latest/Homebrew/非目标平台不被改写                     |

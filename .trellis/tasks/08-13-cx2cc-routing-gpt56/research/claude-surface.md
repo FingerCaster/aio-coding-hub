@@ -20,11 +20,13 @@
 **审计轮次：** 第二轮（纠正第一轮错误结论，补充 R8 context window 分析）
 
 **审计基线：**
+
 - 当前分支 HEAD: `81fd6d0860d1a6cc8c053f42d8aa941a0a445e96`
 - upstream/main: `7725effd33ab9d7e1e8c4f9b5bb30c6e5a0ff23e`
 - 共同祖先: `4f02ba3d6e7bee9539fb4aee3dc3a10e022726ee`
 
 **原需求（R1-R7）：**
+
 - R2: CX2CC 不再二次套用配置模型路由
 - R3: CX2CC 思考配置透传，不被固定设置覆盖
 - R4: 模型能力覆盖 GPT-5.6
@@ -32,6 +34,7 @@
 - R6: 共享数据源一致性修复
 
 **新增需求（R8）：**
+
 - **CX2CC 需按实际 GPT 型号设置 context window，避免 Claude/Codex 调用压缩异常**
 
 ---
@@ -42,24 +45,24 @@
 
 #### ❌ 第一轮"已有"结论全部错误
 
-1. **F1: CX2CC 会命中配置模型路由（R2 需修复）**  
+1. **F1: CX2CC 会命中配置模型路由（R2 需修复）**
    - **第一轮错误**：声称"已实现"
    - **证据**：`configured_model_route::resolve` 未检查 `bridge_type="cx2cc"`
    - **影响**：CX2CC 请求被配置模型路由二次改写，破坏协议转换契约
 
-2. **F2: 递归保护误判 CX2CC 本地网关（R5 需修复）**  
+2. **F2: 递归保护误判 CX2CC 本地网关（R5 需修复）**
    - **第一轮正确识别**但未实施
    - **证据**：`recursion_guard.rs` 拒绝所有带 `x-aio-gateway-forwarded` 的 claude 请求
    - **影响**：CX2CC 选择"当前 AIO Codex 网关"返回 `508 Loop Detected`
 
-3. **F3: thinking 透传未端到端验证（R3 需验证）**  
+3. **F3: thinking 透传未端到端验证（R3 需验证）**
    - **第一轮错误**：声称"已实现 70%"
    - **证据**：`apply_responses_metadata` 优先 IR metadata，但 `anthropic.rs:parse_request` 始终返回空 `metadata`
    - **影响**：无法确认 Anthropic `thinking` 参数能否透传
 
 #### ❌ 第一轮遗漏核心问题（R8）
 
-4. **F5: CX2CC 无 context window 传递机制（R8 严重缺失）**  
+4. **F5: CX2CC 无 context window 传递机制（R8 严重缺失）**
    - **问题**：CX2CC 返回 GPT 模型 ID，但 Claude Code 无法获知 context window
    - **根因**：网关不向 Claude Code 传递模型 context window（响应头/响应体）
    - **影响**：
@@ -68,17 +71,17 @@
    - **证据**：
      - Claude Code context window 来源：`~/.config/claude/config.toml` 的 `model_context_window`
      - 前端仅硬编码 GPT-5.4（1M），切换到其他模型清空 context window
-     - 网关无响应头/响应体传递机制（经审计 routes.rs、success_*.rs 确认）
+     - 网关无响应头/响应体传递机制（经审计 routes.rs、success\_\*.rs 确认）
 
 ### 必要修复清单
 
-| 编号 | 发现 | 建议 | 优先级 | 工作量 |
-|------|------|------|--------|-----------| 
-| **F1** | CX2CC 命中配置模型路由 | `managed_model_route` 中间件标记 `cx2cc` | **P0** | 0.5d |
-| **F2** | 递归保护误判本地网关 | `recursion_guard.rs` 白名单 `source_id.is_none()` | **P0** | 0.5d |
-| **F5** | CX2CC 无 context window 传递 | Codex 模型目录自动同步方案 | **P0** | 2-3d |
-| **F3** | thinking 透传未验证 | Anthropic 入站解析 `thinking` 进 IR metadata | P1 | 1d |
-| **F4** | GPT-5.6 模型目录缺失 | 补充前后端 GPT-5.6 + context window | P1 | 与 F5 合并 |
+| 编号   | 发现                         | 建议                                              | 优先级 | 工作量     |
+| ------ | ---------------------------- | ------------------------------------------------- | ------ | ---------- |
+| **F1** | CX2CC 命中配置模型路由       | `managed_model_route` 中间件标记 `cx2cc`          | **P0** | 0.5d       |
+| **F2** | 递归保护误判本地网关         | `recursion_guard.rs` 白名单 `source_id.is_none()` | **P0** | 0.5d       |
+| **F5** | CX2CC 无 context window 传递 | Codex 模型目录自动同步方案                        | **P0** | 2-3d       |
+| **F3** | thinking 透传未验证          | Anthropic 入站解析 `thinking` 进 IR metadata      | P1     | 1d         |
+| **F4** | GPT-5.6 模型目录缺失         | 补充前后端 GPT-5.6 + context window               | P1     | 与 F5 合并 |
 
 **总工作量：** 5-7 天（P0: 3-4d, P1: 2d, 文档: 1d）
 
@@ -135,7 +138,7 @@ function buildModelPatch(model: string, contextWindow?: string, autoCompactLimit
     model: trimmed,
     model_context_window: isGpt54
       ? (parsePositiveInt(contextWindow) ?? GPT_54_CONTEXT_WINDOW)
-      : null,  // ❌ 非 GPT-5.4 清空 context window
+      : null, // ❌ 非 GPT-5.4 清空 context window
   };
 }
 ```
@@ -146,15 +149,16 @@ function buildModelPatch(model: string, contextWindow?: string, autoCompactLimit
 
 经审计以下文件，**未发现**网关向 Claude Code 传递模型 context window 的实现：
 
-| 文件 | 审计结果 |
-|------|----------|
-| `src-tauri/src/gateway/routes.rs` | 无 `x-model-*` 响应头注入 |
-| `src-tauri/src/gateway/proxy/handler/failover_loop/response/success_non_stream.rs` | 无 context window 字段 |
-| `src-tauri/src/gateway/proxy/handler/failover_loop/response/success_event_stream.rs` | 无 context window 字段 |
-| `src-tauri/src/gateway/response_output_normalizer.rs` (e2d03792) | 仅标准化格式，不传递能力 |
-| `src-tauri/src/domain/provider_models.rs` | `context_window` 字段仅用于 DB |
+| 文件                                                                                 | 审计结果                       |
+| ------------------------------------------------------------------------------------ | ------------------------------ |
+| `src-tauri/src/gateway/routes.rs`                                                    | 无 `x-model-*` 响应头注入      |
+| `src-tauri/src/gateway/proxy/handler/failover_loop/response/success_non_stream.rs`   | 无 context window 字段         |
+| `src-tauri/src/gateway/proxy/handler/failover_loop/response/success_event_stream.rs` | 无 context window 字段         |
+| `src-tauri/src/gateway/response_output_normalizer.rs` (e2d03792)                     | 仅标准化格式，不传递能力       |
+| `src-tauri/src/domain/provider_models.rs`                                            | `context_window` 字段仅用于 DB |
 
 **搜索验证：**
+
 ```bash
 grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
   src-tauri/src/gateway --include="*.rs"
@@ -165,14 +169,15 @@ grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
 
 **场景：CX2CC 使用 GPT-5.6**
 
-| 环节 | 模型 | Context Window | 状态 |
-|------|------|----------------|------|
-| Claude Code 请求 | `claude-sonnet-5` | N/A | 输入 |
-| CX2CC 转译 | `gpt-5.6` | N/A | 协议转换 |
-| 网关响应 | `gpt-5.6` | **缺失** | ❌ 未传递 |
-| Claude Code config.toml | `gpt-5.6` | **null** | ❌ 前端清空 |
+| 环节                    | 模型              | Context Window | 状态        |
+| ----------------------- | ----------------- | -------------- | ----------- |
+| Claude Code 请求        | `claude-sonnet-5` | N/A            | 输入        |
+| CX2CC 转译              | `gpt-5.6`         | N/A            | 协议转换    |
+| 网关响应                | `gpt-5.6`         | **缺失**       | ❌ 未传递   |
+| Claude Code config.toml | `gpt-5.6`         | **null**       | ❌ 前端清空 |
 
 **结果**：Claude Code 使用默认或错误的 context window，导致：
+
 - 发送 800K prompt → 误认为超限 → 触发 compact
 - 或发送 1.5M prompt → 实际超限 → 网关返回 400
 
@@ -181,6 +186,7 @@ grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
 #### 方案 C：Codex 模型目录自动同步（推荐）
 
 **设计思路：**
+
 1. 网关维护托管模型目录 `managed-model-catalog.json`，包含 GPT 模型 context window
 2. Claude Code 启动时读取目录，自动填充 `config.toml`
 3. CX2CC 映射表（`Cx2ccSettings`）补充 context window 默认值
@@ -216,6 +222,7 @@ grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
 **实施步骤：**
 
 1. **扩展 `Cx2ccSettings`（0.5d）**
+
    ```rust
    // src-tauri/src/gateway/proxy/cx2cc/settings.rs
    pub struct Cx2ccSettings {
@@ -227,6 +234,7 @@ grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
    ```
 
 2. **扩展托管模型目录（1d）**
+
    ```rust
    // src-tauri/src/infra/codex_model_catalog/managed.rs
    // ManagedCatalogProfile.capabilities 已包含 context_window 字段
@@ -234,13 +242,14 @@ grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
    ```
 
 3. **前端支持 GPT-5.6（0.5d）**
+
    ```typescript
    // src/components/cli-manager/tabs/CodexTab.tsx
    const MODEL_CONFIGS = {
      "gpt-5.4": { contextWindow: 1_000_000, autoCompactLimit: 900_000 },
      "gpt-5.6": { contextWindow: 2_000_000, autoCompactLimit: 1_800_000 },
    };
-   
+
    function buildModelPatch(model: string, ...) {
        const config = MODEL_CONFIGS[model];
        return {
@@ -257,6 +266,7 @@ grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
    - 模型切换时自动更新 `config.toml`
 
 **优点：**
+
 - 完整解决方案，支持所有 GPT 模型
 - 复用现有托管模型目录基础设施
 - 前端 UI 自动同步，减少手动配置
@@ -272,6 +282,7 @@ grep -r "x-codex-model-metadata\|x-model-capability\|context.*window.*header" \
 **问题：** `configured_model_route::resolve` 未排除 `bridge_type="cx2cc"` 供应商。
 
 **证据：**
+
 ```rust
 // src-tauri/src/gateway/configured_model_route.rs:41-54
 pub(in crate::gateway) fn resolve(..., managed_model_route: bool, ...) {
@@ -291,18 +302,19 @@ impl ManagedModelRouteMiddleware {
         mut ctx: ProxyContext<R>,
     ) -> MiddlewareAction<R> {
         // 现有逻辑...
-        
+
         // ✅ 新增：CX2CC 桥接供应商标记为托管路由
         if ctx.providers.first().is_some_and(|p| p.is_cx2cc_bridge()) {
             ctx.managed_model_route = true;
         }
-        
+
         MiddlewareAction::Continue(Box::new(ctx))
     }
 }
 ```
 
 **验证：**
+
 1. 单元测试：`resolve` 传入 `managed_model_route=true` 返回 `None`
 2. 集成测试：CX2CC 请求不触发 `ConfiguredModelRoute` 事件
 3. 回归测试：普通供应商仍命中配置模型路由
@@ -316,6 +328,7 @@ impl ManagedModelRouteMiddleware {
 **问题：** `recursion_guard.rs` 拒绝所有带 `x-aio-gateway-forwarded` 的 claude 请求，包括 CX2CC 本地网关合法入口。
 
 **证据：**
+
 ```rust
 // src-tauri/src/gateway/proxy/handler/middleware/recursion_guard.rs:12-37
 if ctx.cli_key != "claude" || !is_internal_forwarded_request(&ctx.headers) {
@@ -327,6 +340,7 @@ MiddlewareAction::ShortCircuit(error_response(StatusCode::LOOP_DETECTED, ...))
 ```
 
 **CX2CC 本地网关标识：**
+
 ```rust
 // src-tauri/src/gateway/proxy/handler/failover_loop/prepare/cx2cc_preparation.rs:160-180
 } else {
@@ -345,14 +359,14 @@ impl RecursionGuardMiddleware {
         if ctx.cli_key != "claude" || !is_internal_forwarded_request(&ctx.headers) {
             return MiddlewareAction::Continue(Box::new(ctx));
         }
-        
+
         // ✅ 白名单：CX2CC 本地网关（source_id 为 None）
         if let Some(provider) = ctx.providers.first() {
             if provider.is_cx2cc_bridge() && provider.cx2cc_source_id.is_none() {
                 return MiddlewareAction::Continue(Box::new(ctx));
             }
         }
-        
+
         // 其他情况：拒绝递归
         MiddlewareAction::ShortCircuit(error_response(...))
     }
@@ -360,6 +374,7 @@ impl RecursionGuardMiddleware {
 ```
 
 **验证：**
+
 1. 正面测试：CX2CC 选择"当前 AIO Codex 网关"成功
 2. 负面测试：CX2CC 选择自身供应商返回 `508`
 3. 回归测试：普通 Claude 递归请求仍被拒绝
@@ -375,6 +390,7 @@ impl RecursionGuardMiddleware {
 **问题：** `anthropic.rs:parse_request` 始终返回空 `metadata`，无法透传 `thinking` 参数。
 
 **证据：**
+
 ```rust
 // src-tauri/src/gateway/proxy/protocol_bridge/inbound/anthropic.rs:81-93
 Ok(InternalRequest {
@@ -389,12 +405,12 @@ Ok(InternalRequest {
 ```rust
 fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalRequest, BridgeError> {
     // ... 现有解析逻辑
-    
+
     let mut metadata = IRMetadata::default();
     if let Some(thinking) = body.get("thinking") {
         metadata.extra.insert("reasoning".to_string(), thinking.clone());
     }
-    
+
     Ok(InternalRequest {
         // ...
         metadata,  // ✅ 不再为空
@@ -403,6 +419,7 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
 ```
 
 **验证：**
+
 1. 单元测试：带 `thinking` 的请求解析后 IR metadata 正确
 2. 集成测试：CX2CC 转译后包含 `reasoning` 字段
 3. 端到端测试：Claude CLI + `thinking` → CX2CC → Codex 生效
@@ -416,6 +433,7 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
 **问题：** 前端和后端均缺少 GPT-5.6 模型定义和 context window 配置。
 
 **补充内容：**
+
 1. `Cx2ccSettings` 默认值补充 GPT-5.6
 2. 前端 `CodexTab.tsx` 支持 GPT-5.6 配置
 3. 托管模型目录包含 GPT-5.6
@@ -429,11 +447,13 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
 **提交：** `e2d03792 fix(gateway): 对齐 CCH v0.9.2 网关整流器行为`（2026-08-12）
 
 **关键变更：**
+
 - **新增 rectifier 模块**：`response_input_rectifier.rs`、`reactive_rectifier.rs`、`gemini_function_id_rectifier.rs`、`response_output_normalizer.rs`
 - **compact 请求识别**（`bbbdeaf0`）：`is_compact_request` 函数，放宽首字节超时至 300 秒
 - **54 个文件变更，4037 行新增**
 
 **与 R8 关系：**
+
 - ❌ **无 context window 传递机制**：经审计所有变更文件确认
 - ✅ **compact 识别有用**：可用于诊断压缩异常，但不解决 context window 传递
 - ℹ️ **rectifier 架构为扩展 model metadata 提供基础**
@@ -473,25 +493,25 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
 
 ### A. Context Window 相关（F5）
 
-| 文件 | 说明 | 优先级 |
-|------|------|--------|
-| `src-tauri/src/infra/codex_config/types.rs:24-25` | `model_context_window` 字段 | P0 |
-| `src-tauri/src/infra/codex_model_catalog/managed.rs:38` | 托管目录 context_window | P0 |
-| `src-tauri/src/gateway/proxy/cx2cc/settings.rs` | CX2CC context window 映射 | P0 |
-| `src/components/cli-manager/tabs/CodexTab.tsx` | 前端 GPT-5.4/5.6 配置 | P0 |
+| 文件                                                    | 说明                        | 优先级 |
+| ------------------------------------------------------- | --------------------------- | ------ |
+| `src-tauri/src/infra/codex_config/types.rs:24-25`       | `model_context_window` 字段 | P0     |
+| `src-tauri/src/infra/codex_model_catalog/managed.rs:38` | 托管目录 context_window     | P0     |
+| `src-tauri/src/gateway/proxy/cx2cc/settings.rs`         | CX2CC context window 映射   | P0     |
+| `src/components/cli-manager/tabs/CodexTab.tsx`          | 前端 GPT-5.4/5.6 配置       | P0     |
 
 ### B. 路由与递归保护（F1/F2）
 
-| 文件 | 说明 | 优先级 |
-|------|------|--------|
-| `src-tauri/src/gateway/proxy/handler/middleware/managed_model_route.rs` | 标记 CX2CC | P0 |
-| `src-tauri/src/gateway/proxy/handler/middleware/recursion_guard.rs` | 白名单本地网关 | P0 |
+| 文件                                                                    | 说明           | 优先级 |
+| ----------------------------------------------------------------------- | -------------- | ------ |
+| `src-tauri/src/gateway/proxy/handler/middleware/managed_model_route.rs` | 标记 CX2CC     | P0     |
+| `src-tauri/src/gateway/proxy/handler/middleware/recursion_guard.rs`     | 白名单本地网关 | P0     |
 
 ### C. Thinking 透传（F3）
 
-| 文件 | 说明 | 优先级 |
-|------|------|--------|
-| `src-tauri/src/gateway/proxy/protocol_bridge/inbound/anthropic.rs` | 解析 thinking | P1 |
+| 文件                                                               | 说明          | 优先级 |
+| ------------------------------------------------------------------ | ------------- | ------ |
+| `src-tauri/src/gateway/proxy/protocol_bridge/inbound/anthropic.rs` | 解析 thinking | P1     |
 
 ---
 
@@ -506,11 +526,11 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
 
 ### 风险评估
 
-| 风险 | 影响 | 缓解措施 |
-|------|------|---------|
-| F5 context window 方案复杂度高 | 高 | 分阶段实施，优先 GPT-5.4 |
-| F1/F2 引入新 bug | 中 | 覆盖正负测试 + 回归测试 |
-| F3 Anthropic API 格式变化 | 低 | 查阅官方文档验证 |
+| 风险                           | 影响 | 缓解措施                 |
+| ------------------------------ | ---- | ------------------------ |
+| F5 context window 方案复杂度高 | 高   | 分阶段实施，优先 GPT-5.4 |
+| F1/F2 引入新 bug               | 中   | 覆盖正负测试 + 回归测试  |
+| F3 Anthropic API 格式变化      | 低   | 查阅官方文档验证         |
 
 ### 下一步行动
 

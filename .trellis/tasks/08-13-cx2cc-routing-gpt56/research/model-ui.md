@@ -36,12 +36,12 @@
 
 ### 1. GPT-5.6 型号与能力矩阵
 
-| 语境 | 型号/alias | effort | 默认 | 证据与含义 |
-| --- | --- | --- | --- | --- |
-| OpenAI Responses API / CX2CC 出站 | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `none, low, medium, high, xhigh, max` | `medium` | 官方 GPT-5.6 Model guidance；`gpt-5.6` alias 指向 Sol |
-| Codex CLI 普通模型 | 由本机 `model/list` 返回 | 必须逐模型使用 `supportedReasoningEfforts`，不可按 API 全集猜测 | `defaultReasoningEffort` | `protocol.rs:203-284`; `codexModelCapabilities.ts:158-198` |
-| AIO managed alias | `aio/<profile>`，目标是任意远端模型 | 用户对该 provider model 保存的 capability | 用户选择 | `managed.rs:1166-1204`; 不是 OpenAI GPT-5.6 静态表 |
-| provider model catalog | 远端 `/models` 或手工 ID | 通用可配置集合 `none..ultra` | 非空集合必须选一个 | `providerModels.ts:14-25,193-232`; `provider_models.rs:26-76,344-391` |
+| 语境                              | 型号/alias                                                | effort                                                          | 默认                     | 证据与含义                                                            |
+| --------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------- |
+| OpenAI Responses API / CX2CC 出站 | `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `none, low, medium, high, xhigh, max`                           | `medium`                 | 官方 GPT-5.6 Model guidance；`gpt-5.6` alias 指向 Sol                 |
+| Codex CLI 普通模型                | 由本机 `model/list` 返回                                  | 必须逐模型使用 `supportedReasoningEfforts`，不可按 API 全集猜测 | `defaultReasoningEffort` | `protocol.rs:203-284`; `codexModelCapabilities.ts:158-198`            |
+| AIO managed alias                 | `aio/<profile>`，目标是任意远端模型                       | 用户对该 provider model 保存的 capability                       | 用户选择                 | `managed.rs:1166-1204`; 不是 OpenAI GPT-5.6 静态表                    |
+| provider model catalog            | 远端 `/models` 或手工 ID                                  | 通用可配置集合 `none..ultra`                                    | 非空集合必须选一个       | `providerModels.ts:14-25,193-232`; `provider_models.rs:26-76,344-391` |
 
 重要边界：仓库 Codex 协议测试中的 `gpt-5.6-sol + max/ultra/future-effort` 与
 `gpt-5.6-luna + low/max`（`protocol.rs:1062-1086`）是验证“未知值透传、分页、逐模型
@@ -140,17 +140,17 @@ model capability 提供。不要为 `sol/terra/luna` 增加第二份 managed 静
 
 已确认的重复/漂移点：
 
-| 位置/符号 | 当前集合或默认 | 判定 |
-| --- | --- | --- |
-| `Cx2ccTab.tsx:293-299` inline options | empty, low..xhigh | Responses API 集合的错误副本，缺 none/max |
-| `providerModels.ts:14-25` `PROVIDER_MODEL_REASONING_EFFORTS` | none, minimal, low..ultra | 通用 provider UI 事实副本 |
-| `provider_models.rs:28-76` `ProviderModelReasoningEffort` | none, minimal, low..ultra | provider/managed 后端规范源候选 |
-| `codexModelCapabilities.ts:7-27` `KNOWN_...`/`FALLBACK_...` | rank 含 minimal..ultra；fallback 为 low..ultra | Codex UI fallback/rank，不是 Responses API 表；`none` 不在 rank，但当前迁移只处理 max/ultra |
-| `model_inference.rs:269-274` `normalize_codex_reasoning_effort` | none..ultra | 日志识别白名单；与前端又重复 |
-| `requestLogSpecialSettings.ts:19-28,81-102` | none..ultra；默认模型只到 5.5/5.4 | 前端日志默认推断表缺 GPT-5.6 |
-| `model_route_mapping.rs:5-12,288-301` | 同一 5.5/5.4 默认表与 none..ultra | 后端日志/路由审计重复；同样缺 GPT-5.6 |
-| `defaults.rs:17` `DEFAULT_CX2CC_FALLBACK_MODEL` | gpt-5.4 | 全局 CX2CC runtime fallback |
-| `providerEditorUtils.ts:33` `CX2CC_DEFAULT_MODEL` | gpt-5.5 | 新建 CX2CC provider UI 默认；与 runtime fallback 不同 |
+| 位置/符号                                                       | 当前集合或默认                                 | 判定                                                                                        |
+| --------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `Cx2ccTab.tsx:293-299` inline options                           | empty, low..xhigh                              | Responses API 集合的错误副本，缺 none/max                                                   |
+| `providerModels.ts:14-25` `PROVIDER_MODEL_REASONING_EFFORTS`    | none, minimal, low..ultra                      | 通用 provider UI 事实副本                                                                   |
+| `provider_models.rs:28-76` `ProviderModelReasoningEffort`       | none, minimal, low..ultra                      | provider/managed 后端规范源候选                                                             |
+| `codexModelCapabilities.ts:7-27` `KNOWN_...`/`FALLBACK_...`     | rank 含 minimal..ultra；fallback 为 low..ultra | Codex UI fallback/rank，不是 Responses API 表；`none` 不在 rank，但当前迁移只处理 max/ultra |
+| `model_inference.rs:269-274` `normalize_codex_reasoning_effort` | none..ultra                                    | 日志识别白名单；与前端又重复                                                                |
+| `requestLogSpecialSettings.ts:19-28,81-102`                     | none..ultra；默认模型只到 5.5/5.4              | 前端日志默认推断表缺 GPT-5.6                                                                |
+| `model_route_mapping.rs:5-12,288-301`                           | 同一 5.5/5.4 默认表与 none..ultra              | 后端日志/路由审计重复；同样缺 GPT-5.6                                                       |
+| `defaults.rs:17` `DEFAULT_CX2CC_FALLBACK_MODEL`                 | gpt-5.4                                        | 全局 CX2CC runtime fallback                                                                 |
+| `providerEditorUtils.ts:33` `CX2CC_DEFAULT_MODEL`               | gpt-5.5                                        | 新建 CX2CC provider UI 默认；与 runtime fallback 不同                                       |
 
 日志默认表不应凭 UI 预设直接补齐。已有历史只读证据记录本机 Codex 0.146.0 bundled
 catalog 的 `gpt-5.6-sol.default_reasoning_level = low`，而官方 API 默认是 `medium`；两者
@@ -301,4 +301,3 @@ catalog 的 `gpt-5.6-sol.default_reasoning_level = low`，而官方 API 默认�
 - **范围外但相关**：请求日志 Rust/TS 默认 effort 表缺 GPT-5.6，已知会使无显式 effort
   的 5.6 日志显示 unknown。正确修复需要 catalog/default 数据流，不应在本集成任务里
   用静态猜测掩盖。
-
