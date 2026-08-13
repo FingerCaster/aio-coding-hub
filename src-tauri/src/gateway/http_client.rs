@@ -1752,8 +1752,8 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn internal_reentry_client_bypasses_proxy_and_does_not_follow_redirects() {
+    #[test]
+    fn internal_reentry_client_bypasses_proxy_and_does_not_follow_redirects() {
         let _guard = crate::test_support::test_env_lock();
         let (redirect_target_url, redirect_rx, redirect_stop, redirect_task) =
             spawn_unexpected_listener();
@@ -1777,14 +1777,20 @@ mod tests {
 
         let client =
             build_direct_internal_reentry_client().expect("build direct internal reentry client");
-        let response = client
-            .post(&origin_url)
-            .header(
-                crate::gateway::internal_reentry::INTERNAL_REENTRY_HEADER,
-                "private-test-nonce",
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build internal reentry test runtime");
+        let response = runtime
+            .block_on(
+                client
+                    .post(&origin_url)
+                    .header(
+                        crate::gateway::internal_reentry::INTERNAL_REENTRY_HEADER,
+                        "private-test-nonce",
+                    )
+                    .send(),
             )
-            .send()
-            .await
             .expect("send direct internal reentry request");
 
         assert_eq!(response.status(), StatusCode::FOUND);
