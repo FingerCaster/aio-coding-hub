@@ -1065,7 +1065,10 @@ mod tests {
         assert!(runtime.verbose_provider_error);
         assert!(!runtime.intercept_warmup);
         assert!(runtime.enable_thinking_signature_rectifier);
-        assert_eq!(runtime.cx2cc_settings.fallback_model_main, "gpt-5.4");
+        assert_eq!(
+            runtime.cx2cc_settings.fallback_model_main,
+            settings::DEFAULT_CX2CC_FALLBACK_MODEL
+        );
         assert!(runtime.cx2cc_settings.disable_response_storage);
         assert!(runtime.enable_response_fixer);
         assert_eq!(
