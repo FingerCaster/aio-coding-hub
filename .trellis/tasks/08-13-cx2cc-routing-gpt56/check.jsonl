@@ -1,0 +1,15 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"质量门与跨层检查入口"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/configured-model-routing-contract.md","reason":"route 顺序、一次性 rewrite、attempt 隔离回归"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"候选跳过、failover、route/attempt 标签"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md","reason":"context/effort catalog projection 与 provider identity"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"发布前 source/tag/asset/digest 验证"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"Beta channel smoke、稳定频道隔离、回滚"}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Rust clippy、测试和绑定检查"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"跨层数据流与类型边界复核"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"常量和 resolver 去重检查"}
+{"file":".trellis/spec/guides/upstream-merge-scope-guide.md","reason":"upstream 缺陷与本地实现分离"}
+{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/upstream-diff.md","reason":"验收 upstream 移植/范围外分类"}
+{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/route-thinking.md","reason":"route/thinking 回归矩阵"}
+{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/model-ui.md","reason":"GPT-5.6/effort UI 与运行时一致性"}
+{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/loopback.md","reason":"回环正反例和 capability 消费"}
+{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/claude-surface.md","reason":"context unknown 与 launcher 投影限制"}
