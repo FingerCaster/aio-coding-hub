@@ -99,14 +99,17 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
 }
 
 fn parse_reasoning_config(body: &Value) -> IRReasoningConfig {
-    if body.pointer("/thinking/type").and_then(Value::as_str) == Some("disabled") {
-        return IRReasoningConfig::Disabled;
-    }
-
-    body.pointer("/output_config/effort")
+    let effort = body
+        .pointer("/output_config/effort")
         .and_then(Value::as_str)
-        .map(|effort| IRReasoningConfig::Effort(effort.to_string()))
-        .unwrap_or_default()
+        .map(str::to_string);
+
+    match body.pointer("/thinking/type").and_then(Value::as_str) {
+        Some("disabled") => IRReasoningConfig::Disabled,
+        Some("enabled") => IRReasoningConfig::Enabled(effort),
+        Some("adaptive") => IRReasoningConfig::Adaptive(effort),
+        _ => effort.map(IRReasoningConfig::Effort).unwrap_or_default(),
+    }
 }
 
 fn parse_system(body: &Value) -> Option<String> {
@@ -711,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn request_reasoning_config_preserves_absent_disabled_and_unknown_effort() {
+    fn request_reasoning_config_preserves_explicit_state_and_effort() {
         let request = |reasoning_fields: Value| {
             let mut body = json!({
                 "model": "claude-sonnet-4-20250514",
@@ -734,6 +737,28 @@ mod tests {
         assert_eq!(
             request(json!({"thinking": {"type": "disabled"}})),
             IRReasoningConfig::Disabled
+        );
+        assert_eq!(
+            request(json!({"thinking": {"type": "enabled"}})),
+            IRReasoningConfig::Enabled(None)
+        );
+        assert_eq!(
+            request(json!({
+                "thinking": {"type": "enabled"},
+                "output_config": {"effort": "high"}
+            })),
+            IRReasoningConfig::Enabled(Some("high".to_string()))
+        );
+        assert_eq!(
+            request(json!({"thinking": {"type": "adaptive"}})),
+            IRReasoningConfig::Adaptive(None)
+        );
+        assert_eq!(
+            request(json!({
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "future-effort"}
+            })),
+            IRReasoningConfig::Adaptive(Some("future-effort".to_string()))
         );
         assert_eq!(
             request(json!({

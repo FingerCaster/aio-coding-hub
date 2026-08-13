@@ -139,6 +139,8 @@ pub(crate) enum IRReasoningConfig {
     #[default]
     Absent,
     Disabled,
+    Enabled(Option<String>),
+    Adaptive(Option<String>),
     Effort(String),
 }
 

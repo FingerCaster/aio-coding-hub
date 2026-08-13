@@ -68,7 +68,7 @@ mod tests {
     }
 
     #[test]
-    fn cx2cc_preserves_effort_presence_without_legacy_overwrite() {
+    fn cx2cc_preserves_reasoning_state_and_effort_precedence() {
         let bridge = get_bridge("cx2cc").unwrap();
         let translate = |extra: serde_json::Value| {
             let mut body = json!({
@@ -86,7 +86,7 @@ mod tests {
         };
 
         let absent = translate(json!({}));
-        assert!(absent.get("reasoning").is_none());
+        assert_eq!(absent["reasoning"]["effort"], "medium");
         assert_eq!(absent["service_tier"], "flex");
         assert_eq!(absent["store"], false);
 
@@ -94,17 +94,37 @@ mod tests {
             "thinking": {"type": "disabled"},
             "output_config": {"effort": "high"}
         }));
-        assert!(disabled.get("reasoning").is_none());
+        assert_eq!(disabled["reasoning"]["effort"], "none");
 
-        let explicit = translate(json!({
+        let enabled_without_effort = translate(json!({
+            "thinking": {"type": "enabled"}
+        }));
+        assert!(enabled_without_effort.get("reasoning").is_none());
+
+        let enabled_with_effort = translate(json!({
+            "thinking": {"type": "enabled"},
             "output_config": {"effort": "high"}
         }));
-        assert_eq!(explicit["reasoning"]["effort"], "high");
+        assert_eq!(enabled_with_effort["reasoning"]["effort"], "high");
 
-        let unknown = translate(json!({
+        let adaptive_without_effort = translate(json!({
+            "thinking": {"type": "adaptive"}
+        }));
+        assert!(adaptive_without_effort.get("reasoning").is_none());
+
+        let adaptive_with_unknown_effort = translate(json!({
+            "thinking": {"type": "adaptive"},
             "output_config": {"effort": "future-effort"}
         }));
-        assert_eq!(unknown["reasoning"]["effort"], "future-effort");
+        assert_eq!(
+            adaptive_with_unknown_effort["reasoning"]["effort"],
+            "future-effort"
+        );
+
+        let unknown_effort = translate(json!({
+            "output_config": {"effort": "future-effort"}
+        }));
+        assert_eq!(unknown_effort["reasoning"]["effort"], "future-effort");
     }
 
     #[test]

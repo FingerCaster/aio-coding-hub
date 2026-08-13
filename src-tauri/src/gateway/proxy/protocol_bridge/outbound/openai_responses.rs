@@ -14,6 +14,7 @@ pub(crate) struct OpenAIResponsesOutbound;
 
 #[derive(Debug, Clone, Copy)]
 struct ResponsesOutboundSettings<'a> {
+    model_reasoning_effort: Option<&'a str>,
     service_tier: Option<&'a str>,
     disable_response_storage: bool,
     drop_stop_sequences: bool,
@@ -23,6 +24,7 @@ struct ResponsesOutboundSettings<'a> {
 impl<'a> From<&'a Cx2ccSettings> for ResponsesOutboundSettings<'a> {
     fn from(settings: &'a Cx2ccSettings) -> Self {
         Self {
+            model_reasoning_effort: settings.model_reasoning_effort.as_deref(),
             service_tier: settings.service_tier.as_deref(),
             disable_response_storage: settings.disable_response_storage,
             drop_stop_sequences: settings.drop_stop_sequences,
@@ -233,8 +235,21 @@ fn apply_responses_metadata(
     ir: &InternalRequest,
     settings: &ResponsesOutboundSettings<'_>,
 ) {
-    if let IRReasoningConfig::Effort(effort) = &ir.metadata.reasoning {
-        result["reasoning"] = json!({ "effort": effort });
+    match &ir.metadata.reasoning {
+        IRReasoningConfig::Absent => {
+            if let Some(effort) = settings.model_reasoning_effort {
+                result["reasoning"] = json!({ "effort": effort });
+            }
+        }
+        IRReasoningConfig::Disabled => {
+            result["reasoning"] = json!({ "effort": "none" });
+        }
+        IRReasoningConfig::Enabled(Some(effort))
+        | IRReasoningConfig::Adaptive(Some(effort))
+        | IRReasoningConfig::Effort(effort) => {
+            result["reasoning"] = json!({ "effort": effort });
+        }
+        IRReasoningConfig::Enabled(None) | IRReasoningConfig::Adaptive(None) => {}
     }
 
     if let Some(value) = ir.metadata.extra.get("service_tier") {
@@ -1508,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn ir_to_request_keeps_non_reasoning_settings_without_legacy_effort() {
+    fn ir_to_request_uses_legacy_effort_only_when_reasoning_is_absent() {
         let ir = InternalRequest {
             model: "gpt-5".into(),
             messages: vec![IRMessage {
@@ -1532,35 +1547,59 @@ mod tests {
 
         let result = ir_to_request(&ir, &settings).unwrap();
 
-        assert!(result.get("reasoning").is_none());
+        assert_eq!(result["reasoning"], json!({"effort": "medium"}));
         assert_eq!(result["service_tier"], json!("flex"));
         assert_eq!(result["store"], json!(false));
     }
 
     #[test]
-    fn ir_to_request_omits_reasoning_when_explicitly_disabled() {
-        let ir = InternalRequest {
-            model: "gpt-5".into(),
-            messages: vec![],
-            system: None,
-            tools: vec![],
-            tool_choice: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            stop_sequences: vec![],
-            stream: false,
-            metadata: IRMetadata {
-                reasoning: IRReasoningConfig::Disabled,
-                ..Default::default()
-            },
-        };
+    fn ir_to_request_preserves_explicit_reasoning_states_and_unknown_effort() {
         let mut settings = default_settings();
-        settings.model_reasoning_effort = Some("high".to_string());
+        settings.model_reasoning_effort = Some("medium".to_string());
+        let render = |reasoning| {
+            let ir = InternalRequest {
+                model: "gpt-5".into(),
+                messages: vec![],
+                system: None,
+                tools: vec![],
+                tool_choice: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                stop_sequences: vec![],
+                stream: false,
+                metadata: IRMetadata {
+                    reasoning,
+                    ..Default::default()
+                },
+            };
+            ir_to_request(&ir, &settings).unwrap()
+        };
 
-        let result = ir_to_request(&ir, &settings).unwrap();
-
-        assert!(result.get("reasoning").is_none());
+        assert_eq!(
+            render(IRReasoningConfig::Disabled)["reasoning"],
+            json!({"effort": "none"})
+        );
+        assert!(render(IRReasoningConfig::Enabled(None))
+            .get("reasoning")
+            .is_none());
+        assert_eq!(
+            render(IRReasoningConfig::Enabled(Some("high".to_string())))["reasoning"],
+            json!({"effort": "high"})
+        );
+        assert!(render(IRReasoningConfig::Adaptive(None))
+            .get("reasoning")
+            .is_none());
+        assert_eq!(
+            render(IRReasoningConfig::Adaptive(Some(
+                "future-effort".to_string()
+            )))["reasoning"],
+            json!({"effort": "future-effort"})
+        );
+        assert_eq!(
+            render(IRReasoningConfig::Effort("future-effort".to_string()))["reasoning"],
+            json!({"effort": "future-effort"})
+        );
     }
 
     // ── response_to_ir ────────────────────────────────────────────────
