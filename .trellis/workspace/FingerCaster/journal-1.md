@@ -1261,3 +1261,53 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 37: 修复 CX2CC 路由与 GPT-5.6 配置
+
+**Date**: 2026-08-14
+**Task**: 修复 CX2CC 路由与 GPT-5.6 配置
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/cx2cc-beta-integration`
+
+### Summary
+
+完成 CX2CC 单一路由、思考透传、GPT-5.6 模型选择、上下文窗口投影与鉴权内部再入口，并通过 pnpm check:prepush 15/15。
+
+### Main Changes
+
+- CX2CC 跳过通用模型重写并隐藏重复路由 UI
+- 透传请求思考状态并加入 GPT-5.6 模型预设
+- 按供应商模型目录投影上下文窗口并加固一次性内部回环能力
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d34d961576a1394be12e69b0b515e02b5b2e2371` | (see git log) |
+| `cfd1ab9c9ed853bb6473049765cb341e23dd23b5` | (see git log) |
+| `e917b8a58fe29b1db5fa745eb5baf852d1f52b3a` | (see git log) |
+| `b4aa6562eac20a92d8d940a398c0fe4708f5339d` | (see git log) |
+| `e03ad067c37c3e1d811cbc6234ea9b0ceddb2ba1` | (see git log) |
+| `28b20119d5e2eb8b33e244049d84ce666db16e37` | (see git log) |
+| `14d2091ae5d3ade2553b38070bea63891de9ba2f` | (see git log) |
+| `27b7502c6afa7c9c0b99a339233729373268bf93` | (see git log) |
+| `1f6acca144b77d69f04c2b84b50ffbc6fb09fcf0` | (see git log) |
+| `556f36e44ee3639e48810c35cda8e7fd4ee73f61` | (see git log) |
+| `4d04a708122f6bc21e917db1b17ee31b03a10a20` | (see git log) |
+| `519779a154791e1d47bd555e2cf0acb36787e4c5` | (see git log) |
+| `967c3db9ccc8003d3f0882983834cd258d689a10` | (see git log) |
+| `dbc66460827ea28d2ca02d6957dde11cca16ce89` | (see git log) |
+| `9285a081d978b755a8616507c38a00f6a2e24887` | (see git log) |
+| `4efc302a6a3d53efaa92ebd37af6678c24db04fb` | (see git log) |
+| `a94de7641c41c83aa18f02b74605d70d29a5d37f` | (see git log) |
+| `0ab7182e3a1d9ea29b8f039b8ca2145e725c3c3c` | (see git log) |
+| `e18982c3804a88b73bca08234ef090fa0960f03b` | (see git log) |
+
+### Testing
+
+- [OK] pnpm check:prepush（15/15）
+
+### Status
+
+[OK] **Completed**
