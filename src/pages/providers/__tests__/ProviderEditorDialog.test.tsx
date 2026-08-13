@@ -919,6 +919,43 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
   });
 
+  it("hides generic model routing for cx2cc providers", () => {
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          api_key_configured: true,
+          bridge_type: "cx2cc",
+          source_provider_id: null,
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByLabelText("默认模型")).toBeInTheDocument();
+    expect(dialog.queryByText("模型路由")).not.toBeInTheDocument();
+    expect(dialog.queryByRole("tab", { name: "继承全局" })).not.toBeInTheDocument();
+  });
+
+  it("keeps generic model routing visible for ordinary providers", () => {
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({ api_key_configured: true })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("模型路由")).toBeInTheDocument();
+    expect(dialog.getByRole("tab", { name: "继承全局" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("prefills create mode from initial values and saves as a new provider", async () => {
     vi.mocked(providerUpsert).mockResolvedValue(
       makeProvider({

@@ -134,7 +134,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
         />
 
         <ProviderRetryPolicySection form={f} />
-        <ProviderModelRoutingPolicySection form={f} />
+        {f.authMode !== "cx2cc" ? <ProviderModelRoutingPolicySection form={f} /> : null}
 
         <LimitsSection form={f} />
         <ClaudeModelSection form={f} />
