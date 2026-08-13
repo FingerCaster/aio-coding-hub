@@ -1,6 +1,7 @@
 import { useReducer, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Settings } from "lucide-react";
+import { CX2CC_PROVIDER_DEFAULT_MODEL } from "../../../constants/cx2cc";
 import type { AppSettings } from "../../../services/settings/settings";
 import {
   validateCx2ccFallbackModel,
@@ -190,7 +191,7 @@ export function CliManagerCx2ccTab({
                   e.currentTarget.value
                 );
               }}
-              placeholder="gpt-5.4"
+              placeholder={CX2CC_PROVIDER_DEFAULT_MODEL}
               className="font-mono w-[240px] max-w-full"
               disabled={controlsDisabled}
             />
@@ -210,7 +211,7 @@ export function CliManagerCx2ccTab({
                   e.currentTarget.value
                 );
               }}
-              placeholder="gpt-5.4"
+              placeholder={CX2CC_PROVIDER_DEFAULT_MODEL}
               className="font-mono w-[240px] max-w-full"
               disabled={controlsDisabled}
             />
@@ -227,7 +228,7 @@ export function CliManagerCx2ccTab({
                   e.currentTarget.value
                 );
               }}
-              placeholder="gpt-5.4"
+              placeholder={CX2CC_PROVIDER_DEFAULT_MODEL}
               className="font-mono w-[240px] max-w-full"
               disabled={controlsDisabled}
             />
@@ -244,7 +245,7 @@ export function CliManagerCx2ccTab({
                   e.currentTarget.value
                 );
               }}
-              placeholder="gpt-5.4"
+              placeholder={CX2CC_PROVIDER_DEFAULT_MODEL}
               className="font-mono w-[240px] max-w-full"
               disabled={controlsDisabled}
             />

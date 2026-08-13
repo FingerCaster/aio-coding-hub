@@ -72,10 +72,10 @@ mod tests {
     fn default_uses_expected_values() {
         let cfg = Cx2ccSettings::default();
 
-        assert_eq!(cfg.fallback_model_opus, "gpt-5.4");
-        assert_eq!(cfg.fallback_model_sonnet, "gpt-5.4");
-        assert_eq!(cfg.fallback_model_haiku, "gpt-5.4");
-        assert_eq!(cfg.fallback_model_main, "gpt-5.4");
+        assert_eq!(cfg.fallback_model_opus, "gpt-5.5");
+        assert_eq!(cfg.fallback_model_sonnet, "gpt-5.5");
+        assert_eq!(cfg.fallback_model_haiku, "gpt-5.5");
+        assert_eq!(cfg.fallback_model_main, "gpt-5.5");
         assert_eq!(cfg.model_reasoning_effort, None);
         assert_eq!(cfg.service_tier, None);
         assert!(cfg.disable_response_storage);
