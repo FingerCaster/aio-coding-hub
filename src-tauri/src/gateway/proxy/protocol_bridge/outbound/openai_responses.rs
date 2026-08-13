@@ -14,7 +14,6 @@ pub(crate) struct OpenAIResponsesOutbound;
 
 #[derive(Debug, Clone, Copy)]
 struct ResponsesOutboundSettings<'a> {
-    model_reasoning_effort: Option<&'a str>,
     service_tier: Option<&'a str>,
     disable_response_storage: bool,
     drop_stop_sequences: bool,
@@ -24,7 +23,6 @@ struct ResponsesOutboundSettings<'a> {
 impl<'a> From<&'a Cx2ccSettings> for ResponsesOutboundSettings<'a> {
     fn from(settings: &'a Cx2ccSettings) -> Self {
         Self {
-            model_reasoning_effort: settings.model_reasoning_effort.as_deref(),
             service_tier: settings.service_tier.as_deref(),
             disable_response_storage: settings.disable_response_storage,
             drop_stop_sequences: settings.drop_stop_sequences,
@@ -236,11 +234,7 @@ fn apply_responses_metadata(
     settings: &ResponsesOutboundSettings<'_>,
 ) {
     match &ir.metadata.reasoning {
-        IRReasoningConfig::Absent => {
-            if let Some(effort) = settings.model_reasoning_effort {
-                result["reasoning"] = json!({ "effort": effort });
-            }
-        }
+        IRReasoningConfig::Absent => {}
         IRReasoningConfig::Disabled => {
             result["reasoning"] = json!({ "effort": "none" });
         }
@@ -1523,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn ir_to_request_uses_legacy_effort_only_when_reasoning_is_absent() {
+    fn ir_to_request_ignores_legacy_effort_when_reasoning_is_absent() {
         let ir = InternalRequest {
             model: "gpt-5".into(),
             messages: vec![IRMessage {
@@ -1547,7 +1541,7 @@ mod tests {
 
         let result = ir_to_request(&ir, &settings).unwrap();
 
-        assert_eq!(result["reasoning"], json!({"effort": "medium"}));
+        assert!(result.get("reasoning").is_none());
         assert_eq!(result["service_tier"], json!("flex"));
         assert_eq!(result["store"], json!(false));
     }

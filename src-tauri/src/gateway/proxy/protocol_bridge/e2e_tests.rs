@@ -16,7 +16,7 @@ mod tests {
         }
     }
 
-    fn cx2cc_ctx_with_legacy_effort() -> BridgeContext {
+    fn cx2cc_ctx_with_legacy_settings() -> BridgeContext {
         let mut ctx = cx2cc_ctx();
         ctx.cx2cc_settings.model_reasoning_effort = Some("medium".to_string());
         ctx.cx2cc_settings.service_tier = Some("flex".to_string());
@@ -80,13 +80,13 @@ mod tests {
                 .expect("request object")
                 .extend(extra.as_object().expect("extra fields").clone());
             bridge
-                .translate_request(body, &cx2cc_ctx_with_legacy_effort())
+                .translate_request(body, &cx2cc_ctx_with_legacy_settings())
                 .expect("translate Anthropic request")
                 .body
         };
 
         let absent = translate(json!({}));
-        assert_eq!(absent["reasoning"]["effort"], "medium");
+        assert!(absent.get("reasoning").is_none());
         assert_eq!(absent["service_tier"], "flex");
         assert_eq!(absent["store"], false);
 
