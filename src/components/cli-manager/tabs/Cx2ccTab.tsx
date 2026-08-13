@@ -9,7 +9,6 @@ import {
 import { cn } from "../../../utils/cn";
 import { Card } from "../../../ui/Card";
 import { Input } from "../../../ui/Input";
-import { RadioGroup } from "../../../ui/RadioGroup";
 import { Switch } from "../../../ui/Switch";
 
 export type CliManagerCx2ccTabProps = {
@@ -25,7 +24,7 @@ type Cx2ccTextSettingKey =
   | "cx2cc_fallback_model_main"
   | "cx2cc_service_tier";
 
-type Cx2ccDraftKey = Cx2ccTextSettingKey | "cx2cc_model_reasoning_effort";
+type Cx2ccDraftKey = Cx2ccTextSettingKey;
 
 type Cx2ccDraftState = {
   sourceKey: string;
@@ -41,11 +40,8 @@ const EMPTY_CX2CC_DRAFT_VALUES: Record<Cx2ccDraftKey, string> = {
   cx2cc_fallback_model_sonnet: "",
   cx2cc_fallback_model_haiku: "",
   cx2cc_fallback_model_main: "",
-  cx2cc_model_reasoning_effort: "",
   cx2cc_service_tier: "",
 };
-
-const CX2CC_REASONING_EFFORT_LABEL = "推理强度";
 
 function createCx2ccDraftState(appSettings: AppSettings | null): Cx2ccDraftState {
   if (!appSettings) {
@@ -57,7 +53,6 @@ function createCx2ccDraftState(appSettings: AppSettings | null): Cx2ccDraftState
     cx2cc_fallback_model_sonnet: appSettings.cx2cc_fallback_model_sonnet,
     cx2cc_fallback_model_haiku: appSettings.cx2cc_fallback_model_haiku,
     cx2cc_fallback_model_main: appSettings.cx2cc_fallback_model_main,
-    cx2cc_model_reasoning_effort: appSettings.cx2cc_model_reasoning_effort,
     cx2cc_service_tier: appSettings.cx2cc_service_tier,
   };
 
@@ -124,28 +119,12 @@ export function CliManagerCx2ccTab({
   const fallbackModelSonnetText = effectiveDraftState.values.cx2cc_fallback_model_sonnet;
   const fallbackModelHaikuText = effectiveDraftState.values.cx2cc_fallback_model_haiku;
   const fallbackModelMainText = effectiveDraftState.values.cx2cc_fallback_model_main;
-  const reasoningEffortText = effectiveDraftState.values.cx2cc_model_reasoning_effort;
   const serviceTierText = effectiveDraftState.values.cx2cc_service_tier;
 
   const controlsDisabled = commonSettingsSaving || !appSettings;
 
   function setDraftValue(key: Cx2ccDraftKey, value: string) {
     dispatchDraft({ type: "setValue", key, value });
-  }
-
-  async function persistReasoningEffort(value: string) {
-    if (!appSettings) return;
-
-    const previous = appSettings.cx2cc_model_reasoning_effort;
-    setDraftValue("cx2cc_model_reasoning_effort", value);
-
-    const updated = await onPersistCommonSettings({ cx2cc_model_reasoning_effort: value });
-    if (!updated) {
-      setDraftValue("cx2cc_model_reasoning_effort", previous);
-      return;
-    }
-
-    setDraftValue("cx2cc_model_reasoning_effort", updated.cx2cc_model_reasoning_effort);
   }
 
   async function persistFallbackModel(
@@ -279,28 +258,6 @@ export function CliManagerCx2ccTab({
           上游请求注入
         </h3>
         <div className="divide-y divide-border">
-          <SettingItem
-            label={CX2CC_REASONING_EFFORT_LABEL}
-            subtitle="注入 reasoning.effort 到上游请求；默认表示不注入。"
-          >
-            <RadioGroup
-              name="cx2cc_model_reasoning_effort"
-              ariaLabel={CX2CC_REASONING_EFFORT_LABEL}
-              value={reasoningEffortText}
-              onChange={(value) => {
-                void persistReasoningEffort(value);
-              }}
-              options={[
-                { value: "", label: "默认 / 不注入" },
-                { value: "low", label: "low" },
-                { value: "medium", label: "medium" },
-                { value: "high", label: "high" },
-                { value: "xhigh", label: "xhigh" },
-              ]}
-              disabled={controlsDisabled}
-            />
-          </SettingItem>
-
           <SettingItem label="服务层级" subtitle="注入 service_tier 到上游请求；留空表示不注入。">
             <Input
               value={serviceTierText}

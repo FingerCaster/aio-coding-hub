@@ -1121,6 +1121,32 @@ describe("pages/providers/ProviderEditorDialog", () => {
       expect(defaultModelSelect).toHaveValue("gpt-5.5");
       expect(dialog.getByPlaceholderText(/kimi-k2-thinking/)).toHaveValue("gpt-5.5");
     });
+    expect(
+      Array.from((defaultModelSelect as HTMLSelectElement).options, (option) => option.value)
+    ).toEqual([
+      "__manual__",
+      "gpt-5.6",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.4",
+    ]);
+    const mappedModelInputs = [
+      dialog.getByLabelText("主模型"),
+      dialog.getByLabelText("推理模型 (Thinking)"),
+      dialog.getByLabelText("Haiku 默认模型"),
+      dialog.getByLabelText("Sonnet 默认模型"),
+      dialog.getByLabelText("Opus 默认模型"),
+    ];
+    for (const model of ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      fireEvent.change(defaultModelSelect, { target: { value: model } });
+      expect(defaultModelSelect).toHaveValue(model);
+      for (const input of mappedModelInputs) {
+        expect(input).toHaveValue(model);
+      }
+    }
+    fireEvent.change(defaultModelSelect, { target: { value: "gpt-5.5" } });
     const thinkingInput = dialog.getByPlaceholderText(/kimi-k2-thinking/);
     fireEvent.change(defaultModelSelect, { target: { value: "__manual__" } });
     expect(defaultModelSelect).toHaveValue("__manual__");
@@ -1161,6 +1187,45 @@ describe("pages/providers/ProviderEditorDialog", () => {
         })
       )
     );
+  });
+
+  it("preserves an existing manual cx2cc model without migrating it", async () => {
+    const manualModel = "future-provider-model";
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          cli_key: "claude",
+          auth_mode: "api_key",
+          cost_multiplier: 0,
+          source_provider_id: null,
+          bridge_type: "cx2cc",
+          claude_models: {
+            main_model: manualModel,
+            reasoning_model: manualModel,
+            haiku_model: manualModel,
+            sonnet_model: manualModel,
+            opus_model: manualModel,
+          },
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    await waitFor(() => expect(dialog.getByLabelText("默认模型")).toHaveValue(manualModel));
+    for (const label of [
+      "主模型",
+      "推理模型 (Thinking)",
+      "Haiku 默认模型",
+      "Sonnet 默认模型",
+      "Opus 默认模型",
+    ]) {
+      expect(dialog.getByLabelText(label)).toHaveValue(manualModel);
+    }
+    expect(vi.mocked(providerUpsert)).not.toHaveBeenCalled();
   });
 
   it("resets cost multiplier to default when cx2cc source is not selected", async () => {

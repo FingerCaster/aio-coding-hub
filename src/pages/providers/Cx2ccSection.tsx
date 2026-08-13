@@ -3,8 +3,8 @@ import { FormField } from "../../ui/FormField";
 import { Input } from "../../ui/Input";
 import { Select } from "../../ui/Select";
 import { TagsField } from "./TagsField";
+import { CX2CC_RESPONSES_MODEL_PRESETS } from "../../constants/cx2cc";
 import {
-  CX2CC_DEFAULT_MODEL,
   CX2CC_GLOBAL_SOURCE_VALUE,
   CX2CC_PROXY_TOKEN,
   normalizeCx2ccModelName,
@@ -12,7 +12,6 @@ import {
 } from "./providerEditorUtils";
 import type { UseProviderEditorFormReturn } from "./useProviderEditorForm";
 
-const CX2CC_DEFAULT_MODEL_OPTIONS = [CX2CC_DEFAULT_MODEL, "gpt-5.4"] as const;
 const CX2CC_MANUAL_MODEL_VALUE = "__manual__";
 type Cx2ccFallbackModels = { main: string; haiku: string; sonnet: string; opus: string } | null;
 
@@ -40,11 +39,11 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
     : resolveCx2ccDefaultModelSelectValue(claudeModels);
   const defaultModelOptions =
     selectedDefaultModel !== CX2CC_MANUAL_MODEL_VALUE &&
-    !CX2CC_DEFAULT_MODEL_OPTIONS.includes(
-      selectedDefaultModel as (typeof CX2CC_DEFAULT_MODEL_OPTIONS)[number]
+    !CX2CC_RESPONSES_MODEL_PRESETS.includes(
+      selectedDefaultModel as (typeof CX2CC_RESPONSES_MODEL_PRESETS)[number]
     )
-      ? ([selectedDefaultModel, ...CX2CC_DEFAULT_MODEL_OPTIONS] as const)
-      : CX2CC_DEFAULT_MODEL_OPTIONS;
+      ? ([selectedDefaultModel, ...CX2CC_RESPONSES_MODEL_PRESETS] as const)
+      : CX2CC_RESPONSES_MODEL_PRESETS;
 
   return (
     <>
