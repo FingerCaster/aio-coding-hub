@@ -8,8 +8,8 @@
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"跨层数据流与类型边界复核"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"常量和 resolver 去重检查"}
 {"file":".trellis/spec/guides/upstream-merge-scope-guide.md","reason":"upstream 缺陷与本地实现分离"}
-{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/upstream-diff.md","reason":"验收 upstream 移植/范围外分类"}
-{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/route-thinking.md","reason":"route/thinking 回归矩阵"}
-{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/model-ui.md","reason":"GPT-5.6/effort UI 与运行时一致性"}
-{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/loopback.md","reason":"回环正反例和 capability 消费"}
-{"file":".trellis/tasks/08-13-cx2cc-routing-gpt56/research/claude-surface.md","reason":"context unknown 与 launcher 投影限制"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/upstream-diff.md", "reason": "验收 upstream 移植/范围外分类"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/route-thinking.md", "reason": "route/thinking 回归矩阵"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/model-ui.md", "reason": "GPT-5.6/effort UI 与运行时一致性"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/loopback.md", "reason": "回环正反例和 capability 消费"}
+{"file": ".trellis/tasks/archive/2026-08/08-13-cx2cc-routing-gpt56/research/claude-surface.md", "reason": "context unknown 与 launcher 投影限制"}
