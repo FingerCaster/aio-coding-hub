@@ -95,6 +95,9 @@ impl GatewayControlService {
             recent_errors: recent_errors.clone(),
             latency_cache: Arc::new(Mutex::new(ProviderBaseUrlPingCache::default())),
             plugin_pipeline: plugin_pipeline.clone(),
+            internal_reentry: Arc::new(
+                crate::gateway::internal_reentry::InternalReentryRegistry::default(),
+            ),
             #[cfg(test)]
             http_client_override: None,
             active_requests: active_requests.clone(),

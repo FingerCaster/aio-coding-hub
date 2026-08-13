@@ -377,9 +377,8 @@ where
             });
         }
     };
-    // The typed intent exists only on the source-less CX2CC preparation path and
-    // disappears at the HTTP boundary. Every other target, including a second
-    // gateway hop or any mutated request, still takes the ordinary validation path.
+    // Matching consumes the typed intent. It only authorizes the exact self-loop
+    // exception below; ordinary target validation still runs for every request.
     let authorized_internal_reentry = cx2cc_preparation::InternalCodexReentry::consume_and_match(
         &mut prepared.internal_codex_reentry,
         &input.trace_id,
@@ -390,11 +389,7 @@ where
     // Resolve first, but defer returning its result until after the authoritative
     // enabled-state read so the outer Provider switch remains the master gate.
     // The enabled-state read is therefore also the final async preparation step.
-    let target_validation = if authorized_internal_reentry {
-        None
-    } else {
-        Some(crate::gateway::http_client::validate_gateway_target(&url).await)
-    };
+    let target_validation = crate::gateway::http_client::validate_gateway_target(&url).await;
     let db = ctx.state.db.clone();
     let provider_id = prepared.provider_id;
     let provider_uuid = prepared.provider_uuid.clone();
@@ -428,8 +423,7 @@ where
         }
     }
     let pinned_client = match target_validation {
-        None => None,
-        Some(Ok(target)) => match target.into_pinned_client() {
+        Ok(target) => match target.into_pinned_client() {
             Ok(client) => client,
             Err(error) => {
                 tracing::warn!(
@@ -445,7 +439,12 @@ where
                 );
             }
         },
-        Some(Err(error)) => {
+        Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop)
+            if authorized_internal_reentry =>
+        {
+            None
+        }
+        Err(error) => {
             tracing::warn!(
                 trace_id = %input.trace_id,
                 cli_key = %input.cli_key,
@@ -477,6 +476,26 @@ where
         &headers,
         &upstream_body,
     );
+    if authorized_internal_reentry {
+        let Some(nonce) = ctx
+            .state
+            .internal_reentry
+            .issue(prepared.provider_id, &input.trace_id)
+        else {
+            return PreparedSendOutcome::ProviderTargetRejected(
+                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
+            );
+        };
+        let Ok(value) = axum::http::HeaderValue::from_str(&nonce) else {
+            return PreparedSendOutcome::ProviderTargetRejected(
+                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
+            );
+        };
+        headers.insert(
+            crate::gateway::internal_reentry::INTERNAL_REENTRY_HEADER,
+            value,
+        );
+    }
 
     let timing = AttemptTiming {
         attempt_started_ms,

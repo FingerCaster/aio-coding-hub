@@ -87,6 +87,18 @@ pub(super) enum PreparationOutcome {
     Skipped,
 }
 
+fn configured_model_route_for_request<T>(
+    cx2cc_active: bool,
+    trusted_internal_reentry: bool,
+    resolve: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    if cx2cc_active || trusted_internal_reentry {
+        None
+    } else {
+        resolve()
+    }
+}
+
 /// Structured skip reason used by CX2CC preparation and other skip paths.
 pub(super) struct SkipReason {
     pub(super) error_category: &'static str,
@@ -377,19 +389,23 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         );
     }
 
-    let configured_model_route = resolve_configured_model_route_for_provider(cx2cc_active, || {
-        crate::gateway::configured_model_route::resolve(
-            &input.cli_key,
-            &input.method_hint,
-            &input.forwarded_path,
-            input.requested_model.as_deref(),
-            input.managed_model_route.is_some(),
-            &input.model_routing_policy,
-            provider.model_routing_policy_override.as_ref(),
-            provider_id,
-            &provider_name_base,
-        )
-    });
+    let configured_model_route = configured_model_route_for_request(
+        cx2cc_active,
+        input.trusted_internal_reentry.is_some(),
+        || {
+            crate::gateway::configured_model_route::resolve(
+                &input.cli_key,
+                &input.method_hint,
+                &input.forwarded_path,
+                input.requested_model.as_deref(),
+                input.managed_model_route.is_some(),
+                &input.model_routing_policy,
+                provider.model_routing_policy_override.as_ref(),
+                provider_id,
+                &provider_name_base,
+            )
+        },
+    );
 
     let request_body_mutated_before_attempt = input.request_body_state.is_mutated()
         || upstream_body_bytes != input.request_body_state.decoded_clone()
@@ -432,17 +448,6 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         upstream_retry_policy,
         claude_model_mapping,
     }))
-}
-
-fn resolve_configured_model_route_for_provider(
-    cx2cc_active: bool,
-    resolve: impl FnOnce() -> Option<crate::gateway::configured_model_route::ConfiguredModelRoute>,
-) -> Option<crate::gateway::configured_model_route::ConfiguredModelRoute> {
-    if cx2cc_active {
-        None
-    } else {
-        resolve()
-    }
 }
 
 fn codex_request_has_previous_response_id<R: tauri::Runtime>(input: &RequestContext<R>) -> bool {
@@ -505,57 +510,14 @@ fn effective_upstream_retry_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        codex_body_has_previous_response_id, configured_transient_retry_budget,
-        effective_upstream_retry_policy, provider_max_attempts_for_request,
-        resolve_configured_model_route_for_provider, IterationCounters,
+        codex_body_has_previous_response_id, configured_model_route_for_request,
+        configured_transient_retry_budget, effective_upstream_retry_policy,
+        provider_max_attempts_for_request, IterationCounters,
     };
     use crate::settings::{UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamTransportRetryKind};
 
     fn body(value: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&value).expect("serialize body")
-    }
-
-    fn resolve_matching_route(
-        cx2cc_active: bool,
-    ) -> Option<crate::gateway::configured_model_route::ConfiguredModelRoute> {
-        let policy = crate::settings::ModelRoutingPolicy {
-            enabled: true,
-            rules: vec![crate::settings::ModelRoutingRule {
-                source_model: "claude-sonnet".to_string(),
-                target_model: Some("configured-target".to_string()),
-                reasoning_effort: Some("low".to_string()),
-            }],
-        };
-
-        resolve_configured_model_route_for_provider(cx2cc_active, || {
-            crate::gateway::configured_model_route::resolve(
-                "claude",
-                "POST",
-                "/v1/messages",
-                Some("claude-sonnet"),
-                false,
-                &policy,
-                None,
-                7,
-                "provider",
-            )
-        })
-    }
-
-    #[test]
-    fn cx2cc_skips_configured_route_without_faking_a_managed_route() {
-        let route = resolve_configured_model_route_for_provider(true, || {
-            panic!("CX2CC must not inspect configured model routes")
-        });
-
-        assert!(route.is_none());
-    }
-
-    #[test]
-    fn ordinary_provider_still_resolves_configured_route() {
-        let route = resolve_matching_route(false).expect("ordinary route should resolve");
-        assert_eq!(route.target_model.as_deref(), Some("configured-target"));
-        assert_eq!(route.reasoning_effort.as_deref(), Some("low"));
     }
 
     #[test]
@@ -693,6 +655,36 @@ mod tests {
         assert_eq!(
             effective_upstream_retry_policy(&global, Some(&explicitly_disabled)),
             explicitly_disabled
+        );
+    }
+
+    #[test]
+    fn cx2cc_first_hop_skips_configured_route_resolution() {
+        let called = std::cell::Cell::new(false);
+        let route = configured_model_route_for_request(true, false, || {
+            called.set(true);
+            Some("must-not-replace-mapper-model")
+        });
+        assert_eq!(route, None);
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn trusted_reentry_skips_configured_route_resolution() {
+        let called = std::cell::Cell::new(false);
+        let route = configured_model_route_for_request(false, true, || {
+            called.set(true);
+            Some("must-not-replace-mapper-model")
+        });
+        assert_eq!(route, None);
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn ordinary_request_keeps_configured_route_resolution() {
+        assert_eq!(
+            configured_model_route_for_request(false, false, || Some("configured-model")),
+            Some("configured-model")
         );
     }
 }
