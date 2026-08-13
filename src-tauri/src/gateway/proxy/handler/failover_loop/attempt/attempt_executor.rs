@@ -503,7 +503,11 @@ where
     };
 
     let dispatch_ownership = prepared.dispatch_ownership.clone();
-    let client = pinned_client.unwrap_or_else(|| ctx.state.client());
+    let client = if authorized_internal_reentry {
+        ctx.state.direct_internal_reentry_client()
+    } else {
+        pinned_client.unwrap_or_else(|| ctx.state.client())
+    };
     let send_result = send::send_upstream_with_first_byte_timeout(
         client,
         input.req_method.clone(),

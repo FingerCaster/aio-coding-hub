@@ -1734,6 +1734,9 @@ INSERT INTO codex_managed_profiles(
             internal_reentry: Arc::new(
                 crate::gateway::internal_reentry::InternalReentryRegistry::default(),
             ),
+            direct_internal_reentry_client:
+                crate::gateway::http_client::build_direct_internal_reentry_client()
+                    .expect("route tests direct internal reentry http client"),
             http_client_override: Some(
                 reqwest::Client::builder()
                     .no_proxy()

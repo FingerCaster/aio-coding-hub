@@ -682,6 +682,18 @@ pub fn get() -> Client {
         })
 }
 
+/// Build the reusable client for the authenticated, single-hop gateway reentry.
+///
+/// This transport must never inherit an upstream proxy or follow a redirect:
+/// both could disclose the private reentry nonce outside the local gateway.
+pub(crate) fn build_direct_internal_reentry_client() -> Result<Client, String> {
+    gateway_client_builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("Failed to build internal reentry HTTP client: {e}"))
+}
+
 /// Get the current proxy URL.
 ///
 /// Returns None if direct connection is configured.
@@ -1219,6 +1231,34 @@ mod tests {
     use std::sync::{mpsc, MutexGuard};
     use std::thread;
 
+    #[derive(Default)]
+    struct ProxyEnvRestore {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl ProxyEnvRestore {
+        fn set(&mut self, key: &'static str, value: &str) {
+            self.saved.push((key, std::env::var_os(key)));
+            std::env::set_var(key, value);
+        }
+
+        fn remove(&mut self, key: &'static str) {
+            self.saved.push((key, std::env::var_os(key)));
+            std::env::remove_var(key);
+        }
+    }
+
+    impl Drop for ProxyEnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..).rev() {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
     fn settings_with_listen_mode(listen_mode: GatewayListenMode) -> AppSettings {
         AppSettings {
             gateway_listen_mode: listen_mode,
@@ -1292,6 +1332,69 @@ mod tests {
         });
 
         (format!("http://127.0.0.1:{}/", addr.port()), rx)
+    }
+
+    fn spawn_redirect_origin(
+        location: &str,
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind redirect origin");
+        let addr = listener.local_addr().expect("redirect origin addr");
+        let (tx, rx) = mpsc::channel();
+        let location = location.to_string();
+        let task = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept redirect origin request");
+            let mut buf = [0_u8; 4096];
+            let size = stream.read(&mut buf).expect("read redirect origin request");
+            tx.send(String::from_utf8_lossy(&buf[..size]).to_string())
+                .expect("send redirect origin request");
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write redirect response");
+        });
+
+        (format!("http://127.0.0.1:{}/", addr.port()), rx, task)
+    }
+
+    fn spawn_unexpected_listener() -> (
+        String,
+        mpsc::Receiver<String>,
+        mpsc::Sender<()>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind unexpected listener");
+        listener
+            .set_nonblocking(true)
+            .expect("set unexpected listener nonblocking");
+        let addr = listener.local_addr().expect("unexpected listener addr");
+        let (tx, rx) = mpsc::channel();
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let task = thread::spawn(move || loop {
+            if stop_rx.try_recv().is_ok() {
+                return;
+            }
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0_u8; 4096];
+                    let size = stream.read(&mut buf).expect("read unexpected request");
+                    let _ = tx.send(String::from_utf8_lossy(&buf[..size]).to_string());
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept unexpected request: {error}"),
+            }
+        });
+
+        (
+            format!("http://127.0.0.1:{}/", addr.port()),
+            rx,
+            stop_tx,
+            task,
+        )
     }
 
     #[test]
@@ -1647,6 +1750,64 @@ mod tests {
             request.contains(&format!("Host: provider-rebind.invalid:{origin_port}"))
                 || request.contains(&format!("host: provider-rebind.invalid:{origin_port}"))
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn internal_reentry_client_bypasses_proxy_and_does_not_follow_redirects() {
+        let _guard = crate::test_support::test_env_lock();
+        let (redirect_target_url, redirect_rx, redirect_stop, redirect_task) =
+            spawn_unexpected_listener();
+        let (proxy_url, proxy_rx, proxy_stop, proxy_task) = spawn_unexpected_listener();
+        let (origin_url, origin_rx, origin_task) = spawn_redirect_origin(&redirect_target_url);
+
+        let mut env = ProxyEnvRestore::default();
+        for key in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            env.set(key, &proxy_url);
+        }
+        for key in ["NO_PROXY", "no_proxy"] {
+            env.remove(key);
+        }
+
+        let client =
+            build_direct_internal_reentry_client().expect("build direct internal reentry client");
+        let response = client
+            .post(&origin_url)
+            .header(
+                crate::gateway::internal_reentry::INTERNAL_REENTRY_HEADER,
+                "private-test-nonce",
+            )
+            .send()
+            .await
+            .expect("send direct internal reentry request");
+
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let origin_request = origin_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("origin should receive the direct request");
+        assert!(origin_request.contains("private-test-nonce"));
+        assert!(
+            proxy_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the private nonce must not traverse an upstream proxy"
+        );
+        assert!(
+            redirect_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "the private nonce must not traverse an HTTP redirect"
+        );
+
+        let _ = proxy_stop.send(());
+        let _ = redirect_stop.send(());
+        origin_task.join().expect("redirect origin task");
+        proxy_task.join().expect("proxy listener task");
+        redirect_task.join().expect("redirect target task");
     }
 
     #[test]

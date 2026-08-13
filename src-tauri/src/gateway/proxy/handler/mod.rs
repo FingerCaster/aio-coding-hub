@@ -512,6 +512,9 @@ mod tests {
             internal_reentry: Arc::new(
                 crate::gateway::internal_reentry::InternalReentryRegistry::default(),
             ),
+            direct_internal_reentry_client:
+                crate::gateway::http_client::build_direct_internal_reentry_client()
+                    .expect("handler tests direct internal reentry http client"),
             http_client_override: None,
             active_requests,
         }
