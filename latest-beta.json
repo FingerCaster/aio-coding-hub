@@ -1,23 +1,23 @@
 {
-  "version": "0.60.41-beta.4",
-  "notes": "Release 0.60.41-beta.4\n",
-  "pub_date": "2026-08-12T19:59:12Z",
+  "version": "0.60.41-beta.5",
+  "notes": "Release 0.60.41-beta.5\n",
+  "pub_date": "2026-08-13T19:25:23Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlJCa0xuRGthZmJzTm52SCt3eFcvZmtLaGk2cFlITFdsanhHYzFLVm5HcklxS25wVGFnNlo0VktIN3pQd1AvN083ai9OZzIyYzJxckhUNXpEbDlzUFE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTY0NzI4CWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40MS1iZXRhLjRfeDY0X2VuLVVTLm1zaQpJSkpLNEFSM0pHaFIwNDlFWjRvM0hXbXJvTWJYUG5VQ2xhdGZwU0VoWGlnb0ZwdUhkWjR6SzZhSlg4TFJwbHROb09Vb0NLRlFvcFhUcG9YdTBtOWFDZz09Cg==",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.4/aio-coding-hub-win64.msi"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlY0TXhjRW5ublJKQ1RGT29HVFZBMW10dnh1K1J0dERsVzhhc0NjY01ybisxUXFKdG9XaXlDOTduakdiaVh2ZzVFOE85VFFyT1hlbDkrd0tzVDlFY1FvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjQ5MDc3CWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40MS1iZXRhLjVfeDY0X2VuLVVTLm1zaQpNQzdOYXFkYXpHWkZrR1ZLelBLWTNzbnEwL09JUWdIanMyczRIaFRWTTJWR1dFVFVuZnFLZmwrdEJsWWZJc3JBV1FFeGlPbDk5c3o5QXJjZ1BjQ0xCdz09Cg==",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.5/aio-coding-hub-win64.msi"
     },
     "darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMld6cXRyMThncG5nTWIvYkpNL1BxaFRENXVoTW43TjZsTkM3OER5SEQrVGQzMFN4UStOYzljZzNCNi8rYXl0MzN4azBkY2pEdllKNm0zNnZwcENndHdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTY0NjYxCWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5negpPUk1SWXRuY1F2b1NLTWtaNzlLUFNNWDhGa2pyVHpPeVpkcTJ4SnhDOHdDTE9KUTNEbi96VU14bnNROHBNNzFNRG1WYTJrSStTMlM0MVRONWNYUTFBQT09Cg==",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.4/aio-coding-hub-macos-intel.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlZ5NzBKSG5rSkNKeUdyS1IrbXBqNVZCNzJreXppcEFvSWlSOThVVjNIUUNjTks0OThLSld4a0lHOVBlaVB3WW9TcERFSVQxbnpySWdFWWVKbXM1V2dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjQ4Njk1CWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5nego3Wk1Dcys4U1pyUCtLaktvcGdoWWtEU0hDbER3YmtxOUYyU1FsWHE0WG1MTmtwYVlScU5CaVIzazE1SWFSQlB5Q2xjaFVDbHJlOUlzVVJTdjd0UjFCQT09Cg==",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.5/aio-coding-hub-macos-intel.tar.gz"
     },
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlVTVkd5VCs5ME5XUnJiS09veitlaEQ3SVFmMlA1OGg1b3ZaTjRpbEdzbUw4VVRzNW4vbTFURnZTVElucXZPTU8vdjRWYncyZm5ORERSUWJqSUNnbHdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTY0NjIxCWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5negp2VkdoRWR1Rm1kSlZqUnh6VXVuSUVJcEp0Q2loSGpWTGdFSGFjNkJobDRjb3VoSkhLYk5PcHRxY0JUUDJOajd1Y0pRalRyeURWaDZWUFNZZWRUSUJCQT09Cg==",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.4/aio-coding-hub-macos-arm.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMldWMUxrUURSdWR1TkJyK2xHNW9ZNW5ENEE3ZHE1ejNFNCswdWtqOE1YL21Xd2lXdExxZy9LaUxqWFRnK3k4NitZQUxVTXlPQWlSaXRXenpBSFpyMndRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjQ5MDI2CWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5negpObElJMjk4ZWF5eWlYZWd4Ym91MzROSXlsUFl2OGRmdXlPTnYxditmeHJEbGpVWjlsKzBQdnhVeWljQW1KazBGZkg5ZjFtdWJyVVppbGxXQkZwQzJDZz09Cg==",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.5/aio-coding-hub-macos-arm.tar.gz"
     },
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMmNFVGhjcnRkY2JiYmJMUkYyNjNjRExzSnhKN1RjRW56enpLRS9La0ZRcm5nZVlmSmszeGR6Q1QwU0hURTEvOGg3d0xzSXRzUUZ3KzVCQnRIci9lblFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NTY0MzM4CWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40MS1iZXRhLjRfYW1kNjQuQXBwSW1hZ2UKRkE5eVpGREdvOEY1bWRXd0dxdmljKzQrRDlVUDQrTHNlT29aTG9SNFBYU0s4Q3B4UWZxdGdLYllwOVRPelNOVms4d3BSSXU5MTFwWktFT1cyYS83RHc9PQo=",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.4/aio-coding-hub-linux-amd64.AppImage"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlVYTERKUURxdE9ZZ2tJaGlTVDJKRlFVT1hLWklkQzVxTlhsVy9SanBuWk5vbHIyNHE1QzBwUTdiQXppNGFHYzBVU2lGdlovZnBoazEzUmZsa2xiZlEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjQ4NjE5CWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40MS1iZXRhLjVfYW1kNjQuQXBwSW1hZ2UKSFh1Mkp6ZjFXRTZ5REtBNXFuTkYrTXFxM1hPWEF1aUppQzZEK2MvWURrU2NodHJTc2lGemJNS0UxSmllekszcVNBR0NRTVZHN21rWXp3MEZyeDN0QkE9PQo=",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.5/aio-coding-hub-linux-amd64.AppImage"
     }
   }
 }
