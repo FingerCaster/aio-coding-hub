@@ -42,6 +42,7 @@ pub(super) struct PreparedProvider {
     pub(super) bridge_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_codex_session_id: Option<String>,
+    pub(super) internal_codex_reentry: Option<cx2cc_preparation::InternalCodexReentry>,
     pub(super) circuit_snapshot: crate::circuit_breaker::CircuitSnapshot,
     pub(super) dispatch_ownership:
         Option<std::sync::Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
@@ -261,6 +262,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     let mut bridge_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_codex_session_id: Option<String> = None;
+    let mut internal_codex_reentry = None;
     if is_cx2cc_bridge {
         let outcome = cx2cc_preparation::prepare(cx2cc_preparation::Cx2ccPreparationInput {
             ctx,
@@ -282,6 +284,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
                 cx2cc_source = result.cx2cc_source;
                 bridge_source = cx2cc_source.clone();
                 cx2cc_codex_session_id = result.cx2cc_codex_session_id;
+                internal_codex_reentry = result.internal_codex_reentry;
                 effective_credential = result.effective_credential;
                 provider_base_url_base = result.provider_base_url_base;
                 upstream_forwarded_path = result.upstream_forwarded_path;
@@ -421,6 +424,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         bridge_source,
         cx2cc_source,
         cx2cc_codex_session_id,
+        internal_codex_reentry,
         circuit_snapshot,
         dispatch_ownership,
         anthropic_stream_requested,

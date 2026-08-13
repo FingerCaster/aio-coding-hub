@@ -377,10 +377,24 @@ where
             });
         }
     };
+    // The typed intent exists only on the source-less CX2CC preparation path and
+    // disappears at the HTTP boundary. Every other target, including a second
+    // gateway hop or any mutated request, still takes the ordinary validation path.
+    let authorized_internal_reentry = cx2cc_preparation::InternalCodexReentry::consume_and_match(
+        &mut prepared.internal_codex_reentry,
+        &input.trace_id,
+        prepared.provider_id,
+        &input.req_method,
+        &url,
+    );
     // Resolve first, but defer returning its result until after the authoritative
     // enabled-state read so the outer Provider switch remains the master gate.
     // The enabled-state read is therefore also the final async preparation step.
-    let target_validation = crate::gateway::http_client::validate_gateway_target(&url).await;
+    let target_validation = if authorized_internal_reentry {
+        None
+    } else {
+        Some(crate::gateway::http_client::validate_gateway_target(&url).await)
+    };
     let db = ctx.state.db.clone();
     let provider_id = prepared.provider_id;
     let provider_uuid = prepared.provider_uuid.clone();
@@ -413,9 +427,25 @@ where
             return PreparedSendOutcome::ProviderEnableCheckFailed;
         }
     }
-    let validated_target = match target_validation {
-        Ok(target) => target,
-        Err(error) => {
+    let pinned_client = match target_validation {
+        None => None,
+        Some(Ok(target)) => match target.into_pinned_client() {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!(
+                    trace_id = %input.trace_id,
+                    cli_key = %input.cli_key,
+                    provider_id = prepared.provider_id,
+                    retry_index,
+                    error,
+                    "failed to build DNS-pinned Provider target client"
+                );
+                return PreparedSendOutcome::ProviderTargetRejected(
+                    crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
+                );
+            }
+        },
+        Some(Err(error)) => {
             tracing::warn!(
                 trace_id = %input.trace_id,
                 cli_key = %input.cli_key,
@@ -425,22 +455,6 @@ where
                 "provider target rejected before upstream send"
             );
             return PreparedSendOutcome::ProviderTargetRejected(error);
-        }
-    };
-    let pinned_client = match validated_target.into_pinned_client() {
-        Ok(client) => client,
-        Err(error) => {
-            tracing::warn!(
-                trace_id = %input.trace_id,
-                cli_key = %input.cli_key,
-                provider_id = prepared.provider_id,
-                retry_index,
-                error,
-                "failed to build DNS-pinned Provider target client"
-            );
-            return PreparedSendOutcome::ProviderTargetRejected(
-                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
-            );
         }
     };
     if let Some((route, priced_cli_key, outcome)) = configured_route_marker.as_ref() {
