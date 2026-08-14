@@ -10,6 +10,7 @@ import {
   CX2CC_CONTEXT_WINDOW_MAX,
   CX2CC_CONTEXT_WINDOW_MIN,
   CX2CC_PROVIDER_DEFAULT_MODEL,
+  DEFAULT_CX2CC_REASONING_EFFORT_MAPPINGS,
 } from "../cx2cc";
 import { DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE } from "../../services/gateway/circuitNotice";
 import { DEFAULT_CYBER_PASSTHROUGH_KEYWORD } from "../../services/gateway/upstreamRetryPolicy";
@@ -32,6 +33,7 @@ import codexRequestClassifierSource from "../../../src-tauri/src/gateway/proxy/h
 import gatewayErrorCodeSource from "../../../src-tauri/src/gateway/proxy/error_code.rs?raw";
 import settingsDefaultsSource from "../../../src-tauri/src/infra/settings/defaults.rs?raw";
 import settingsPersistenceSource from "../../../src-tauri/src/infra/settings/persistence.rs?raw";
+import settingsTypesSource from "../../../src-tauri/src/infra/settings/types.rs?raw";
 
 function extractRustStringConst(source: string, constName: string) {
   const match = source.match(new RegExp(`const\\s+${constName}:\\s*&str\\s*=\\s*"([^"]+)"`));
@@ -193,6 +195,18 @@ describe("cross-layer contracts", () => {
     expect(settings.cx2cc_fallback_model_sonnet).toBe(cx2ccDefault);
     expect(settings.cx2cc_fallback_model_haiku).toBe(cx2ccDefault);
     expect(settings.cx2cc_fallback_model_main).toBe(cx2ccDefault);
+    const rustReasoningEffortDefaultsSource = settingsTypesSource.match(
+      /pub fn default_cx2cc_reasoning_effort_mappings[\s\S]*?\.collect\(\)\s*\n\}/u
+    )?.[0];
+    expect(rustReasoningEffortDefaultsSource).toBeTruthy();
+    const rustReasoningEffortDefaults = Array.from(
+      rustReasoningEffortDefaultsSource?.matchAll(/\("([^"]+)", "([^"]+)"\)/gu) ?? [],
+      (match) => ({ source: match[1], target: match[2] })
+    );
+    expect(rustReasoningEffortDefaults).toEqual(DEFAULT_CX2CC_REASONING_EFFORT_MAPPINGS);
+    expect(settings.cx2cc_reasoning_effort_mappings).toEqual(
+      DEFAULT_CX2CC_REASONING_EFFORT_MAPPINGS
+    );
     expect(settings.enable_billing_header_rectifier).toBe(
       extractRustBoolConst(settingsDefaultsSource, "DEFAULT_ENABLE_BILLING_HEADER_RECTIFIER")
     );
@@ -246,6 +260,8 @@ describe("cross-layer contracts", () => {
       "MAX_UPSTREAM_PROXY_PASSWORD_LEN",
       "MAX_CX2CC_MODEL_NAME_LEN",
       "MAX_CX2CC_OPTIONAL_FIELD_LEN",
+      "MAX_CX2CC_REASONING_EFFORT_MAPPINGS",
+      "MAX_CX2CC_REASONING_EFFORT_BYTES",
       "MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS",
       "MAX_LOG_RETENTION_DAYS",
       "MAX_REQUEST_LOG_RETENTION_DAYS",

@@ -205,7 +205,7 @@ mod tests {
                     "max_tokens": 1024,
                     "messages": [{"role": "user", "content": "Hello"}],
                     "thinking": {"type": "adaptive"},
-                    "output_config": {"effort": "future-effort"}
+                    "output_config": {"effort": "ultra"}
                 }),
                 &ctx,
             )
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(translated.target_path, "/v1/responses");
         assert_eq!(
             extract_value(&translated.body, &translated.target_path, None).as_deref(),
-            Some("future-effort")
+            Some("max")
         );
 
         let thinking_only = bridge

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createDefaultCx2ccReasoningEffortMappings } from "../constants/cx2cc";
 import { getSettingsState, resetMswState } from "../test/msw/state";
 
 describe("MSW defaults", () => {
@@ -6,7 +7,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 62,
+      schema_version: 63,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -88,6 +89,7 @@ describe("MSW defaults", () => {
       cx2cc_fallback_model_sonnet: "gpt-5.6-sol",
       cx2cc_fallback_model_haiku: "gpt-5.6-sol",
       cx2cc_fallback_model_main: "gpt-5.6-sol",
+      cx2cc_reasoning_effort_mappings: createDefaultCx2ccReasoningEffortMappings(),
       cx2cc_model_reasoning_effort: "",
       cx2cc_service_tier: "",
       cx2cc_disable_response_storage: true,

@@ -3,6 +3,29 @@
 use super::defaults::*;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
+pub struct Cx2ccReasoningEffortMapping {
+    pub source: String,
+    pub target: String,
+}
+
+pub fn default_cx2cc_reasoning_effort_mappings() -> Vec<Cx2ccReasoningEffortMapping> {
+    [
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("xhigh", "xhigh"),
+        ("max", "max"),
+        ("ultra", "max"),
+    ]
+    .into_iter()
+    .map(|(source, target)| Cx2ccReasoningEffortMapping {
+        source: source.to_string(),
+        target: target.to_string(),
+    })
+    .collect()
+}
+
 fn default_codex_provider_test_model() -> String {
     DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
 }
@@ -635,6 +658,8 @@ pub struct AppSettings {
     pub cx2cc_fallback_model_haiku: String,
     pub cx2cc_fallback_model_main: String,
     pub cx2cc_model_reasoning_effort: String,
+    #[serde(default = "default_cx2cc_reasoning_effort_mappings")]
+    pub cx2cc_reasoning_effort_mappings: Vec<Cx2ccReasoningEffortMapping>,
     pub cx2cc_service_tier: String,
     pub cx2cc_disable_response_storage: bool,
     pub cx2cc_enable_reasoning_to_thinking: bool,
@@ -721,6 +746,7 @@ impl Default for AppSettings {
             cx2cc_fallback_model_haiku: DEFAULT_CX2CC_FALLBACK_MODEL.to_string(),
             cx2cc_fallback_model_main: DEFAULT_CX2CC_FALLBACK_MODEL.to_string(),
             cx2cc_model_reasoning_effort: String::new(),
+            cx2cc_reasoning_effort_mappings: default_cx2cc_reasoning_effort_mappings(),
             cx2cc_service_tier: String::new(),
             cx2cc_disable_response_storage: true,
             cx2cc_enable_reasoning_to_thinking: true,
@@ -753,8 +779,8 @@ pub(super) fn default_cli_priority_order() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, ModelRoutingPolicy, UpdateChannel, UpstreamRetryPolicy,
-        UpstreamStreamInternalErrorPolicy, UpstreamTransportRetryKind,
+        default_cx2cc_reasoning_effort_mappings, AppSettings, ModelRoutingPolicy, UpdateChannel,
+        UpstreamRetryPolicy, UpstreamStreamInternalErrorPolicy, UpstreamTransportRetryKind,
         DEFAULT_CAPACITY_RETRY_KEYWORD, DEFAULT_CYBER_PASSTHROUGH_KEYWORD, SCHEMA_VERSION,
     };
 
@@ -780,6 +806,39 @@ mod tests {
         let unknown_channel: Result<UpdateChannel, _> =
             serde_json::from_value(serde_json::json!("nightly"));
         assert!(unknown_channel.is_err());
+    }
+
+    #[test]
+    fn cx2cc_reasoning_effort_mappings_default_when_field_is_missing() {
+        let expected = vec![
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("max", "max"),
+            ("ultra", "max"),
+        ];
+        let defaults = default_cx2cc_reasoning_effort_mappings();
+        assert_eq!(
+            defaults
+                .iter()
+                .map(|mapping| (mapping.source.as_str(), mapping.target.as_str()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        let mut missing = serde_json::to_value(AppSettings::default()).unwrap();
+        missing
+            .as_object_mut()
+            .expect("settings object")
+            .remove("cx2cc_reasoning_effort_mappings");
+        let missing: AppSettings = serde_json::from_value(missing).unwrap();
+        assert_eq!(missing.cx2cc_reasoning_effort_mappings, defaults);
+
+        let mut explicit_empty = serde_json::to_value(AppSettings::default()).unwrap();
+        explicit_empty["cx2cc_reasoning_effort_mappings"] = serde_json::json!([]);
+        let explicit_empty: AppSettings = serde_json::from_value(explicit_empty).unwrap();
+        assert!(explicit_empty.cx2cc_reasoning_effort_mappings.is_empty());
     }
 
     #[test]

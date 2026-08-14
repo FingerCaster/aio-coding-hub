@@ -3056,6 +3056,7 @@ export type ConfigImportResult = {
   installed_skills_imported: number;
   local_skills_imported: number;
 };
+export type Cx2ccReasoningEffortMapping = { source: string; target: string };
 export type DailyResetMode = "fixed" | "rolling";
 export type DbCompactResult = { before_bytes: number; after_bytes: number };
 export type DbDiskUsage = {
@@ -4434,6 +4435,7 @@ export type SettingsPatch = {
   cx2CcFallbackModelHaiku: string | null;
   cx2CcFallbackModelMain: string | null;
   cx2CcModelReasoningEffort: string | null;
+  cx2CcReasoningEffortMappings: Cx2ccReasoningEffortMapping[] | null;
   cx2CcServiceTier: string | null;
   cx2CcDisableResponseStorage: boolean | null;
   cx2CcEnableReasoningToThinking: boolean | null;
@@ -4502,6 +4504,7 @@ export type SettingsUpdate = {
   cx2CcFallbackModelHaiku: string | null;
   cx2CcFallbackModelMain: string | null;
   cx2CcModelReasoningEffort: string | null;
+  cx2CcReasoningEffortMappings: Cx2ccReasoningEffortMapping[] | null;
   cx2CcServiceTier: string | null;
   cx2CcDisableResponseStorage: boolean | null;
   cx2CcEnableReasoningToThinking: boolean | null;
@@ -4578,6 +4581,7 @@ export type SettingsView = {
   cx2cc_fallback_model_haiku: string;
   cx2cc_fallback_model_main: string;
   cx2cc_model_reasoning_effort: string;
+  cx2cc_reasoning_effort_mappings: Cx2ccReasoningEffortMapping[];
   cx2cc_service_tier: string;
   cx2cc_disable_response_storage: boolean;
   cx2cc_enable_reasoning_to_thinking: boolean;

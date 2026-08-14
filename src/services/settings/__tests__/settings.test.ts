@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { CX2CC_PROVIDER_DEFAULT_MODEL } from "../../../constants/cx2cc";
+import {
+  createDefaultCx2ccReasoningEffortMappings,
+  CX2CC_PROVIDER_DEFAULT_MODEL,
+} from "../../../constants/cx2cc";
 import { tauriInvoke } from "../../../test/mocks/tauri";
 import { createTestAppSettings } from "../../../test/fixtures/settings";
 import { setTauriRuntime } from "../../../test/utils/tauriRuntime";
@@ -131,6 +134,7 @@ describe("services/settings/settings", () => {
       providerFailbackStrategy: "natural",
       naturalProbeMaxWaitSeconds: 300,
       cx2CcFallbackModelMain: CX2CC_PROVIDER_DEFAULT_MODEL,
+      cx2CcReasoningEffortMappings: createDefaultCx2ccReasoningEffortMappings(),
       upstreamProxyPassword: { mode: "clear" },
       upstreamErrorResponseRules: [expect.objectContaining({ name: "限额响应" })],
     });
@@ -226,6 +230,28 @@ describe("services/settings/settings", () => {
     expect(
       Object.fromEntries(Object.entries(strategyPatch).filter(([, value]) => value !== null))
     ).toEqual({ providerFailbackStrategy: "disabled" });
+  });
+
+  it("owns only the CX2CC reasoning effort mapping field in a focused patch", async () => {
+    setTauriRuntime();
+    vi.resetModules();
+    vi.mocked(tauriInvoke).mockResolvedValue({ schema_version: 1 } as any);
+
+    const { settingsPatch } = await import("../settings");
+    const mappings = [
+      { source: "max", target: "max" },
+      { source: "ultra", target: "xhigh" },
+    ];
+
+    await settingsPatch(createTestAppSettings(), {
+      cx2cc_reasoning_effort_mappings: mappings,
+    });
+
+    const calls = vi.mocked(tauriInvoke).mock.calls;
+    const sentPatch = calls[calls.length - 1]?.[1]?.patch as Record<string, unknown>;
+    expect(
+      Object.fromEntries(Object.entries(sentPatch).filter(([, value]) => value !== null))
+    ).toEqual({ cx2CcReasoningEffortMappings: mappings });
   });
 
   it("never forwards update_channel through the ordinary settings writer", async () => {
@@ -348,6 +374,16 @@ describe("services/settings/settings", () => {
         naturalProbeMaxWaitSeconds: 86401,
       } as any)
     ).rejects.toThrow("自然模式最长试探等待必须 <= 86400");
+
+    await expect(
+      settingsSet({
+        ...required,
+        cx2CcReasoningEffortMappings: [
+          { source: "ultra", target: "max" },
+          { source: "ultra", target: "xhigh" },
+        ],
+      } as any)
+    ).rejects.toThrow("来源强度“ultra”重复");
 
     expect(tauriInvoke).not.toHaveBeenCalled();
   });

@@ -234,6 +234,50 @@ fn prepare_config_import_normalizes_beta_participation_to_stable() {
 }
 
 #[test]
+fn prepare_config_import_normalizes_and_validates_cx2cc_reasoning_effort_mappings() {
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut imported = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    imported["cx2cc_reasoning_effort_mappings"] = serde_json::json!([
+        {"source": " ultra ", "target": " max "}
+    ]);
+    bundle.settings = serde_json::to_string(&imported).expect("settings with mapping");
+
+    let prepared = prepare_config_import(bundle).expect("prepare imported settings");
+    assert_eq!(
+        prepared.settings_to_write.cx2cc_reasoning_effort_mappings,
+        vec![settings::Cx2ccReasoningEffortMapping {
+            source: "ultra".to_string(),
+            target: "max".to_string(),
+        }]
+    );
+
+    let mut empty_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut empty = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    empty["cx2cc_reasoning_effort_mappings"] = serde_json::json!([]);
+    empty_bundle.settings = serde_json::to_string(&empty).expect("settings with empty mapping");
+    assert!(prepare_config_import(empty_bundle)
+        .expect("empty mapping is valid passthrough")
+        .settings_to_write
+        .cx2cc_reasoning_effort_mappings
+        .is_empty());
+
+    let mut duplicate_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut duplicate = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    duplicate["cx2cc_reasoning_effort_mappings"] = serde_json::json!([
+        {"source": "ultra", "target": "max"},
+        {"source": " ultra ", "target": "high"}
+    ]);
+    duplicate_bundle.settings =
+        serde_json::to_string(&duplicate).expect("settings with duplicate mapping");
+    let error = prepare_config_import(duplicate_bundle)
+        .err()
+        .expect("duplicate source must fail");
+    assert!(error
+        .to_string()
+        .contains("duplicate cx2cc reasoning effort mapping source"));
+}
+
+#[test]
 fn prepare_config_import_applies_cyber_passthrough_settings_schema_migration() {
     let mut legacy_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
     let mut legacy = serde_json::to_value(settings::AppSettings::default()).unwrap();

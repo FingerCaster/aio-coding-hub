@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Backend quality gates for gateway retry changes"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Cross-layer quality gates for settings, CX2CC, bindings and UI"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/cx2cc-routing-contract.md","reason":"Verify all CX2CC mapping and reentry invariants"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/reasoning-effort-observability-contract.md","reason":"Verify mapped final effort is the only observed value"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Verify ordinary self-loop and failover behavior do not regress"}

@@ -7,6 +7,11 @@ import type {
   WslHostAddressMode,
 } from "../../generated/bindings";
 import {
+  CX2CC_REASONING_EFFORT_MAPPING_MAX_BYTES,
+  CX2CC_REASONING_EFFORT_MAPPING_MAX_RULES,
+  type Cx2ccReasoningEffortMapping,
+} from "../../constants/cx2cc";
+import {
   MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS,
   MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS,
   MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS,
@@ -39,6 +44,8 @@ export const MAX_UPSTREAM_PROXY_USERNAME_LEN = 256;
 export const MAX_UPSTREAM_PROXY_PASSWORD_LEN = 4096;
 export const MAX_CX2CC_MODEL_NAME_LEN = 128;
 export const MAX_CX2CC_OPTIONAL_FIELD_LEN = 64;
+export const MAX_CX2CC_REASONING_EFFORT_MAPPINGS = CX2CC_REASONING_EFFORT_MAPPING_MAX_RULES;
+export const MAX_CX2CC_REASONING_EFFORT_BYTES = CX2CC_REASONING_EFFORT_MAPPING_MAX_BYTES;
 export const MAX_CODEX_PROVIDER_TEST_MODEL_NAME_LEN = 128;
 export const MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS = 60_000;
 export const MIN_PREFERRED_PORT = 1024;
@@ -80,6 +87,8 @@ export const SETTINGS_VALIDATION_LIMITS = {
   MAX_UPSTREAM_PROXY_PASSWORD_LEN,
   MAX_CX2CC_MODEL_NAME_LEN,
   MAX_CX2CC_OPTIONAL_FIELD_LEN,
+  MAX_CX2CC_REASONING_EFFORT_MAPPINGS,
+  MAX_CX2CC_REASONING_EFFORT_BYTES,
   MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
   MIN_PREFERRED_PORT,
   MAX_PREFERRED_PORT,
@@ -370,6 +379,40 @@ export function validateCx2ccOptionalField(fieldLabel: string, value: string): s
   return validateNoControlChars(fieldLabel, raw);
 }
 
+export function validateCx2ccReasoningEffortMappings(
+  mappings: readonly Cx2ccReasoningEffortMapping[]
+): string | null {
+  if (mappings.length > MAX_CX2CC_REASONING_EFFORT_MAPPINGS) {
+    return `思考强度转换规则最多 ${MAX_CX2CC_REASONING_EFFORT_MAPPINGS} 条`;
+  }
+
+  const sources = new Set<string>();
+  for (const [index, mapping] of mappings.entries()) {
+    const source = mapping.source.trim();
+    const target = mapping.target.trim();
+    const rowLabel = `第 ${index + 1} 条规则`;
+
+    if (!source) return `${rowLabel}的来源强度不能为空`;
+    if (!target) return `${rowLabel}的目标强度不能为空`;
+
+    for (const [fieldLabel, value] of [
+      ["来源强度", source],
+      ["目标强度", target],
+    ] as const) {
+      if (utf8Length(value) > MAX_CX2CC_REASONING_EFFORT_BYTES) {
+        return `${rowLabel}的${fieldLabel}必须 <= ${MAX_CX2CC_REASONING_EFFORT_BYTES} 字节`;
+      }
+      const controlCharMessage = validateNoControlChars(`${rowLabel}的${fieldLabel}`, value);
+      if (controlCharMessage) return controlCharMessage;
+    }
+
+    if (sources.has(source)) return `${rowLabel}的来源强度“${source}”重复`;
+    sources.add(source);
+  }
+
+  return null;
+}
+
 function validateIntegerRange(
   fieldLabel: string,
   value: number | null | undefined,
@@ -432,6 +475,7 @@ export type SettingsSetValidationInput = {
   cx2CcFallbackModelSonnet?: string | null;
   cx2CcFallbackModelHaiku?: string | null;
   cx2CcFallbackModelMain?: string | null;
+  cx2CcReasoningEffortMappings?: Cx2ccReasoningEffortMapping[] | null;
   cx2CcModelReasoningEffort?: string | null;
   cx2CcServiceTier?: string | null;
   codexProviderTestModel?: string | null;
@@ -576,6 +620,11 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   ] as const) {
     if (value == null) continue;
     const message = validateCx2ccFallbackModel(fieldLabel, value);
+    if (message) return message;
+  }
+
+  if (input.cx2CcReasoningEffortMappings != null) {
+    const message = validateCx2ccReasoningEffortMappings(input.cx2CcReasoningEffortMappings);
     if (message) return message;
   }
 

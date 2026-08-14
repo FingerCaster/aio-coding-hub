@@ -3,6 +3,7 @@ import {
   cloneUpstreamRetryPolicy,
   DEFAULT_UPSTREAM_RETRY_POLICY,
 } from "../../gateway/upstreamRetryPolicy";
+import { createDefaultCx2ccReasoningEffortMappings } from "../../../constants/cx2cc";
 import { validateSettingsSetInput } from "../settingsValidation";
 
 describe("services/settings/settingsValidation", () => {
@@ -124,5 +125,55 @@ describe("services/settings/settingsValidation", () => {
         upstreamErrorResponseRules: [{ ...rule, keywords: [], status_codes: [] }],
       })
     ).toContain("至少需要");
+  });
+
+  it("accepts the default CX2CC reasoning effort mapping", () => {
+    expect(
+      validateSettingsSetInput({
+        cx2CcReasoningEffortMappings: createDefaultCx2ccReasoningEffortMappings(),
+      })
+    ).toBeNull();
+  });
+
+  it("rejects empty and duplicate CX2CC reasoning effort mapping fields", () => {
+    expect(
+      validateSettingsSetInput({
+        cx2CcReasoningEffortMappings: [{ source: " ", target: "max" }],
+      })
+    ).toContain("来源强度不能为空");
+    expect(
+      validateSettingsSetInput({
+        cx2CcReasoningEffortMappings: [{ source: "ultra", target: " " }],
+      })
+    ).toContain("目标强度不能为空");
+    expect(
+      validateSettingsSetInput({
+        cx2CcReasoningEffortMappings: [
+          { source: "ultra", target: "max" },
+          { source: " ultra ", target: "xhigh" },
+        ],
+      })
+    ).toContain("来源强度“ultra”重复");
+  });
+
+  it("rejects CX2CC reasoning effort mapping count, byte and control-character overflow", () => {
+    expect(
+      validateSettingsSetInput({
+        cx2CcReasoningEffortMappings: Array.from({ length: 33 }, (_, index) => ({
+          source: `source-${index}`,
+          target: "max",
+        })),
+      })
+    ).toContain("最多 32 条");
+    expect(
+      validateSettingsSetInput({
+        cx2CcReasoningEffortMappings: [{ source: "思".repeat(22), target: "max" }],
+      })
+    ).toContain("必须 <= 64 字节");
+    expect(
+      validateSettingsSetInput({
+        cx2CcReasoningEffortMappings: [{ source: "ultra", target: "ma\u0001x" }],
+      })
+    ).toContain("不能包含控制字符");
   });
 });
