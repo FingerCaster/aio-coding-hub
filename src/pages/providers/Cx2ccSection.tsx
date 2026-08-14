@@ -39,10 +39,8 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
     : resolveCx2ccDefaultModelSelectValue(claudeModels);
   const defaultModelOptions =
     selectedDefaultModel !== CX2CC_MANUAL_MODEL_VALUE &&
-    !CX2CC_RESPONSES_MODEL_PRESETS.includes(
-      selectedDefaultModel as (typeof CX2CC_RESPONSES_MODEL_PRESETS)[number]
-    )
-      ? ([selectedDefaultModel, ...CX2CC_RESPONSES_MODEL_PRESETS] as const)
+    !CX2CC_RESPONSES_MODEL_PRESETS.some((preset) => preset === selectedDefaultModel)
+      ? [selectedDefaultModel, ...CX2CC_RESPONSES_MODEL_PRESETS]
       : CX2CC_RESPONSES_MODEL_PRESETS;
 
   return (
@@ -112,10 +110,13 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
                 setClaudeModels((prev) => ({
                   ...prev,
                   main_model: value,
-                  reasoning_model: value,
                   haiku_model: value,
                   sonnet_model: value,
                   opus_model: value,
+                  main_context_window: null,
+                  haiku_context_window: null,
+                  sonnet_context_window: null,
+                  opus_context_window: null,
                 }));
               }}
               disabled={saving}

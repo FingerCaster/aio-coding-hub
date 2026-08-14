@@ -35,8 +35,9 @@ pub(super) fn normalize_note(value: Option<&str>) -> crate::shared::error::AppRe
 /// Write-path validation: rejects over-length model names, matching the frontend
 /// editor limit. The read path (`normalize_model_slot`) keeps truncating so
 /// legacy/hand-edited rows still load.
-pub(super) fn validate_claude_models(
+pub(crate) fn validate_claude_models(
     models: &super::types::ClaudeModels,
+    is_cx2cc: bool,
 ) -> crate::shared::error::AppResult<()> {
     let fields = [
         ("main_model", models.main_model.as_deref()),
@@ -51,6 +52,61 @@ pub(super) fn validate_claude_models(
             continue;
         }
         validate_max_chars(field, trimmed, super::types::MAX_MODEL_NAME_LEN)?;
+    }
+
+    let context_fields = [
+        (
+            "main_context_window",
+            models.main_context_window,
+            models.main_model.as_deref(),
+        ),
+        (
+            "haiku_context_window",
+            models.haiku_context_window,
+            models.haiku_model.as_deref(),
+        ),
+        (
+            "sonnet_context_window",
+            models.sonnet_context_window,
+            models.sonnet_model.as_deref(),
+        ),
+        (
+            "opus_context_window",
+            models.opus_context_window,
+            models.opus_model.as_deref(),
+        ),
+    ];
+    if context_fields
+        .iter()
+        .all(|(_, context_window, _)| context_window.is_none())
+    {
+        return Ok(());
+    }
+    if !is_cx2cc {
+        return Err(
+            "SEC_INVALID_INPUT: Claude model context windows are only supported for bridge_type=cx2cc"
+                .into(),
+        );
+    }
+
+    let minimum = crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS as u64;
+    let maximum = crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS as u64;
+    for (field, context_window, model) in context_fields {
+        let Some(context_window) = context_window else {
+            continue;
+        };
+        if !(minimum..=maximum).contains(&context_window) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: {field} must be between {minimum} and {maximum} tokens"
+            )
+            .into());
+        }
+        if model.map(str::trim).unwrap_or("").is_empty() {
+            return Err(format!(
+                "SEC_INVALID_INPUT: {field} requires an explicit model in the same slot"
+            )
+            .into());
+        }
     }
     Ok(())
 }

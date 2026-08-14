@@ -126,4 +126,25 @@ describe("pages/providers/providerDuplicate", () => {
     });
     expect(duplicated.claude_models).toEqual({});
   });
+
+  it("preserves cx2cc slot context windows in duplicate initial values", () => {
+    const provider = createProvider({
+      bridge_type: "cx2cc",
+      claude_models: {
+        main_model: "gpt-5.6-sol",
+        main_context_window: 1_000_000,
+        haiku_model: "gpt-5.6-luna",
+        haiku_context_window: 200_000,
+        sonnet_model: "gpt-5.6-terra",
+        sonnet_context_window: 400_000,
+        opus_model: "gpt-5.5",
+        opus_context_window: 800_000,
+      },
+    });
+
+    const duplicated = buildDuplicatedProviderInitialValues(provider, [], null);
+
+    expect(duplicated.claude_models).toEqual(provider.claude_models);
+    expect(duplicated.claude_models).not.toBe(provider.claude_models);
+  });
 });

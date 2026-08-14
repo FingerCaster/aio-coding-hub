@@ -38,7 +38,7 @@ TypeScript bindings, frontend adapters, and React UI.
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.
 - [Provider share and import contract](./provider-share-contract.md): strict
-  single-provider v1-v3 compatibility reads and strict v4 exports, backend-owned
+  single-provider v1-v4 compatibility reads and strict v5 exports, backend-owned
   secrets/native I/O, bounded preview capabilities, plugin snapshot binding,
   additive disabled import, and exclusion of private account identity/token data.
 - [Config migration bundle contract](./config-migration-skill-bundle-contract.md):
@@ -121,7 +121,7 @@ When changing configured model routing:
    URL/fingerprint/body finalization and transport commit.
 4. Verify route-application failure switches Provider without transport retry,
    health/circuit/account/session mutation, or a second client request.
-5. Recheck settings 57, SQLite 45, Provider share v4, config bundle v4, and
+5. Recheck settings 57, SQLite 45, Provider share v5, config bundle v4, and
    generated TypeScript bindings together.
 
 When changing CX2CC routing, reasoning, model presets, context projection, or

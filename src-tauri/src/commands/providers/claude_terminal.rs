@@ -4,6 +4,7 @@ use crate::gateway_control::app_ensure_gateway_running;
 use crate::shared::ipc_confirm::RiskyIpcConfirm;
 use crate::{base_url_probe, blocking, providers};
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -39,6 +40,12 @@ impl ClaudeTerminalContextWindowProjection {
             Self::NotApplicable | Self::Unknown(_) => None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EffectiveCx2ccSlot {
+    remote_model_id: String,
+    custom_context_window: Option<u64>,
 }
 
 #[tauri::command]
@@ -93,95 +100,175 @@ fn resolve_cx2cc_terminal_context_window<R: tauri::Runtime>(
     launch: &providers::ClaudeTerminalLaunchContext,
 ) -> crate::shared::error::AppResult<ClaudeTerminalContextWindowProjection> {
     let settings = crate::settings::read(app)?;
-    let remote_model_ids = process_remote_model_ids(launch, &settings);
-    if remote_model_ids.is_empty() {
+    let slots = match effective_cx2cc_slots(launch, &settings) {
+        Ok(slots) => slots,
+        Err(reason) => return Ok(ClaudeTerminalContextWindowProjection::Unknown(reason)),
+    };
+
+    let needs_catalog = slots
+        .iter()
+        .any(|slot| slot.custom_context_window.is_none());
+    let provider_identities = if needs_catalog {
+        match launch.source_provider_id {
+            Some(provider_id) => {
+                let Some(provider_uuid) = launch.source_provider_uuid.as_ref() else {
+                    return Ok(ClaudeTerminalContextWindowProjection::Unknown(
+                        "source_identity_unavailable",
+                    ));
+                };
+                vec![(provider_id, provider_uuid.clone())]
+            }
+            None => providers::list_enabled_for_gateway_using_active_mode(db, "codex")?
+                .providers
+                .into_iter()
+                .map(|provider| (provider.id, provider.provider_uuid))
+                .collect(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    resolve_effective_slot_context_window(&slots, |remote_model_id| {
+        let candidates = context_window_candidates(&provider_identities, remote_model_id);
+        Ok(
+            match crate::provider_models::resolve_context_window_projection(db, &candidates)? {
+                crate::provider_models::ProviderModelContextWindowProjection::Exact {
+                    context_window,
+                } => ClaudeTerminalContextWindowProjection::Exact(context_window),
+                crate::provider_models::ProviderModelContextWindowProjection::Mixed {
+                    conservative_context_window,
+                } => ClaudeTerminalContextWindowProjection::Mixed(conservative_context_window),
+                crate::provider_models::ProviderModelContextWindowProjection::Unknown {
+                    reason,
+                } => ClaudeTerminalContextWindowProjection::Unknown(reason.as_str()),
+            },
+        )
+    })
+}
+
+fn effective_cx2cc_slots(
+    launch: &providers::ClaudeTerminalLaunchContext,
+    settings: &crate::settings::AppSettings,
+) -> Result<Vec<EffectiveCx2ccSlot>, &'static str> {
+    let models = &launch.claude_models;
+    let slots = [
+        (
+            models.opus_model.as_deref(),
+            settings.cx2cc_fallback_model_opus.as_str(),
+            models.opus_context_window,
+        ),
+        (
+            models.haiku_model.as_deref(),
+            settings.cx2cc_fallback_model_haiku.as_str(),
+            models.haiku_context_window,
+        ),
+        (
+            models.sonnet_model.as_deref(),
+            settings.cx2cc_fallback_model_sonnet.as_str(),
+            models.sonnet_context_window,
+        ),
+        (
+            models.main_model.as_deref(),
+            settings.cx2cc_fallback_model_main.as_str(),
+            models.main_context_window,
+        ),
+    ];
+
+    let minimum = crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS as u64;
+    let maximum = crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS as u64;
+    slots
+        .into_iter()
+        .map(|(custom_model, fallback_model, custom_context_window)| {
+            if custom_context_window.is_some() && custom_model.is_none() {
+                return Err("custom_context_model_unavailable");
+            }
+            if custom_context_window.is_some_and(|value| !(minimum..=maximum).contains(&value)) {
+                return Err("custom_context_invalid");
+            }
+            let remote_model_id = custom_model.unwrap_or(fallback_model).trim();
+            if remote_model_id.is_empty() {
+                return Err("process_model_unavailable");
+            }
+            Ok(EffectiveCx2ccSlot {
+                remote_model_id: remote_model_id.to_string(),
+                custom_context_window,
+            })
+        })
+        .collect()
+}
+
+fn resolve_effective_slot_context_window(
+    slots: &[EffectiveCx2ccSlot],
+    mut resolve_catalog: impl FnMut(
+        &str,
+    ) -> crate::shared::error::AppResult<
+        ClaudeTerminalContextWindowProjection,
+    >,
+) -> crate::shared::error::AppResult<ClaudeTerminalContextWindowProjection> {
+    if slots.is_empty() {
         return Ok(ClaudeTerminalContextWindowProjection::Unknown(
             "process_model_unavailable",
         ));
     }
 
-    let provider_identities = match launch.source_provider_id {
-        Some(provider_id) => {
-            let Some(provider_uuid) = launch.source_provider_uuid.as_ref() else {
-                return Ok(ClaudeTerminalContextWindowProjection::Unknown(
-                    "source_identity_unavailable",
-                ));
-            };
-            vec![(provider_id, provider_uuid.clone())]
-        }
-        None => providers::list_enabled_for_gateway_using_active_mode(db, "codex")?
-            .providers
-            .into_iter()
-            .map(|provider| (provider.id, provider.provider_uuid))
-            .collect(),
-    };
-    let candidates = context_window_candidates(&provider_identities, &remote_model_ids);
+    let mut catalog_cache = HashMap::new();
+    let mut windows = Vec::with_capacity(slots.len());
+    let mut has_mixed_projection = false;
+    for slot in slots {
+        let projection = if let Some(context_window) = slot.custom_context_window {
+            ClaudeTerminalContextWindowProjection::Exact(context_window)
+        } else if let Some(projection) = catalog_cache.get(&slot.remote_model_id).copied() {
+            projection
+        } else {
+            let projection = resolve_catalog(&slot.remote_model_id)?;
+            catalog_cache.insert(slot.remote_model_id.clone(), projection);
+            projection
+        };
 
-    Ok(
-        match crate::provider_models::resolve_context_window_projection(db, &candidates)? {
-            crate::provider_models::ProviderModelContextWindowProjection::Exact {
-                context_window,
-            } => ClaudeTerminalContextWindowProjection::Exact(context_window),
-            crate::provider_models::ProviderModelContextWindowProjection::Mixed {
-                conservative_context_window,
-            } => ClaudeTerminalContextWindowProjection::Mixed(conservative_context_window),
-            crate::provider_models::ProviderModelContextWindowProjection::Unknown { reason } => {
-                ClaudeTerminalContextWindowProjection::Unknown(reason.as_str())
+        match projection {
+            ClaudeTerminalContextWindowProjection::Exact(context_window) => {
+                windows.push(context_window);
             }
-        },
-    )
-}
-
-fn process_remote_model_ids(
-    launch: &providers::ClaudeTerminalLaunchContext,
-    settings: &crate::settings::AppSettings,
-) -> Vec<String> {
-    let models = [
-        launch
-            .claude_models
-            .opus_model
-            .as_deref()
-            .unwrap_or(&settings.cx2cc_fallback_model_opus),
-        launch
-            .claude_models
-            .haiku_model
-            .as_deref()
-            .unwrap_or(&settings.cx2cc_fallback_model_haiku),
-        launch
-            .claude_models
-            .sonnet_model
-            .as_deref()
-            .unwrap_or(&settings.cx2cc_fallback_model_sonnet),
-        launch
-            .claude_models
-            .main_model
-            .as_deref()
-            .unwrap_or(&settings.cx2cc_fallback_model_main),
-    ];
-    let mut unique = Vec::new();
-    for model in models {
-        if !unique.iter().any(|existing| existing == model) {
-            unique.push(model.to_string());
+            ClaudeTerminalContextWindowProjection::Mixed(context_window) => {
+                has_mixed_projection = true;
+                windows.push(context_window);
+            }
+            ClaudeTerminalContextWindowProjection::Unknown(reason) => {
+                return Ok(ClaudeTerminalContextWindowProjection::Unknown(reason));
+            }
+            ClaudeTerminalContextWindowProjection::NotApplicable => {
+                return Ok(ClaudeTerminalContextWindowProjection::Unknown(
+                    "catalog_projection_unavailable",
+                ));
+            }
         }
     }
-    unique
+
+    let Some(minimum) = windows.iter().copied().min() else {
+        return Ok(ClaudeTerminalContextWindowProjection::Unknown(
+            "process_model_unavailable",
+        ));
+    };
+    if has_mixed_projection || windows.iter().any(|window| *window != minimum) {
+        Ok(ClaudeTerminalContextWindowProjection::Mixed(minimum))
+    } else {
+        Ok(ClaudeTerminalContextWindowProjection::Exact(minimum))
+    }
 }
 
 fn context_window_candidates(
     provider_identities: &[(i64, String)],
-    remote_model_ids: &[String],
+    remote_model_id: &str,
 ) -> Vec<crate::provider_models::ProviderModelContextWindowCandidate> {
-    let mut candidates = Vec::with_capacity(provider_identities.len() * remote_model_ids.len());
+    let mut candidates = Vec::with_capacity(provider_identities.len());
     for (provider_id, provider_uuid) in provider_identities {
-        for remote_model_id in remote_model_ids {
-            candidates.push(
-                crate::provider_models::ProviderModelContextWindowCandidate {
-                    provider_id: *provider_id,
-                    provider_uuid: provider_uuid.clone(),
-                    remote_model_id: remote_model_id.clone(),
-                },
-            );
-        }
+        candidates.push(
+            crate::provider_models::ProviderModelContextWindowCandidate {
+                provider_id: *provider_id,
+                provider_uuid: provider_uuid.clone(),
+                remote_model_id: remote_model_id.to_string(),
+            },
+        );
     }
     candidates
 }
@@ -650,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn process_projection_uses_the_mapper_target_when_all_slots_match() {
+    fn effective_slots_keep_each_mapper_slot_and_ignore_reasoning_model() {
         let settings = crate::settings::AppSettings {
             cx2cc_fallback_model_opus: "gpt-fallback".to_string(),
             cx2cc_fallback_model_sonnet: "gpt-fallback".to_string(),
@@ -659,49 +746,191 @@ mod tests {
             ..Default::default()
         };
         let launch = cx2cc_launch_context(crate::providers::ClaudeModels {
-            main_model: Some("gpt-5.6".to_string()),
-            haiku_model: Some("gpt-5.6".to_string()),
-            sonnet_model: Some("gpt-5.6".to_string()),
-            opus_model: Some("gpt-5.6".to_string()),
+            main_model: Some("gpt-5.6-sol".to_string()),
+            haiku_model: Some("gpt-5.6-sol".to_string()),
+            sonnet_model: Some("gpt-5.6-sol".to_string()),
+            opus_model: Some("gpt-5.6-sol".to_string()),
             reasoning_model: Some("not-used-by-cx2cc-mapper".to_string()),
+            main_context_window: Some(1_000_000),
+            haiku_context_window: Some(800_000),
+            sonnet_context_window: Some(600_000),
+            opus_context_window: Some(400_000),
         });
 
         assert_eq!(
-            process_remote_model_ids(&launch, &settings),
-            vec!["gpt-5.6"]
+            effective_cx2cc_slots(&launch, &settings).expect("effective slots"),
+            vec![
+                EffectiveCx2ccSlot {
+                    remote_model_id: "gpt-5.6-sol".to_string(),
+                    custom_context_window: Some(400_000),
+                },
+                EffectiveCx2ccSlot {
+                    remote_model_id: "gpt-5.6-sol".to_string(),
+                    custom_context_window: Some(800_000),
+                },
+                EffectiveCx2ccSlot {
+                    remote_model_id: "gpt-5.6-sol".to_string(),
+                    custom_context_window: Some(600_000),
+                },
+                EffectiveCx2ccSlot {
+                    remote_model_id: "gpt-5.6-sol".to_string(),
+                    custom_context_window: Some(1_000_000),
+                },
+            ]
         );
     }
 
     #[test]
-    fn process_projection_includes_each_distinct_mapper_target() {
+    fn effective_slots_use_per_slot_fallback_without_copying_custom_context() {
         let settings = crate::settings::AppSettings {
-            cx2cc_fallback_model_opus: "gpt-5.6".to_string(),
-            cx2cc_fallback_model_sonnet: "gpt-5.6".to_string(),
-            cx2cc_fallback_model_haiku: "gpt-5.6".to_string(),
-            cx2cc_fallback_model_main: "gpt-5.6".to_string(),
+            cx2cc_fallback_model_opus: "fallback-opus".to_string(),
+            cx2cc_fallback_model_sonnet: "fallback-sonnet".to_string(),
+            cx2cc_fallback_model_haiku: "fallback-haiku".to_string(),
+            cx2cc_fallback_model_main: "fallback-main".to_string(),
             ..Default::default()
         };
         let launch = cx2cc_launch_context(crate::providers::ClaudeModels {
             opus_model: Some("gpt-5.6-sol".to_string()),
+            opus_context_window: Some(900_000),
             ..Default::default()
         });
 
         assert_eq!(
-            process_remote_model_ids(&launch, &settings),
-            vec!["gpt-5.6-sol", "gpt-5.6"]
+            effective_cx2cc_slots(&launch, &settings).expect("effective slots"),
+            vec![
+                EffectiveCx2ccSlot {
+                    remote_model_id: "gpt-5.6-sol".to_string(),
+                    custom_context_window: Some(900_000),
+                },
+                EffectiveCx2ccSlot {
+                    remote_model_id: "fallback-haiku".to_string(),
+                    custom_context_window: None,
+                },
+                EffectiveCx2ccSlot {
+                    remote_model_id: "fallback-sonnet".to_string(),
+                    custom_context_window: None,
+                },
+                EffectiveCx2ccSlot {
+                    remote_model_id: "fallback-main".to_string(),
+                    custom_context_window: None,
+                },
+            ]
         );
     }
 
     #[test]
-    fn context_projection_queries_every_mapper_target_for_every_provider() {
+    fn slot_projection_prefers_custom_context_and_deduplicates_catalog_fallbacks() {
+        let slots = vec![
+            EffectiveCx2ccSlot {
+                remote_model_id: "shared".to_string(),
+                custom_context_window: Some(900_000),
+            },
+            EffectiveCx2ccSlot {
+                remote_model_id: "shared".to_string(),
+                custom_context_window: None,
+            },
+            EffectiveCx2ccSlot {
+                remote_model_id: "shared".to_string(),
+                custom_context_window: None,
+            },
+            EffectiveCx2ccSlot {
+                remote_model_id: "other".to_string(),
+                custom_context_window: None,
+            },
+        ];
+        let mut calls = Vec::new();
+        let projection = resolve_effective_slot_context_window(&slots, |model| {
+            calls.push(model.to_string());
+            Ok(ClaudeTerminalContextWindowProjection::Exact(900_000))
+        })
+        .expect("projection");
+
+        assert_eq!(
+            projection,
+            ClaudeTerminalContextWindowProjection::Exact(900_000)
+        );
+        assert_eq!(calls, vec!["shared", "other"]);
+    }
+
+    #[test]
+    fn slot_projection_keeps_same_model_custom_contexts_separate_and_uses_minimum() {
+        let slots = [
+            EffectiveCx2ccSlot {
+                remote_model_id: "shared".to_string(),
+                custom_context_window: Some(1_000_000),
+            },
+            EffectiveCx2ccSlot {
+                remote_model_id: "shared".to_string(),
+                custom_context_window: Some(400_000),
+            },
+        ];
+        let projection = resolve_effective_slot_context_window(&slots, |_| {
+            panic!("custom context must bypass catalog resolution")
+        })
+        .expect("projection");
+
+        assert_eq!(
+            projection,
+            ClaudeTerminalContextWindowProjection::Mixed(400_000)
+        );
+    }
+
+    #[test]
+    fn slot_projection_fails_closed_on_unknown_and_preserves_catalog_mixed() {
+        let slots = [EffectiveCx2ccSlot {
+            remote_model_id: "catalog".to_string(),
+            custom_context_window: None,
+        }];
+        let unknown = resolve_effective_slot_context_window(&slots, |_| {
+            Ok(ClaudeTerminalContextWindowProjection::Unknown(
+                "catalog_unavailable",
+            ))
+        })
+        .expect("unknown projection");
+        assert_eq!(
+            unknown,
+            ClaudeTerminalContextWindowProjection::Unknown("catalog_unavailable")
+        );
+
+        let mixed = resolve_effective_slot_context_window(&slots, |_| {
+            Ok(ClaudeTerminalContextWindowProjection::Mixed(300_000))
+        })
+        .expect("mixed projection");
+        assert_eq!(mixed, ClaudeTerminalContextWindowProjection::Mixed(300_000));
+    }
+
+    #[test]
+    fn effective_slots_fail_closed_for_unpaired_or_invalid_custom_context() {
+        let settings = crate::settings::AppSettings::default();
+        let unpaired = cx2cc_launch_context(crate::providers::ClaudeModels {
+            main_context_window: Some(1_000_000),
+            ..Default::default()
+        });
+        assert_eq!(
+            effective_cx2cc_slots(&unpaired, &settings),
+            Err("custom_context_model_unavailable")
+        );
+
+        let invalid = cx2cc_launch_context(crate::providers::ClaudeModels {
+            main_model: Some("gpt-5.6-sol".to_string()),
+            main_context_window: Some(1_023),
+            ..Default::default()
+        });
+        assert_eq!(
+            effective_cx2cc_slots(&invalid, &settings),
+            Err("custom_context_invalid")
+        );
+    }
+
+    #[test]
+    fn context_projection_queries_every_provider_for_one_mapper_target() {
         let providers = [
             (1, "provider-one".to_string()),
             (2, "provider-two".to_string()),
         ];
-        let models = ["gpt-5.6-sol".to_string(), "gpt-5.6".to_string()];
 
         assert_eq!(
-            context_window_candidates(&providers, &models),
+            context_window_candidates(&providers, "gpt-5.6-sol"),
             vec![
                 crate::provider_models::ProviderModelContextWindowCandidate {
                     provider_id: 1,
@@ -709,19 +938,9 @@ mod tests {
                     remote_model_id: "gpt-5.6-sol".to_string(),
                 },
                 crate::provider_models::ProviderModelContextWindowCandidate {
-                    provider_id: 1,
-                    provider_uuid: "provider-one".to_string(),
-                    remote_model_id: "gpt-5.6".to_string(),
-                },
-                crate::provider_models::ProviderModelContextWindowCandidate {
                     provider_id: 2,
                     provider_uuid: "provider-two".to_string(),
                     remote_model_id: "gpt-5.6-sol".to_string(),
-                },
-                crate::provider_models::ProviderModelContextWindowCandidate {
-                    provider_id: 2,
-                    provider_uuid: "provider-two".to_string(),
-                    remote_model_id: "gpt-5.6".to_string(),
                 },
             ]
         );

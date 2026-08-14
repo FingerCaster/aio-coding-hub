@@ -26,6 +26,7 @@ fn claude_models_type_slot_prevents_thinking_reasoning_override() {
         haiku_model: Some("claude-haiku-4-5-20251001".to_string()),
         sonnet_model: Some("glm-sonnet".to_string()),
         opus_model: Some("glm-opus".to_string()),
+        ..Default::default()
     }
     .normalized();
 
@@ -45,6 +46,7 @@ fn claude_models_thinking_uses_reasoning_for_unknown_model() {
         haiku_model: Some("glm-haiku".to_string()),
         sonnet_model: Some("glm-sonnet".to_string()),
         opus_model: Some("glm-opus".to_string()),
+        ..Default::default()
     }
     .normalized();
 
@@ -89,6 +91,15 @@ fn claude_models_has_any_false_for_default() {
 fn claude_models_has_any_true_with_main_model() {
     let models = ClaudeModels {
         main_model: Some("test".to_string()),
+        ..Default::default()
+    };
+    assert!(models.has_any());
+}
+
+#[test]
+fn claude_models_has_any_true_with_context_only() {
+    let models = ClaudeModels {
+        main_context_window: Some(1_000_000),
         ..Default::default()
     };
     assert!(models.has_any());
@@ -185,6 +196,7 @@ fn claude_terminal_launch_context_keeps_cx2cc_mapper_and_source_identity() {
         haiku_model: Some("gpt-5.6-luna".to_string()),
         sonnet_model: Some("gpt-5.6-terra".to_string()),
         opus_model: Some("gpt-5.6-sol".to_string()),
+        ..Default::default()
     });
     let bridge = upsert(&db, bridge_params).expect("insert cx2cc bridge");
 
@@ -473,6 +485,10 @@ fn base_urls_from_row_returns_empty_vec_when_all_empty() {
 fn claude_models_from_json_valid() {
     let models = claude_models_from_json(r#"{"main_model":"test-model"}"#);
     assert_eq!(models.main_model, Some("test-model".to_string()));
+    assert!(models.main_context_window.is_none());
+    assert!(models.haiku_context_window.is_none());
+    assert!(models.sonnet_context_window.is_none());
+    assert!(models.opus_context_window.is_none());
 }
 
 #[test]
@@ -521,6 +537,159 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         model_routing_policy_override: None,
         model_routing_policy_override_specified: false,
     }
+}
+
+fn cx2cc_provider_params(name: &str, claude_models: ClaudeModels) -> ProviderUpsertParams {
+    let mut params = default_provider_params(name);
+    params.base_urls.clear();
+    params.api_key = None;
+    params.bridge_type = Some(CX2CC_BRIDGE_TYPE.to_string());
+    params.claude_models = Some(claude_models);
+    params
+}
+
+#[test]
+fn cx2cc_context_windows_round_trip_at_inclusive_bounds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db =
+        crate::db::init_for_tests(&dir.path().join("providers_cx2cc_context.db")).expect("init db");
+    let minimum = crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS as u64;
+    let maximum = crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS as u64;
+    let saved = upsert(
+        &db,
+        cx2cc_provider_params(
+            "cx2cc-context",
+            ClaudeModels {
+                main_model: Some("gpt-5.6-sol".to_string()),
+                haiku_model: Some("gpt-5.6-luna".to_string()),
+                sonnet_model: Some("gpt-5.6-terra".to_string()),
+                opus_model: Some("gpt-5.6-sol".to_string()),
+                main_context_window: Some(minimum),
+                haiku_context_window: Some(200_000),
+                sonnet_context_window: Some(1_000_000),
+                opus_context_window: Some(maximum),
+                ..Default::default()
+            },
+        ),
+    )
+    .expect("save CX2CC context windows");
+
+    assert_eq!(saved.claude_models.main_context_window, Some(minimum));
+    assert_eq!(saved.claude_models.haiku_context_window, Some(200_000));
+    assert_eq!(saved.claude_models.sonnet_context_window, Some(1_000_000));
+    assert_eq!(saved.claude_models.opus_context_window, Some(maximum));
+    let launch = claude_terminal_launch_context(&db, saved.id).expect("launch context");
+    assert_eq!(launch.claude_models, saved.claude_models);
+}
+
+#[test]
+fn context_windows_require_cx2cc_and_an_explicit_same_slot_model() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db =
+        crate::db::init_for_tests(&dir.path().join("providers_context_scope.db")).expect("init db");
+
+    let mut ordinary = default_provider_params("ordinary-context");
+    ordinary.claude_models = Some(ClaudeModels {
+        main_model: Some("gpt-5.6-sol".to_string()),
+        main_context_window: Some(1_000_000),
+        ..Default::default()
+    });
+    let error = upsert(&db, ordinary).expect_err("ordinary Claude context must fail");
+    assert!(error.to_string().contains("bridge_type=cx2cc"));
+
+    let error = upsert(
+        &db,
+        cx2cc_provider_params(
+            "unpaired-context",
+            ClaudeModels {
+                main_context_window: Some(1_000_000),
+                ..Default::default()
+            },
+        ),
+    )
+    .expect_err("context-only slot must fail");
+    assert!(error
+        .to_string()
+        .contains("explicit model in the same slot"));
+
+    let error = upsert(
+        &db,
+        cx2cc_provider_params(
+            "context-below-minimum",
+            ClaudeModels {
+                main_model: Some("gpt-5.6-sol".to_string()),
+                main_context_window: Some(
+                    crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS as u64 - 1,
+                ),
+                ..Default::default()
+            },
+        ),
+    )
+    .expect_err("below-minimum context must fail");
+    assert!(error.to_string().contains("must be between"));
+}
+
+#[test]
+fn invalid_context_update_is_atomic_and_preserves_committed_provider() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = crate::db::init_for_tests(&dir.path().join("providers_context_atomic.db"))
+        .expect("init db");
+    let saved = upsert(
+        &db,
+        cx2cc_provider_params(
+            "atomic-context",
+            ClaudeModels {
+                main_model: Some("gpt-5.6-sol".to_string()),
+                main_context_window: Some(1_000_000),
+                ..Default::default()
+            },
+        ),
+    )
+    .expect("save valid provider");
+
+    let mut update = cx2cc_provider_params(
+        "atomic-context",
+        ClaudeModels {
+            main_model: Some("gpt-5.6-terra".to_string()),
+            main_context_window: Some(
+                crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS as u64 + 1,
+            ),
+            ..Default::default()
+        },
+    );
+    update.provider_id = Some(saved.id);
+    let error = upsert(&db, update).expect_err("out-of-range update must fail");
+    assert!(error.to_string().contains("must be between"));
+
+    let conn = db.open_connection().expect("open db");
+    let persisted = get_by_id(&conn, saved.id).expect("read persisted provider");
+    assert_eq!(
+        persisted.claude_models.main_model.as_deref(),
+        Some("gpt-5.6-sol")
+    );
+    assert_eq!(persisted.claude_models.main_context_window, Some(1_000_000));
+}
+
+#[test]
+fn overlong_model_update_is_rejected_before_normalization() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db =
+        crate::db::init_for_tests(&dir.path().join("providers_model_length.db")).expect("init db");
+    let saved =
+        upsert(&db, default_provider_params("model-length")).expect("save initial provider");
+
+    let mut update = default_provider_params("model-length");
+    update.provider_id = Some(saved.id);
+    update.claude_models = Some(ClaudeModels {
+        main_model: Some("x".repeat(MAX_MODEL_NAME_LEN + 1)),
+        ..Default::default()
+    });
+    let error = upsert(&db, update).expect_err("overlong raw model must fail");
+    assert!(error.to_string().contains("main_model"));
+
+    let conn = db.open_connection().expect("open db");
+    let persisted = get_by_id(&conn, saved.id).expect("read persisted provider");
+    assert!(persisted.claude_models.main_model.is_none());
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1602,23 +1771,29 @@ fn upsert_rejects_grok_cx2cc_provider() {
 }
 
 #[test]
-fn upsert_rejects_grok_claude_model_fields() {
+fn upsert_rejects_claude_model_fields_for_every_non_claude_cli() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let db_path = dir.path().join("providers_grok_claude_models.db");
+    let db_path = dir.path().join("providers_non_claude_models.db");
     let db = crate::db::init_for_tests(&db_path).expect("init db");
 
-    let mut params = default_provider_params("grok-claude-models");
-    params.cli_key = "grok".to_string();
-    params.claude_models = Some(ClaudeModels {
-        main_model: Some("not-applicable".to_string()),
-        ..ClaudeModels::default()
-    });
+    for cli_key in ["codex", "gemini", "grok"] {
+        let mut params = default_provider_params(&format!("{cli_key}-claude-models"));
+        params.cli_key = cli_key.to_string();
+        params.claude_models = Some(ClaudeModels {
+            main_model: Some("not-applicable".to_string()),
+            main_context_window: Some(1_000_000),
+            ..ClaudeModels::default()
+        });
 
-    let error = upsert(&db, params).expect_err("Grok Claude model fields must be rejected");
+        let error = match upsert(&db, params) {
+            Ok(_) => panic!("{cli_key} Claude model fields must be rejected"),
+            Err(error) => error,
+        };
 
-    assert!(error
-        .to_string()
-        .contains("claude_models is only supported for cli_key=claude"));
+        assert!(error
+            .to_string()
+            .contains("claude_models is only supported for cli_key=claude"));
+    }
 }
 
 #[test]

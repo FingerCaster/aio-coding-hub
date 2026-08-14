@@ -386,6 +386,13 @@ same SQLite transaction that inserts the provider and canonical extension.
   behavior and adds a canonical provider UUID for every provider plus UUID
   links for bridge sources. A v4 bundle never derives provider identity from
   numeric IDs, names, or ordering.
+- Schema v4 keeps Provider `claude_models_json` as an additive nested payload.
+  It round-trips `main_context_window`, `haiku_context_window`,
+  `sonnet_context_window`, and `opus_context_window` exactly. Before any
+  destructive import work, every present context must belong to a Claude
+  CX2CC Provider, have a non-empty model in the same slot, and be an integer in
+  `1024..=10000000`; legacy payloads with no context retain their existing
+  behavior.
 - Schema v4 provider UUIDs are canonical lowercase UUIDv4 values, are unique
   across the bundle, and source UUID references must resolve to a different
   provider in the same bundle. Validate these facts before any destructive
@@ -449,6 +456,8 @@ same SQLite transaction that inserts the provider and canonical extension.
 | Schema v3 with no credential snapshot | Restore provider/config without a private row |
 | Schema v4 with valid provider/source UUIDs | Restore v3 state and retain exact provider identity links |
 | Schema v4 with missing, invalid, duplicate, or dangling UUID | Reject before destructive import |
+| Provider has four valid CX2CC context windows | Preserve all four through export, preparation, and transactional import |
+| Context belongs to a non-CX2CC/non-Claude Provider, lacks its same-slot model, or is out of range | `SEC_INVALID_INPUT` before destructive import |
 | Any supported bundle version contains a retired Codex translation bridge | `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED` before import lock, DB clear, settings write, or Skill FS activation |
 | Provider `model_mapping_json` compatibility field is non-empty | Normalize it to `{}` during preparation and export; do not restore runtime mapping semantics |
 | Schema v1-v3 while local managed profiles exist | Reject before replacing providers |
@@ -490,6 +499,8 @@ same SQLite transaction that inserts the provider and canonical extension.
 - Assert export emits schema v4, canonical account config, stable provider
   UUIDs, and synthetic
   credentials only for providers that have private data.
+- Round-trip all four CX2CC context windows through a schema-v4 export/import,
+  and reject ordinary, unpaired, and out-of-range contexts before replacement.
 - Run a v1/v2/v3/v4 matrix proving the independent Skill, account-snapshot,
   and provider-UUID capability thresholds, including v2's full Skill
   requirements.

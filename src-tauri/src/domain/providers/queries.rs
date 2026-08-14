@@ -1656,7 +1656,7 @@ pub(crate) fn upsert_with_provider_uuid(
     let requested_auth_mode = auth_mode.unwrap_or(ProviderAuthMode::ApiKey);
     let is_oauth = requested_auth_mode == ProviderAuthMode::Oauth;
 
-    if cli_key == "grok" && claude_models.as_ref().is_some_and(ClaudeModels::has_any) {
+    if cli_key != "claude" && claude_models.as_ref().is_some_and(ClaudeModels::has_any) {
         return Err(
             "SEC_INVALID_INPUT: claude_models is only supported for cli_key=claude"
                 .to_string()
@@ -1827,7 +1827,7 @@ pub(crate) fn upsert_with_provider_uuid(
 
             let claude_models = if cli_key == "claude" {
                 let models = claude_models.unwrap_or_default();
-                validate_claude_models(&models)?;
+                validate_claude_models(&models, is_cx2cc)?;
                 models.normalized()
             } else {
                 ClaudeModels::default()
@@ -2049,7 +2049,7 @@ INSERT INTO providers(
 
             let next_claude_models = match claude_models {
                 Some(v) if cli_key == "claude" => {
-                    validate_claude_models(&v)?;
+                    validate_claude_models(&v, is_cx2cc)?;
                     Some(v.normalized())
                 }
                 _ => None,
@@ -2058,6 +2058,9 @@ INSERT INTO providers(
             let final_claude_models = next_claude_models
                 .as_ref()
                 .unwrap_or(&existing_claude_models);
+            if cli_key == "claude" {
+                validate_claude_models(final_claude_models, is_cx2cc)?;
+            }
             let next_claude_models_json = if cli_key == "claude" {
                 serde_json::to_string(final_claude_models)
                     .map_err(|e| format!("SYSTEM_ERROR: {e}"))?

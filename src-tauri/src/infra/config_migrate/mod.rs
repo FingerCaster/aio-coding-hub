@@ -357,6 +357,43 @@ fn prepare_provider_identities(
     Ok(())
 }
 
+fn validate_provider_context_windows(provider: &ProviderExport) -> AppResult<()> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&provider.claude_models_json) else {
+        return Ok(());
+    };
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    let context_fields = [
+        "main_context_window",
+        "haiku_context_window",
+        "sonnet_context_window",
+        "opus_context_window",
+    ];
+    if !context_fields
+        .iter()
+        .any(|field| object.contains_key(*field))
+    {
+        return Ok(());
+    }
+    if provider.cli_key != "claude" {
+        return Err(crate::shared::error::AppError::new(
+            "SEC_INVALID_INPUT",
+            "config bundle Claude model context windows require cli_key=claude",
+        ));
+    }
+    let models: crate::providers::ClaudeModels = serde_json::from_value(value).map_err(|_| {
+        crate::shared::error::AppError::new(
+            "SEC_INVALID_INPUT",
+            "config bundle Claude model context windows are invalid",
+        )
+    })?;
+    crate::providers::validate_claude_models(
+        &models,
+        provider.bridge_type.as_deref().map(str::trim) == Some("cx2cc"),
+    )
+}
+
 // --- Public entry points ---
 
 pub fn config_export<R: tauri::Runtime>(
@@ -476,6 +513,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         ));
     }
     for provider in &mut providers {
+        validate_provider_context_windows(provider)?;
         provider.model_mapping_json = default_empty_json_object();
         if imports_model_routing {
             if let Some(policy) = provider.model_routing_policy_override.as_mut() {

@@ -71,7 +71,7 @@ export function buildDuplicatedProviderInitialValues(
     auth_mode: provider.auth_mode,
     base_urls: [...provider.base_urls],
     base_url_mode: provider.base_url_mode,
-    claude_models: { ...(provider.claude_models ?? {}) } as ClaudeModels,
+    claude_models: { ...(provider.claude_models ?? {}) },
     availability_test_model: provider.availability_test_model ?? "",
     enabled: provider.enabled,
     cost_multiplier: provider.cost_multiplier,

@@ -768,6 +768,24 @@ mod tests {
         );
         assert_eq!(
             request(json!({
+                "output_config": {"effort": "ultra"}
+            })),
+            IRReasoningConfig::Effort("ultra".to_string())
+        );
+        for non_string_effort in [
+            serde_json::Value::Null,
+            json!(42),
+            json!(true),
+            json!([]),
+            json!({}),
+        ] {
+            assert_eq!(
+                request(json!({"output_config": {"effort": non_string_effort}})),
+                IRReasoningConfig::Absent
+            );
+        }
+        assert_eq!(
+            request(json!({
                 "thinking": {"type": "disabled"},
                 "output_config": {"effort": "high"}
             })),

@@ -1,0 +1,28 @@
+{
+  "id": "cx2cc-gpt56-sol-context",
+  "name": "cx2cc-gpt56-sol-context",
+  "title": "修正 CX2CC GPT-5.6 Sol 默认与模型上下文",
+  "description": "移除供应商选择器不提供的裸 gpt-5.6 alias，统一默认 gpt-5.6-sol，并增加 CX2CC 模型级上下文窗口自定义与安全投影。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "settings,gateway,cx2cc,frontend,bindings,release",
+  "package": "aio-coding-hub",
+  "priority": "P1",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-14",
+  "completedAt": null,
+  "branch": "FingerCaster/gpt56-sol-context-beta6",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/gpt56-sol-context-beta6"
+  }
+}

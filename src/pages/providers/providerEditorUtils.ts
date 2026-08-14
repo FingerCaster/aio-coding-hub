@@ -33,7 +33,6 @@ export const CX2CC_GLOBAL_SOURCE_VALUE = "__codex_gateway__";
 export const CX2CC_PROXY_TOKEN = "aio-coding-hub";
 const CX2CC_MODEL_MAPPING_KEYS = [
   "main_model",
-  "reasoning_model",
   "haiku_model",
   "sonnet_model",
   "opus_model",
@@ -96,10 +95,19 @@ export function withCx2ccDefaultModel(
   return {
     ...value,
     main_model: normalizeCx2ccModelName(value.main_model) ?? defaultModel,
-    reasoning_model: normalizeCx2ccModelName(value.reasoning_model) ?? defaultModel,
     haiku_model: normalizeCx2ccModelName(value.haiku_model) ?? defaultModel,
     sonnet_model: normalizeCx2ccModelName(value.sonnet_model) ?? defaultModel,
     opus_model: normalizeCx2ccModelName(value.opus_model) ?? defaultModel,
+  };
+}
+
+export function withoutCx2ccContextWindows(value: ClaudeModels): ClaudeModels {
+  return {
+    ...value,
+    main_context_window: null,
+    haiku_context_window: null,
+    sonnet_context_window: null,
+    opus_context_window: null,
   };
 }
 

@@ -55,11 +55,11 @@ InternalReentryRegistry::consume(nonce, cli_key, method, path, query)
 The shared new/blank default is exposed by both layers:
 
 ```rust
-pub const DEFAULT_CX2CC_FALLBACK_MODEL: &str = "gpt-5.5";
+pub const DEFAULT_CX2CC_FALLBACK_MODEL: &str = "gpt-5.6-sol";
 ```
 
 ```typescript
-export const CX2CC_PROVIDER_DEFAULT_MODEL = "gpt-5.5";
+export const CX2CC_PROVIDER_DEFAULT_MODEL = "gpt-5.6-sol";
 ```
 
 Tests for defaults must reference these constants instead of repeating model
@@ -74,9 +74,18 @@ literals.
   and must not be projected as one.
 - A configured slot wins; otherwise the matching global fallback wins. The
   translated Responses body model is authoritative for cost and wire identity.
-- The selectable CX2CC preset catalog includes `gpt-5.6`, `gpt-5.6-sol`,
-  `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4`. Manual and unknown
-  historical values remain editable.
+- The selectable CX2CC preset catalog includes `gpt-5.6-sol`, `gpt-5.6-terra`,
+  `gpt-5.6-luna`, `gpt-5.5`, and `gpt-5.4`. Manual and unknown historical
+  values remain editable, but a family-only GPT-5.6 alias is not a preset.
+- `ClaudeModels` may carry `main_context_window`, `haiku_context_window`,
+  `sonnet_context_window`, and `opus_context_window`. These four fields are
+  CX2CC-only, each requires a non-empty explicit model in the same slot, and
+  each integer must be within `1024..=10000000`. There is no reasoning context
+  slot.
+- Changing a slot's model clears that slot's context. Changing the default
+  preset clears all four contexts, and leaving CX2CC clears all four before
+  save. Provider duplication and config backup copy every slot without
+  collapsing equal model names.
 - The provider editor hides the generic configured-model routing section for a
   CX2CC bridge. Ordinary providers retain that section.
 
@@ -98,6 +107,9 @@ literals.
 
 #### Context projection
 
+- An explicit valid Provider context window wins for its own slot. Slots
+  without an explicit window fall back independently to provider-catalog
+  resolution; preserve all four slots until after that per-slot decision.
 - Candidate identity is exactly `provider_id + provider_uuid +
   remote_model_id`. Numeric ID or model name alone is insufficient.
 - A confirmed window requires a fresh provider catalog, a `source =
@@ -106,16 +118,22 @@ literals.
 - All candidates with the same confirmed value return `Exact`. Different
   confirmed values return `Mixed` with the minimum as the conservative process
   limit. Any unknown candidate returns `Unknown`.
-- Manual/custom, stale, unconfigured, missing, identity-changed, and
-  catalog-unavailable candidates remain unknown even if a local row contains a
-  numeric context value.
+- Provider-catalog manual/custom rows, stale rows, unconfigured or missing
+  capabilities, identity changes, and unavailable catalogs remain unknown even
+  if a local row contains a numeric context value. This does not invalidate an
+  explicit Provider slot context that already passed write validation.
+- Once every slot is known, equal values are exact and differing values use the
+  minimum as the conservative process limit. Any unresolved slot makes the
+  terminal projection unknown. Equal model names in different slots do not
+  merge distinct explicit context values.
 - Terminal launch injects `ANTHROPIC_DEFAULT_OPUS_MODEL`,
   `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` using
   the non-Claude aliases `aio-cx2cc-opus`, `aio-cx2cc-sonnet`, and
   `aio-cx2cc-haiku`. For `Exact` or `Mixed`, it also injects numeric
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and
-  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. For `Unknown`, none of these model/window
-  variables are injected.
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. For `Unknown`, the three family aliases
+  remain injected, but neither context-window variable is injected. CX2CC
+  terminal launch never injects `ANTHROPIC_MODEL`.
 
 #### Authenticated local reentry
 
@@ -147,6 +165,10 @@ literals.
 | `thinking.type = disabled` | Emit `reasoning.effort = none` |
 | Enabled/adaptive without effort | Preserve explicit state; emit no invented effort |
 | Unknown effort string | Preserve the exact value |
+| Ordinary Claude provider submits any context window | `SEC_INVALID_INPUT`; contexts are CX2CC-only |
+| CX2CC context has no explicit model in the same slot | `SEC_INVALID_INPUT`; do not borrow another slot or fallback model |
+| CX2CC context is outside `1024..=10000000` or is not an integer | `SEC_INVALID_INPUT` |
+| Valid explicit slot context exists | Use it for that slot without catalog lookup |
 | Candidate is manual/custom | `Unknown(custom_model)`; inject no context variables |
 | Any stale/unconfigured/missing/unknown candidate | `Unknown`; do not claim an exact or mixed capacity |
 | Confirmed candidate windows differ | `Mixed(minimum)` |
@@ -164,12 +186,15 @@ literals.
   launch injects that exact numeric window.
 - Good: confirmed candidate windows differ; terminal launch uses the minimum
   and records a mixed projection.
+- Good: two slots select the same model with different explicit windows; each
+  retains its own value and the terminal process uses the smaller window.
 - Base: an ordinary Codex or Claude provider continues to use configured model
   routing, normal proxy behavior, redirects allowed by its own policy, and all
   existing failover gates.
 - Bad: mark CX2CC as a managed route to suppress generic routing.
-- Bad: infer context from `gpt-5.6` text, copy one slot's context to another, or
-  trust a manual model row as discovered capability evidence.
+- Bad: infer context from a model family/version string, copy one slot's
+  context to another, or trust a manual model row as discovered capability
+  evidence.
 - Bad: allow all localhost/self-loop targets, reuse an ordinary proxied client,
   follow redirects, or keep the private nonce header after ingress.
 - Bad: inject a persisted default effort when the caller omitted reasoning.
@@ -186,14 +211,19 @@ literals.
 - Context tests cover exact identity, equal candidates, mixed minimum,
   custom/manual, stale model, stale catalog, unconfigured capability, null
   window, missing model, missing/replaced provider identity, and empty
-  candidates. Terminal tests assert exact/mixed env injection and unknown env
-  omission.
+  candidates. They also cover four explicit slot overrides, same-model
+  different-window preservation, pairing/range rejection, config/share/local
+  duplicate round-trips, and v1-v4 share imports mapping contexts to `None`.
+  Terminal tests assert exact/mixed env injection, unknown env omission, and no
+  `ANTHROPIC_MODEL`.
 - Reentry tests cover issue/consume once, forgery, replay, expiry, capacity
   eviction, wrong CLI/method/path/query, ingress header removal, typed target
   matching, direct proxy bypass, and redirect refusal.
 - UI tests cover every GPT-5.6 preset, manual/historical preservation, CX2CC
-  generic-route hiding, ordinary-provider visibility, and removal of the fixed
-  thinking control.
+  generic-route hiding, ordinary-provider visibility, four context controls,
+  per-slot/default model clearing, leaving-CX2CC clearing, and removal of the
+  fixed thinking control. New production UI code uses typed fields without
+  `any` or type assertions.
 - Run frontend coverage shards, generated-binding checks, full Rust library
   tests, Rust fmt/check/Clippy, and release contract self-tests before Beta.
 

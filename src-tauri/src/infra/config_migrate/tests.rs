@@ -637,6 +637,101 @@ fn seed_direct_codex_provider(
     .expect("seed direct Codex provider")
 }
 
+fn seed_standalone_cx2cc_provider(
+    test_app: &ConfigMigrateTestApp,
+    name: &str,
+) -> crate::providers::ProviderSummary {
+    crate::providers::upsert(
+        &test_app.db,
+        crate::providers::ProviderUpsertParams {
+            provider_id: None,
+            cli_key: "claude".to_string(),
+            name: name.to_string(),
+            base_urls: Vec::new(),
+            base_url_mode: crate::providers::ProviderBaseUrlMode::Order,
+            auth_mode: Some(crate::providers::ProviderAuthMode::ApiKey),
+            api_key: None,
+            enabled: true,
+            cost_multiplier: 1.0,
+            priority: Some(100),
+            claude_models: Some(crate::providers::ClaudeModels {
+                main_model: Some("gpt-5.6-sol".to_string()),
+                haiku_model: Some("gpt-5.6-luna".to_string()),
+                sonnet_model: Some("gpt-5.6-terra".to_string()),
+                opus_model: Some("gpt-5.6-sol".to_string()),
+                main_context_window: Some(1_000_000),
+                haiku_context_window: Some(200_000),
+                sonnet_context_window: Some(400_000),
+                opus_context_window: Some(800_000),
+                ..Default::default()
+            }),
+            availability_test_model: None,
+            limit_5h_usd: None,
+            limit_daily_usd: None,
+            daily_reset_mode: Some(crate::providers::DailyResetMode::Fixed),
+            daily_reset_time: Some("00:00:00".to_string()),
+            limit_weekly_usd: None,
+            limit_monthly_usd: None,
+            limit_total_usd: None,
+            tags: None,
+            note: None,
+            source_provider_id: None,
+            bridge_type: Some("cx2cc".to_string()),
+            stream_idle_timeout_seconds: None,
+            extension_values: None,
+            account_usage_credentials_patch: None,
+            account_usage_credentials_copy_from_provider_id: None,
+            upstream_retry_policy_override: None,
+            upstream_retry_policy_override_specified: false,
+            model_routing_policy_override: None,
+            model_routing_policy_override_specified: false,
+        },
+    )
+    .expect("seed standalone CX2CC provider")
+}
+
+#[test]
+fn config_v4_round_trips_cx2cc_context_windows_and_rejects_ordinary_contexts() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let source = seed_standalone_cx2cc_provider(&test_app, "CX2CC Context Bundle");
+
+    let mut invalid = config_export(&app, &test_app.db).expect("export invalid probe");
+    invalid.providers[0].bridge_type = None;
+    let error = prepare_config_import(invalid)
+        .err()
+        .expect("ordinary Claude context must fail");
+    assert_eq!(error.code(), "SEC_INVALID_INPUT");
+
+    let bundle = config_export(&app, &test_app.db).expect("export context bundle");
+    let exported_models: crate::providers::ClaudeModels = serde_json::from_str(
+        &bundle
+            .providers
+            .iter()
+            .find(|provider| {
+                provider.provider_uuid.as_deref() == Some(source.provider_uuid.as_str())
+            })
+            .expect("exported CX2CC provider")
+            .claude_models_json,
+    )
+    .expect("exported Claude models");
+    assert_eq!(exported_models.main_context_window, Some(1_000_000));
+    assert_eq!(exported_models.haiku_context_window, Some(200_000));
+    assert_eq!(exported_models.sonnet_context_window, Some(400_000));
+    assert_eq!(exported_models.opus_context_window, Some(800_000));
+
+    config_import(&app, &test_app.db, bundle).expect("import context bundle");
+    let restored = crate::providers::list_by_cli(&test_app.db, "claude")
+        .expect("list restored Claude providers")
+        .into_iter()
+        .find(|provider| provider.provider_uuid == source.provider_uuid)
+        .expect("restored CX2CC provider");
+    assert_eq!(restored.claude_models.main_context_window, Some(1_000_000));
+    assert_eq!(restored.claude_models.haiku_context_window, Some(200_000));
+    assert_eq!(restored.claude_models.sonnet_context_window, Some(400_000));
+    assert_eq!(restored.claude_models.opus_context_window, Some(800_000));
+}
+
 fn configure_provider_model_for_profile(
     test_app: &ConfigMigrateTestApp,
     provider: &crate::providers::ProviderSummary,

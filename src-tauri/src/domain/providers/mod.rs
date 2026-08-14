@@ -39,11 +39,13 @@ pub(crate) use queries::{
 pub(crate) use queries::list_enabled_for_gateway_in_mode;
 
 pub(crate) use share::{
-    export_provider_share_v4, import_provider_share, parse_provider_share, preview_provider_share,
-    provider_share_default_filename, serialize_provider_share_v4, ProviderShareCredentialStatus,
-    ProviderShareEnvelopeV4, ProviderShareExtensionPreview, ProviderSharePreviewDraft,
+    export_provider_share_v5, import_provider_share, parse_provider_share, preview_provider_share,
+    provider_share_default_filename, serialize_provider_share_v5, ProviderShareCredentialStatus,
+    ProviderShareEnvelopeV5, ProviderShareExtensionPreview, ProviderSharePreviewDraft,
     PROVIDER_SHARE_MAX_BYTES,
 };
+
+pub(crate) use validation::validate_claude_models;
 
 #[cfg(test)]
 use types::{claude_models_from_json, normalize_model_slot, MAX_MODEL_NAME_LEN};

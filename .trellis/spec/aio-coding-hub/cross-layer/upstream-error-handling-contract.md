@@ -155,9 +155,9 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   switch, and every complete Provider override unchanged. Old settings inside
   config bundles run through the same migration before the existing atomic
   whole-snapshot CAS, while current-schema imports preserve explicit empty.
-  Provider shares read v1-v3 and export strict v4. Unknown/future versions and
-  old field names inside v4 are explicitly rejected so older clients cannot
-  silently discard the new semantics.
+  Provider shares read v1-v4 and export strict v5. Unknown/future versions and
+  old retry field names inside v4/v5 are explicitly rejected so older clients
+  cannot silently discard the new semantics.
 - The persisted global `AppSettings.upstream_retry_policy` decoder is a
   compatibility boundary: additive future policy and stream-policy fields are
   ignored while known valid fields are retained, and malformed content falls
@@ -220,7 +220,7 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 | All Providers end in retryable capacity streams | Return standard 502 / fake-200 envelope; keep evidence internal and remove every capacity text/code signal from client diagnostics |
 | Final HTTP rewrite parsing fails | Preserve the existing terminal HTTP response |
 | Provider has an explicit complete override | Use only that override; do not append global rules |
-| Provider share v4 has an old/unknown field or future version | Reject explicitly; never import a lossy partial policy |
+| Provider share v4/v5 has an old/unknown retry field or future version | Reject explicitly; never import a lossy partial policy |
 
 ### 5. Good / Base / Bad Cases
 
@@ -241,9 +241,9 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   Cyber default, schema 62 empty stays empty across reload, old config imports
   share that migration, canonical writes omit old names, and invalid writes
   remain bounded and strict.
-- Provider-share tests read v1-v3, export deterministic strict v4, round-trip
-  passthrough/legacy fields, and explicitly reject future versions, v4 old field
-  aliases, and unknown nested fields.
+- Provider-share tests read v1-v4, export deterministic strict v5, round-trip
+  passthrough/legacy fields, and explicitly reject future versions, v4/v5 old
+  field aliases, and unknown nested fields.
 - Route tests cover final rewrite, intermediate failure then success,
   multi-Provider failure, transport exclusion, protocol envelopes, safe headers,
   client/attempt status separation, probe finalization, and fake-200.
