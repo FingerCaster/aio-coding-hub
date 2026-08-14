@@ -1,0 +1,7 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"跨 settings、binding、gateway 与 UI 的入口检查清单"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/cx2cc-routing-contract.md","reason":"CX2CC 单一模型 owner、reasoning presence 与 context projection 契约"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"新增 settings 字段的锁内 RMW、patch 与失败回滚规则"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"跟踪设置到终端环境的跨层数据流"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"共享默认、范围常量与验证逻辑不得漂移"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-cx2cc-gpt56-sol-context/research/reasoning-passthrough.md", "reason": "锁定字段转换但 effort 原值透传的现状"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-cx2cc-gpt56-sol-context/research/context-overrides.md", "reason": "模型键覆盖与保守进程级投影决策"}

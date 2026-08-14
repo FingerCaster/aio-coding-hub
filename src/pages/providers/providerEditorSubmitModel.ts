@@ -133,7 +133,9 @@ export function buildProviderEditorUpsertInput(
   }
 
   if (ctx.cliKey === "claude") {
-    const modelError = validateProviderClaudeModels(ctx.claudeModels);
+    const modelError = validateProviderClaudeModels(ctx.claudeModels, {
+      allowCx2ccContextWindows: ctx.authMode === "cx2cc",
+    });
     if (modelError) {
       return {
         ok: false,

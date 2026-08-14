@@ -2768,6 +2768,10 @@ export type ClaudeModels = {
   haiku_model?: string | null;
   sonnet_model?: string | null;
   opus_model?: string | null;
+  main_context_window?: number | null;
+  haiku_context_window?: number | null;
+  sonnet_context_window?: number | null;
+  opus_context_window?: number | null;
 };
 export type ClaudeSettingsPatch = {
   model: string | null;

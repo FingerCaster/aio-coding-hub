@@ -6,7 +6,11 @@ import { GATEWAY_EVENT_TEXT_LIMITS, gatewayEventNames } from "../gatewayEvents";
 import { GatewayErrorCodes } from "../gatewayErrorCodes";
 import { HOME_USAGE_PERIOD_VALUES } from "../homeUsagePeriods";
 import { MAX_MODEL_NAME_LEN } from "../../schemas/providerEditorDialog";
-import { CX2CC_PROVIDER_DEFAULT_MODEL } from "../cx2cc";
+import {
+  CX2CC_CONTEXT_WINDOW_MAX,
+  CX2CC_CONTEXT_WINDOW_MIN,
+  CX2CC_PROVIDER_DEFAULT_MODEL,
+} from "../cx2cc";
 import { DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE } from "../../services/gateway/circuitNotice";
 import { DEFAULT_CYBER_PASSTHROUGH_KEYWORD } from "../../services/gateway/upstreamRetryPolicy";
 import { CODEX_SYSTEM_REQUEST_SPECIAL_SETTING } from "../../services/gateway/requestLogSpecialSettings";
@@ -19,6 +23,7 @@ import noticeSource from "../../../src-tauri/src/app/notice.rs?raw";
 import settingsServiceSource from "../../../src-tauri/src/app/settings_service.rs?raw";
 import startupStateSource from "../../../src-tauri/src/app/startup_state.rs?raw";
 import promptsSource from "../../../src-tauri/src/domain/prompts.rs?raw";
+import providerModelsSource from "../../../src-tauri/src/domain/provider_models.rs?raw";
 import providersValidationSource from "../../../src-tauri/src/domain/providers/validation.rs?raw";
 import workspacesSource from "../../../src-tauri/src/domain/workspaces.rs?raw";
 import providersTypesSource from "../../../src-tauri/src/domain/providers/types.rs?raw";
@@ -42,7 +47,7 @@ function extractBindingsUnionLiterals(source: string, typeName: string) {
 
 function extractRustNumericConst(source: string, constName: string) {
   const match = source.match(
-    new RegExp(`const\\s+${constName}:\\s*(?:u16|u32|u64|usize)\\s*=\\s*([0-9_*\\s]+);`)
+    new RegExp(`const\\s+${constName}:\\s*(?:i64|u16|u32|u64|usize)\\s*=\\s*([0-9_*\\s]+);`)
   );
   expect(match, `missing Rust numeric const ${constName}`).toBeTruthy();
   const expression = (match?.[1] ?? "").replace(/_/g, "");
@@ -197,6 +202,15 @@ describe("cross-layer contracts", () => {
     expect(
       extractRustStringConst(settingsDefaultsSource, "DEFAULT_CYBER_PASSTHROUGH_KEYWORD")
     ).toBe(DEFAULT_CYBER_PASSTHROUGH_KEYWORD);
+  });
+
+  it("keeps cx2cc context window limits aligned with provider model capabilities", () => {
+    expect(CX2CC_CONTEXT_WINDOW_MIN).toBe(
+      extractRustNumericConst(providerModelsSource, "MODEL_CONTEXT_WINDOW_MIN_TOKENS")
+    );
+    expect(CX2CC_CONTEXT_WINDOW_MAX).toBe(
+      extractRustNumericConst(providerModelsSource, "MODEL_CONTEXT_WINDOW_MAX_TOKENS")
+    );
   });
 
   it("keeps app error codes emitted by their owning Rust modules", () => {

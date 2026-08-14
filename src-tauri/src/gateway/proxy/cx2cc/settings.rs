@@ -66,16 +66,16 @@ fn non_empty(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::Cx2ccSettings;
-    use crate::infra::settings::AppSettings;
+    use crate::infra::settings::{AppSettings, DEFAULT_CX2CC_FALLBACK_MODEL};
 
     #[test]
     fn default_uses_expected_values() {
         let cfg = Cx2ccSettings::default();
 
-        assert_eq!(cfg.fallback_model_opus, "gpt-5.5");
-        assert_eq!(cfg.fallback_model_sonnet, "gpt-5.5");
-        assert_eq!(cfg.fallback_model_haiku, "gpt-5.5");
-        assert_eq!(cfg.fallback_model_main, "gpt-5.5");
+        assert_eq!(cfg.fallback_model_opus, DEFAULT_CX2CC_FALLBACK_MODEL);
+        assert_eq!(cfg.fallback_model_sonnet, DEFAULT_CX2CC_FALLBACK_MODEL);
+        assert_eq!(cfg.fallback_model_haiku, DEFAULT_CX2CC_FALLBACK_MODEL);
+        assert_eq!(cfg.fallback_model_main, DEFAULT_CX2CC_FALLBACK_MODEL);
         assert_eq!(cfg.model_reasoning_effort, None);
         assert_eq!(cfg.service_tier, None);
         assert!(cfg.disable_response_storage);

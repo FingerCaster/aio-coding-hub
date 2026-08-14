@@ -69,23 +69,24 @@ resources are `provider-share-preview:<preview_token>`.
 The domain boundary is:
 
 ```rust
-parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV4>
-serialize_provider_share_v4(envelope: &ProviderShareEnvelopeV4) -> AppResult<Vec<u8>>
-export_provider_share_v4(db: &Db, provider_id: i64) -> AppResult<ProviderShareEnvelopeV4>
-preview_provider_share(db: &Db, envelope: &ProviderShareEnvelopeV4)
+parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV5>
+serialize_provider_share_v5(envelope: &ProviderShareEnvelopeV5) -> AppResult<Vec<u8>>
+export_provider_share_v5(db: &Db, provider_id: i64) -> AppResult<ProviderShareEnvelopeV5>
+preview_provider_share(db: &Db, envelope: &ProviderShareEnvelopeV5)
     -> AppResult<ProviderSharePreviewDraft>
 import_provider_share(
     db: &Db,
-    envelope: &ProviderShareEnvelopeV4,
+    envelope: &ProviderShareEnvelopeV5,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary>
 ```
 
 `parse_provider_share` is the only version-dispatch boundary. It strictly
-parses v1 through v4, converts v1-v3 retry policies to canonical v4, and
-returns only `ProviderShareEnvelopeV4` to preview/import services. A v1/v2
-payload that injects the v3 model-routing field is rejected before conversion.
+parses v1 through v5, converts v1-v4 payloads to canonical v5, and returns only
+`ProviderShareEnvelopeV5` to preview/import services. V1-v3 retry policies are
+converted to the canonical v4 retry-policy shape used by v5. A v1/v2 payload
+that injects the v3 model-routing field is rejected before conversion.
 
 No schema migration is involved. Import writes one `providers` row plus its
 credential and extension fields in one SQLite transaction. It must not write
@@ -101,7 +102,7 @@ The top-level discriminator is exact:
 ```json
 {
   "type": "aio-coding-hub.provider-share",
-  "schema_version": 4,
+  "schema_version": 5,
   "provider": {
     "cli_key": "codex",
     "name": "Example",
@@ -146,25 +147,25 @@ OAuth authentication replaces `api_key` with `provider_type`, `access_token`,
 `refresh_token`, `id_token`, `token_uri`, `client_id`, `client_secret`,
 `expires_at`, `email`, and `refresh_lead_seconds`. A v1 retry override contains
 `enabled`, `status_codes`, `transport_errors`, `max_retries`, `backoff_ms`, and
-`counts_toward_circuit_breaker`. The v2/v3/v4 equivalent replaces
+`counts_toward_circuit_breaker`. The v2/v3/v4/v5 equivalent replaces
 `status_codes` with `http_rules`; each rule contains `enabled`, `status_code`,
-`body_contains`, and `description`. V4 retry overrides must explicitly include
+`body_contains`, and `description`. V4/v5 retry overrides must explicitly include
 `stream_internal_errors.enabled` and `passthrough_keywords`; optional
 `legacy_retry_keywords` is one-release compatibility state. V1-v3 readers
 convert old `retry_keywords` / `non_retry_keywords` to the canonical v4 shape.
 V1, and v2/v3 payloads that omit the stream policy, use the canonical default
 with `high-risk cyber` passthrough; an explicitly present empty list remains
-empty. V4 never applies this default because omission must fail validation.
+empty. V4/v5 never apply this default because omission must fail validation.
 Each extension contains `plugin_id`, `plugin_version`, `namespace`, and
 plugin-owned open JSON `values`.
 
-All controlled v1 through v4 objects use `deny_unknown_fields`; only extension
+All controlled v1 through v5 objects use `deny_unknown_fields`; only extension
 `values` is open. Each version rejects fields owned by another version, as
 well as unknown discriminators, versions, fields, enum values, invalid UTF-8,
 and invalid provider fields. A future format gets a new explicit version
 reader rather than weakening either existing reader.
 
-The v1-v4 `model_mapping` member is a strict wire-compatibility shell. It is
+The v1-v5 `model_mapping` member is a strict wire-compatibility shell. It is
 always normalized to `{"default_model":null,"exact":{}}` and never reaches an
 active Provider DTO or gateway mapper. The retired
 `codex_to_openai_chat`, `codex_to_openai_responses`, and
@@ -172,13 +173,20 @@ active Provider DTO or gateway mapper. The retired
 `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED`; they are never downgraded to a
 direct Provider.
 
-New serialization is v4 pretty JSON with one trailing newline and
+V5 adds optional `main_context_window`, `haiku_context_window`,
+`sonnet_context_window`, and `opus_context_window` members under
+`claude_models`. They are accepted only for standalone Claude CX2CC Providers;
+each requires an explicit same-slot model and an integer in
+`1024..=10000000`. Strict v1-v4 readers reject these members, and conversion
+sets all four canonical v5 values to `None`.
+
+New serialization is v5 pretty JSON with one trailing newline and
 deterministic extension ordering by `(plugin_id, namespace)`. Copy and save
-call the same v4 serializer and enforce the 8 MiB encoded limit. There is no
-v1-v3 export path. V4 preserves the Provider model-routing override as
+call the same v5 serializer and enforce the 8 MiB encoded limit. There is no
+v1-v4 export path. V5 preserves the Provider model-routing override as
 `null` (inherit), an enabled policy (replace), or a disabled policy (suppress).
-An older parser must reject schema v4 at its version gate; it must never parse
-v4 as v3 and silently discard terminal-frame passthrough semantics.
+An older parser must reject schema v5 at its version gate; it must never parse
+v5 as v4 and silently discard CX2CC context windows.
 The default filename is
 `aio-coding-hub-provider-<cli>-<sanitized-name>.json`, uses a cross-platform
 240-byte budget, and contains no timestamp.
@@ -273,8 +281,10 @@ partial extension import is forbidden.
 | --- | --- |
 | Missing, mismatched, invalid, or expired risky confirmation | `SEC_CONFIRM_*`; perform no clipboard, file, or DB mutation |
 | Empty, oversized, non-UTF-8, malformed, unknown-field, invalid-field, or unsupported-version content | `SEC_INVALID_INPUT`; create no preview/import row |
-| V4 retry override omits stream policy or passthrough list | `SEC_INVALID_INPUT`; do not apply defaults that could lose share semantics |
-| V4 stream policy contains old retry/non-retry field names | `SEC_INVALID_INPUT`; old names are accepted only by v1-v3 conversion |
+| V4/v5 retry override omits stream policy or passthrough list | `SEC_INVALID_INPUT`; do not apply defaults that could lose share semantics |
+| V4/v5 stream policy contains old retry/non-retry field names | `SEC_INVALID_INPUT`; old names are accepted only by v1-v3 conversion |
+| V1-v4 share contains a context-window member | `SEC_INVALID_INPUT`; legacy conversion never fabricates context |
+| V5 context is non-CX2CC, unpaired, non-integer, or outside `1024..=10000000` | `SEC_INVALID_INPUT` before normalization/import |
 | Retired Codex translation bridge | `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED`; create no preview/import row |
 | Non-empty legacy `model_mapping` shell on an otherwise valid share | Parse, discard its values, and normalize the shell to empty |
 | Export target does not exist | `DB_NOT_FOUND` |
@@ -302,8 +312,9 @@ extension values.
   token with usable refresh material previews as `refreshable`. Both may import
   disabled without any remote call.
 - Base: a standalone Claude `cx2cc` provider previews as `not_required` and
-  round-trips without a source-provider ID.
-- Bad: unknown or cross-version v1/v2/v3/v4 fields, a future schema version, an
+  round-trips its four independently paired context windows without a
+  source-provider ID.
+- Bad: unknown or cross-version v1/v2/v3/v4/v5 fields, a future schema version, an
   external provider bridge, a changed preview file, an expired token, or
   plugin manifest/version drift fails before commit and leaves provider counts
   unchanged.
@@ -315,11 +326,13 @@ extension values.
 - Domain tests: strict schema negatives, UTF-8 and 8 MiB boundaries,
   deterministic reserialization, cross-platform filename byte bounds, all
   configuration/credential/extension round-trips, referenced-provider refusal,
-  standalone `cx2cc`, retired-bridge rejection, legacy mapping
+  standalone `cx2cc` with four context windows, retired-bridge rejection, legacy mapping
   normalization, collision naming, disabled/no-route import, and rollback.
-- Version tests: v1-v3 import and canonical v4 re-export, v3 keyword migration,
-  required v4 stream semantics, old field rejection in v4, and explicit
-  future-version rejection equivalent to an older client rejecting v4.
+- Version tests: v1-v4 import and canonical v5 re-export, v3 keyword migration,
+  required v4/v5 stream semantics, old field rejection in v4/v5, v1-v4
+  context-to-`None` conversion plus strict context-field rejection, and
+  explicit future-version rejection equivalent to an older client rejecting
+  v5.
 - Plugin tests: missing/unavailable owner, exact version mismatch, manifest
   ID/version mismatch, missing capability/namespace/target CLI, built-in owner
   recreation, and a compatibility change between preview and confirm. Assert
@@ -395,20 +408,20 @@ pub(crate) fn sanitize_account_usage_extension_value_for_config_bundle(
     values: &serde_json::Value,
 ) -> serde_json::Value;
 
-pub(crate) fn export_provider_share_v4(
+pub(crate) fn export_provider_share_v5(
     db: &Db,
     provider_id: i64,
-) -> AppResult<ProviderShareEnvelopeV4>;
+) -> AppResult<ProviderShareEnvelopeV5>;
 
 pub(crate) fn import_provider_share(
     db: &Db,
-    envelope: &ProviderShareEnvelopeV4,
+    envelope: &ProviderShareEnvelopeV5,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary>;
 ```
 
-The `aio-coding-hub.provider-share` v1-v3 compatibility readers and v4 export
+The `aio-coding-hub.provider-share` v1-v4 compatibility readers and v5 export
 schema contain no User ID or account access-token field. Their built-in
 extension value may contain only
 `adapterKind`, `newApiQueryMode`, `timedRefreshEnabled`, and
@@ -418,7 +431,7 @@ single-provider share policy.
 ### 3. Contracts
 
 - Normalize the exact built-in identity
-  `core.provider-account-usage/accountUsage` on v4 share export, strict v1-v4
+  `core.provider-account-usage/accountUsage` on v5 share export, strict v1-v5
   parse, preview normalization, and import. Historical `newApiUserId`, account
   token, and unknown fields are removed through the shared sanitizer.
 - Preserve explicit `newApiQueryMode: "account"`. Do not downgrade it to
@@ -470,7 +483,7 @@ single-provider share policy.
 
 ### 5. Good / Base / Bad Cases
 
-- Good: an account-mode provider exports a v4 share whose canonical extension
+- Good: an account-mode provider exports a v5 share whose canonical extension
   keeps account mode but contains no account identity or token; the recipient
   imports it disabled and sees a credentials-required state.
 - Base: billing or sub2api providers retain their canonical account-usage

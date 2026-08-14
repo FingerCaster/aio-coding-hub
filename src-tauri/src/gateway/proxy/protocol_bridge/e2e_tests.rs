@@ -126,6 +126,16 @@ mod tests {
             "output_config": {"effort": "future-effort"}
         }));
         assert_eq!(unknown_effort["reasoning"]["effort"], "future-effort");
+
+        let ultra_effort = translate(json!({
+            "output_config": {"effort": "ultra"}
+        }));
+        assert_eq!(ultra_effort["reasoning"]["effort"], "ultra");
+
+        let non_string_effort = translate(json!({
+            "output_config": {"effort": 42}
+        }));
+        assert!(non_string_effort.get("reasoning").is_none());
     }
 
     #[test]

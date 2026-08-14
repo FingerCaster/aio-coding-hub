@@ -30,6 +30,7 @@ const PROVIDER_SHARE_SCHEMA_VERSION_V1: u32 = 1;
 const PROVIDER_SHARE_SCHEMA_VERSION_V2: u32 = 2;
 const PROVIDER_SHARE_SCHEMA_VERSION_V3: u32 = 3;
 const PROVIDER_SHARE_SCHEMA_VERSION_V4: u32 = 4;
+const PROVIDER_SHARE_SCHEMA_VERSION_V5: u32 = 5;
 const DEFAULT_OAUTH_REFRESH_LEAD_SECONDS: i64 = 3600;
 const MAX_PROVIDER_NAME_CHARS: usize = 256;
 const MAX_AUTH_SECRET_BYTES: usize = 256 * 1024;
@@ -47,32 +48,32 @@ const LEGACY_CODEX_BRIDGE_TYPES: [&str; 3] = [
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderShareEnvelope<RetryPolicy> {
+pub(crate) struct ProviderShareEnvelope<RetryPolicy, ClaudeModelsWire> {
     #[serde(rename = "type")]
     kind: String,
     schema_version: u32,
-    pub(crate) provider: ProviderShareProvider<RetryPolicy>,
+    pub(crate) provider: ProviderShareProvider<RetryPolicy, ClaudeModelsWire>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderShareProvider<RetryPolicy> {
+pub(crate) struct ProviderShareProvider<RetryPolicy, ClaudeModelsWire> {
     pub(crate) cli_key: String,
     pub(crate) name: String,
     pub(crate) enabled: bool,
-    configuration: ProviderShareConfiguration<RetryPolicy>,
+    configuration: ProviderShareConfiguration<RetryPolicy, ClaudeModelsWire>,
     authentication: ProviderShareAuthenticationV1,
     extensions: Vec<ProviderShareExtensionV1>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProviderShareConfiguration<RetryPolicy> {
+struct ProviderShareConfiguration<RetryPolicy, ClaudeModelsWire> {
     base_urls: Vec<String>,
     base_url_mode: ProviderBaseUrlMode,
     priority: i64,
     cost_multiplier: f64,
-    claude_models: ProviderShareClaudeModelsV1,
+    claude_models: ClaudeModelsWire,
     model_mapping: ProviderShareModelMappingV1,
     availability_test_model: Option<String>,
     limits: ProviderShareLimitsV1,
@@ -85,12 +86,20 @@ struct ProviderShareConfiguration<RetryPolicy> {
     model_routing_policy_override: Option<crate::settings::ModelRoutingPolicy>,
 }
 
-type ProviderShareEnvelopeV1 = ProviderShareEnvelope<ProviderShareRetryPolicyV1>;
-type ProviderShareEnvelopeWireV2 = ProviderShareEnvelope<ProviderShareRetryPolicyV2>;
-type ProviderShareEnvelopeWireV3 = ProviderShareEnvelope<ProviderShareRetryPolicyV2>;
-pub(crate) type ProviderShareEnvelopeV4 = ProviderShareEnvelope<ProviderShareRetryPolicyV4>;
-type ProviderShareProviderV4 = ProviderShareProvider<ProviderShareRetryPolicyV4>;
-type ProviderShareConfigurationV4 = ProviderShareConfiguration<ProviderShareRetryPolicyV4>;
+type ProviderShareEnvelopeV1 =
+    ProviderShareEnvelope<ProviderShareRetryPolicyV1, ProviderShareClaudeModelsV1>;
+type ProviderShareEnvelopeWireV2 =
+    ProviderShareEnvelope<ProviderShareRetryPolicyV2, ProviderShareClaudeModelsV1>;
+type ProviderShareEnvelopeWireV3 =
+    ProviderShareEnvelope<ProviderShareRetryPolicyV2, ProviderShareClaudeModelsV1>;
+type ProviderShareEnvelopeWireV4 =
+    ProviderShareEnvelope<ProviderShareRetryPolicyV4, ProviderShareClaudeModelsV1>;
+pub(crate) type ProviderShareEnvelopeV5 =
+    ProviderShareEnvelope<ProviderShareRetryPolicyV4, ProviderShareClaudeModelsV5>;
+type ProviderShareProviderV5 =
+    ProviderShareProvider<ProviderShareRetryPolicyV4, ProviderShareClaudeModelsV5>;
+type ProviderShareConfigurationV5 =
+    ProviderShareConfiguration<ProviderShareRetryPolicyV4, ProviderShareClaudeModelsV5>;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -102,7 +111,25 @@ struct ProviderShareClaudeModelsV1 {
     opus_model: Option<String>,
 }
 
-impl From<ClaudeModels> for ProviderShareClaudeModelsV1 {
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ProviderShareClaudeModelsV5 {
+    main_model: Option<String>,
+    reasoning_model: Option<String>,
+    haiku_model: Option<String>,
+    sonnet_model: Option<String>,
+    opus_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    main_context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    haiku_context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sonnet_context_window: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opus_context_window: Option<u64>,
+}
+
+impl From<ClaudeModels> for ProviderShareClaudeModelsV5 {
     fn from(value: ClaudeModels) -> Self {
         Self {
             main_model: value.main_model,
@@ -110,11 +137,15 @@ impl From<ClaudeModels> for ProviderShareClaudeModelsV1 {
             haiku_model: value.haiku_model,
             sonnet_model: value.sonnet_model,
             opus_model: value.opus_model,
+            main_context_window: value.main_context_window,
+            haiku_context_window: value.haiku_context_window,
+            sonnet_context_window: value.sonnet_context_window,
+            opus_context_window: value.opus_context_window,
         }
     }
 }
 
-impl From<ProviderShareClaudeModelsV1> for ClaudeModels {
+impl From<ProviderShareClaudeModelsV1> for ProviderShareClaudeModelsV5 {
     fn from(value: ProviderShareClaudeModelsV1) -> Self {
         Self {
             main_model: value.main_model,
@@ -122,6 +153,26 @@ impl From<ProviderShareClaudeModelsV1> for ClaudeModels {
             haiku_model: value.haiku_model,
             sonnet_model: value.sonnet_model,
             opus_model: value.opus_model,
+            main_context_window: None,
+            haiku_context_window: None,
+            sonnet_context_window: None,
+            opus_context_window: None,
+        }
+    }
+}
+
+impl From<ProviderShareClaudeModelsV5> for ClaudeModels {
+    fn from(value: ProviderShareClaudeModelsV5) -> Self {
+        Self {
+            main_model: value.main_model,
+            reasoning_model: value.reasoning_model,
+            haiku_model: value.haiku_model,
+            sonnet_model: value.sonnet_model,
+            opus_model: value.opus_model,
+            main_context_window: value.main_context_window,
+            haiku_context_window: value.haiku_context_window,
+            sonnet_context_window: value.sonnet_context_window,
+            opus_context_window: value.opus_context_window,
         }
     }
 }
@@ -303,12 +354,13 @@ impl From<ProviderShareRetryPolicyV4> for crate::settings::UpstreamRetryPolicy {
     }
 }
 
-impl<RetryPolicy> ProviderShareEnvelope<RetryPolicy> {
-    fn map_retry_policy<NextRetryPolicy>(
+impl<RetryPolicy, ClaudeModelsWire> ProviderShareEnvelope<RetryPolicy, ClaudeModelsWire> {
+    fn map_wire<NextRetryPolicy, NextClaudeModelsWire>(
         self,
         schema_version: u32,
-        map: impl FnOnce(RetryPolicy) -> NextRetryPolicy,
-    ) -> ProviderShareEnvelope<NextRetryPolicy> {
+        map_retry_policy: impl FnOnce(RetryPolicy) -> NextRetryPolicy,
+        map_claude_models: impl FnOnce(ClaudeModelsWire) -> NextClaudeModelsWire,
+    ) -> ProviderShareEnvelope<NextRetryPolicy, NextClaudeModelsWire> {
         let ProviderShareProvider {
             cli_key,
             name,
@@ -346,7 +398,7 @@ impl<RetryPolicy> ProviderShareEnvelope<RetryPolicy> {
                     base_url_mode,
                     priority,
                     cost_multiplier,
-                    claude_models,
+                    claude_models: map_claude_models(claude_models),
                     model_mapping,
                     availability_test_model,
                     limits,
@@ -354,7 +406,8 @@ impl<RetryPolicy> ProviderShareEnvelope<RetryPolicy> {
                     note,
                     bridge_type,
                     stream_idle_timeout_seconds,
-                    upstream_retry_policy_override: upstream_retry_policy_override.map(map),
+                    upstream_retry_policy_override: upstream_retry_policy_override
+                        .map(map_retry_policy),
                     model_routing_policy_override,
                 },
                 authentication,
@@ -577,7 +630,7 @@ fn validate_oauth_token_uri(value: Option<&str>) -> AppResult<()> {
     Ok(())
 }
 
-fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV4) -> AppResult<()> {
+fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV5) -> AppResult<()> {
     let bridge_type = provider
         .configuration
         .bridge_type
@@ -605,11 +658,11 @@ fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV4) -> App
     Ok(())
 }
 
-fn normalize_provider_share_v4(
-    mut envelope: ProviderShareEnvelopeV4,
-) -> AppResult<ProviderShareEnvelopeV4> {
+fn normalize_provider_share_v5(
+    mut envelope: ProviderShareEnvelopeV5,
+) -> AppResult<ProviderShareEnvelopeV5> {
     if envelope.kind != PROVIDER_SHARE_KIND
-        || envelope.schema_version != PROVIDER_SHARE_SCHEMA_VERSION_V4
+        || envelope.schema_version != PROVIDER_SHARE_SCHEMA_VERSION_V5
     {
         return Err(provider_share_schema_error());
     }
@@ -672,7 +725,10 @@ fn normalize_provider_share_v4(
     }
 
     let mut claude_models: ClaudeModels = provider.configuration.claude_models.clone().into();
-    validate_claude_models(&claude_models)?;
+    validate_claude_models(
+        &claude_models,
+        provider.configuration.bridge_type.as_deref() == Some(CX2CC_BRIDGE_TYPE),
+    )?;
     claude_models = claude_models.normalized();
     if provider.cli_key != "claude" && claude_models.has_any() {
         return Err(AppError::new(
@@ -853,7 +909,7 @@ fn legacy_share_declares_model_routing_policy(bytes: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV4> {
+pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV5> {
     if bytes.is_empty() {
         return Err(AppError::new(
             "SEC_INVALID_INPUT",
@@ -890,10 +946,15 @@ pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvel
             {
                 return Err(provider_share_schema_error());
             }
-            let envelope = envelope.map_retry_policy(PROVIDER_SHARE_SCHEMA_VERSION_V4, |policy| {
-                ProviderShareRetryPolicyV4::from(crate::settings::UpstreamRetryPolicy::from(policy))
-            });
-            normalize_provider_share_v4(envelope)
+            normalize_provider_share_v5(envelope.map_wire(
+                PROVIDER_SHARE_SCHEMA_VERSION_V5,
+                |policy| {
+                    ProviderShareRetryPolicyV4::from(crate::settings::UpstreamRetryPolicy::from(
+                        policy,
+                    ))
+                },
+                Into::into,
+            ))
         }
         PROVIDER_SHARE_SCHEMA_VERSION_V2 => {
             if legacy_share_declares_model_routing_policy(bytes) {
@@ -906,31 +967,42 @@ pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvel
             {
                 return Err(provider_share_schema_error());
             }
-            normalize_provider_share_v4(envelope.map_retry_policy(
-                PROVIDER_SHARE_SCHEMA_VERSION_V4,
+            normalize_provider_share_v5(envelope.map_wire(
+                PROVIDER_SHARE_SCHEMA_VERSION_V5,
                 |policy| {
                     ProviderShareRetryPolicyV4::from(crate::settings::UpstreamRetryPolicy::from(
                         policy,
                     ))
                 },
+                Into::into,
             ))
         }
         PROVIDER_SHARE_SCHEMA_VERSION_V3 => {
             let envelope: ProviderShareEnvelopeWireV3 =
                 serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
-            normalize_provider_share_v4(envelope.map_retry_policy(
-                PROVIDER_SHARE_SCHEMA_VERSION_V4,
+            normalize_provider_share_v5(envelope.map_wire(
+                PROVIDER_SHARE_SCHEMA_VERSION_V5,
                 |policy| {
                     ProviderShareRetryPolicyV4::from(crate::settings::UpstreamRetryPolicy::from(
                         policy,
                     ))
                 },
+                Into::into,
             ))
         }
         PROVIDER_SHARE_SCHEMA_VERSION_V4 => {
-            let envelope: ProviderShareEnvelopeV4 =
+            let envelope: ProviderShareEnvelopeWireV4 =
                 serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
-            normalize_provider_share_v4(envelope)
+            normalize_provider_share_v5(envelope.map_wire(
+                PROVIDER_SHARE_SCHEMA_VERSION_V5,
+                |policy| policy,
+                Into::into,
+            ))
+        }
+        PROVIDER_SHARE_SCHEMA_VERSION_V5 => {
+            let envelope: ProviderShareEnvelopeV5 =
+                serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
+            normalize_provider_share_v5(envelope)
         }
         _ => Err(AppError::new(
             "SEC_INVALID_INPUT",
@@ -939,10 +1011,10 @@ pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvel
     }
 }
 
-pub(crate) fn serialize_provider_share_v4(
-    envelope: &ProviderShareEnvelopeV4,
+pub(crate) fn serialize_provider_share_v5(
+    envelope: &ProviderShareEnvelopeV5,
 ) -> AppResult<Vec<u8>> {
-    let envelope = normalize_provider_share_v4(envelope.clone())?;
+    let envelope = normalize_provider_share_v5(envelope.clone())?;
     let mut writer = CappedJsonWriter::new();
     serde_json::to_writer_pretty(&mut writer, &envelope).map_err(|error| {
         if error.is_io() {
@@ -1159,10 +1231,10 @@ ORDER BY extension_values.plugin_id ASC, extension_values.namespace ASC
     Ok(extensions)
 }
 
-pub(crate) fn export_provider_share_v4(
+pub(crate) fn export_provider_share_v5(
     db: &db::Db,
     provider_id: i64,
-) -> AppResult<ProviderShareEnvelopeV4> {
+) -> AppResult<ProviderShareEnvelopeV5> {
     if provider_id <= 0 {
         return Err(AppError::new("SEC_INVALID_INPUT", "provider_id is invalid"));
     }
@@ -1217,14 +1289,14 @@ pub(crate) fn export_provider_share_v4(
     tx.commit()
         .map_err(|error| db_err!("failed to finish provider share snapshot: {error}"))?;
 
-    normalize_provider_share_v4(ProviderShareEnvelopeV4 {
+    normalize_provider_share_v5(ProviderShareEnvelopeV5 {
         kind: PROVIDER_SHARE_KIND.to_string(),
-        schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V4,
-        provider: ProviderShareProviderV4 {
+        schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V5,
+        provider: ProviderShareProviderV5 {
             cli_key: row.cli_key.clone(),
             name: row.name,
             enabled: row.enabled,
-            configuration: ProviderShareConfigurationV4 {
+            configuration: ProviderShareConfigurationV5 {
                 base_urls: base_urls_from_row(&row.base_url, &row.base_urls_json),
                 base_url_mode,
                 priority: row.priority,
@@ -1442,7 +1514,7 @@ fn extension_preview(
     })
 }
 
-fn credential_status(provider: &ProviderShareProviderV4) -> ProviderShareCredentialStatus {
+fn credential_status(provider: &ProviderShareProviderV5) -> ProviderShareCredentialStatus {
     if provider.configuration.bridge_type.as_deref() == Some(CX2CC_BRIDGE_TYPE) {
         return ProviderShareCredentialStatus::NotRequired;
     }
@@ -1488,9 +1560,9 @@ fn credential_status(provider: &ProviderShareProviderV4) -> ProviderShareCredent
 
 pub(crate) fn preview_provider_share(
     db: &db::Db,
-    envelope: &ProviderShareEnvelopeV4,
+    envelope: &ProviderShareEnvelopeV5,
 ) -> AppResult<ProviderSharePreviewDraft> {
-    let envelope = normalize_provider_share_v4(envelope.clone())?;
+    let envelope = normalize_provider_share_v5(envelope.clone())?;
     let mut conn = db.open_connection()?;
     let tx = conn
         .transaction()
@@ -1590,11 +1662,11 @@ fn authentication_db_fields(
 
 pub(crate) fn import_provider_share(
     db: &db::Db,
-    envelope: &ProviderShareEnvelopeV4,
+    envelope: &ProviderShareEnvelopeV5,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary> {
-    let envelope = normalize_provider_share_v4(envelope.clone())?;
+    let envelope = normalize_provider_share_v5(envelope.clone())?;
     let provider = &envelope.provider;
     let mut conn = db.open_connection()?;
     let tx = conn
@@ -1864,20 +1936,20 @@ mod tests {
         }
     }
 
-    fn minimal_share() -> ProviderShareEnvelopeV4 {
-        ProviderShareEnvelopeV4 {
+    fn minimal_share() -> ProviderShareEnvelopeV5 {
+        ProviderShareEnvelopeV5 {
             kind: PROVIDER_SHARE_KIND.to_string(),
-            schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V4,
-            provider: ProviderShareProviderV4 {
+            schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V5,
+            provider: ProviderShareProviderV5 {
                 cli_key: "claude".to_string(),
                 name: "测试供应商".to_string(),
                 enabled: true,
-                configuration: ProviderShareConfigurationV4 {
+                configuration: ProviderShareConfigurationV5 {
                     base_urls: vec!["https://example.invalid/v1".to_string()],
                     base_url_mode: ProviderBaseUrlMode::Order,
                     priority: 100,
                     cost_multiplier: 1.0,
-                    claude_models: ProviderShareClaudeModelsV1::default(),
+                    claude_models: ProviderShareClaudeModelsV5::default(),
                     model_mapping: ProviderShareModelMappingV1::default(),
                     availability_test_model: None,
                     limits: ProviderShareLimitsV1 {
@@ -1998,7 +2070,7 @@ mod tests {
         name: &str,
         plugin_id: &str,
         plugin_version: &str,
-    ) -> ProviderShareEnvelopeV4 {
+    ) -> ProviderShareEnvelopeV5 {
         let mut share = minimal_share();
         share.provider.name = name.to_string();
         share.provider.extensions.push(ProviderShareExtensionV1 {
@@ -2011,14 +2083,77 @@ mod tests {
     }
 
     #[test]
-    fn strict_v4_round_trip_is_deterministic_and_newline_terminated() {
+    fn strict_v5_round_trip_is_deterministic_and_newline_terminated() {
         let share = minimal_share();
-        let first = serialize_provider_share_v4(&share).expect("serialize");
+        let first = serialize_provider_share_v5(&share).expect("serialize");
         let parsed = parse_provider_share(&first).expect("parse");
-        let second = serialize_provider_share_v4(&parsed).expect("serialize again");
+        let second = serialize_provider_share_v5(&parsed).expect("serialize again");
 
         assert_eq!(first, second);
         assert!(first.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn strict_v1_through_v4_migrate_contexts_to_none_and_reject_v5_fields() {
+        for schema_version in [
+            PROVIDER_SHARE_SCHEMA_VERSION_V1,
+            PROVIDER_SHARE_SCHEMA_VERSION_V2,
+            PROVIDER_SHARE_SCHEMA_VERSION_V3,
+            PROVIDER_SHARE_SCHEMA_VERSION_V4,
+        ] {
+            let mut legacy = serde_json::to_value(minimal_share()).expect("legacy fixture");
+            legacy["schema_version"] = serde_json::json!(schema_version);
+
+            let parsed = parse_provider_share(legacy.to_string().as_bytes())
+                .unwrap_or_else(|error| panic!("parse v{schema_version}: {error}"));
+            let models: ClaudeModels = parsed.provider.configuration.claude_models.into();
+            assert!(models.main_context_window.is_none());
+            assert!(models.haiku_context_window.is_none());
+            assert!(models.sonnet_context_window.is_none());
+            assert!(models.opus_context_window.is_none());
+
+            legacy["provider"]["configuration"]["claude_models"]["main_context_window"] =
+                serde_json::json!(1_000_000);
+            assert!(
+                parse_provider_share(legacy.to_string().as_bytes()).is_err(),
+                "v{schema_version} must reject v5 context fields"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_v5_context_requires_cx2cc_model_pair_and_valid_range() {
+        let mut ordinary = minimal_share();
+        ordinary.provider.configuration.claude_models.main_model = Some("gpt-5.6-sol".to_string());
+        ordinary
+            .provider
+            .configuration
+            .claude_models
+            .main_context_window = Some(1_000_000);
+        assert!(normalize_provider_share_v5(ordinary).is_err());
+
+        let mut cx2cc = minimal_share();
+        cx2cc.provider.configuration.bridge_type = Some(CX2CC_BRIDGE_TYPE.to_string());
+        cx2cc.provider.configuration.claude_models.main_model = Some("gpt-5.6-sol".to_string());
+        cx2cc
+            .provider
+            .configuration
+            .claude_models
+            .main_context_window =
+            Some(crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS as u64);
+        normalize_provider_share_v5(cx2cc.clone()).expect("minimum context");
+
+        cx2cc.provider.configuration.claude_models.main_model = None;
+        assert!(normalize_provider_share_v5(cx2cc.clone()).is_err());
+
+        cx2cc.provider.configuration.claude_models.main_model = Some("gpt-5.6-sol".to_string());
+        cx2cc
+            .provider
+            .configuration
+            .claude_models
+            .main_context_window =
+            Some(crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS as u64 + 1);
+        assert!(normalize_provider_share_v5(cx2cc).is_err());
     }
 
     #[test]
@@ -2027,7 +2162,7 @@ mod tests {
         share.provider.cli_key = "codex".to_string();
         share.provider.configuration.bridge_type = Some("codex_to_anthropic_messages".to_string());
 
-        let error = match normalize_provider_share_v4(share) {
+        let error = match normalize_provider_share_v5(share) {
             Ok(_) => panic!("legacy translation share must fail"),
             Err(error) => error,
         };
@@ -2046,7 +2181,7 @@ mod tests {
             .exact
             .insert("requested".to_string(), "effective".to_string());
 
-        let normalized = normalize_provider_share_v4(share).expect("normalize legacy mapping");
+        let normalized = normalize_provider_share_v5(share).expect("normalize legacy mapping");
         assert!(normalized
             .provider
             .configuration
@@ -2071,10 +2206,10 @@ mod tests {
             values: confirmed_custom_account_usage_values(),
         });
 
-        let normalized = normalize_provider_share_v4(share).expect("normalize custom share");
+        let normalized = normalize_provider_share_v5(share).expect("normalize custom share");
         assert_eq!(normalized.provider.extensions.len(), 1);
         assert_portable_custom_account_usage_is_disabled(&normalized.provider.extensions[0].values);
-        let serialized = serialize_provider_share_v4(&normalized).expect("serialize custom share");
+        let serialized = serialize_provider_share_v5(&normalized).expect("serialize custom share");
         let serialized = std::str::from_utf8(&serialized).expect("custom share utf8");
         for local_value in [
             "customScript",
@@ -2100,7 +2235,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v1_reads_legacy_statuses_and_reexports_canonical_v4_rules() {
+    fn strict_v1_reads_legacy_statuses_and_reexports_canonical_v5_rules() {
         let mut value = serde_json::to_value(minimal_share()).expect("serialize fixture");
         value["schema_version"] = serde_json::json!(1);
         value["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
@@ -2127,9 +2262,9 @@ mod tests {
             vec!["high-risk cyber"]
         );
 
-        let exported = serialize_provider_share_v4(&parsed).expect("serialize v4");
-        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("parse v4");
-        assert_eq!(exported["schema_version"], 4);
+        let exported = serialize_provider_share_v5(&parsed).expect("serialize v5");
+        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("parse v5");
+        assert_eq!(exported["schema_version"], 5);
         let retry = &exported["provider"]["configuration"]["upstream_retry_policy_override"];
         assert!(retry.get("status_codes").is_none());
         assert_eq!(retry["http_rules"][1]["status_code"], 502);
@@ -2199,7 +2334,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v3_migrates_legacy_stream_keywords_and_v4_rejects_them() {
+    fn strict_v3_migrates_legacy_stream_keywords_and_v5_rejects_them() {
         let mut legacy = serde_json::to_value(minimal_share()).expect("serialize fixture");
         legacy["schema_version"] = serde_json::json!(3);
         legacy["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
@@ -2233,20 +2368,20 @@ mod tests {
             vec!["vendor retry"]
         );
 
-        let exported = serialize_provider_share_v4(&parsed).expect("serialize v4");
-        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("v4 json");
+        let exported = serialize_provider_share_v5(&parsed).expect("serialize v5");
+        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("v5 json");
         let stream = &exported["provider"]["configuration"]["upstream_retry_policy_override"]
             ["stream_internal_errors"];
-        assert_eq!(exported["schema_version"], 4);
+        assert_eq!(exported["schema_version"], 5);
         assert!(stream.get("retry_keywords").is_none());
         assert!(stream.get("non_retry_keywords").is_none());
         assert_eq!(stream["passthrough_keywords"][0], "vendor passthrough");
         assert_eq!(stream["legacy_retry_keywords"][0], "vendor retry");
 
-        let mut invalid_v4 = exported;
-        invalid_v4["provider"]["configuration"]["upstream_retry_policy_override"]
+        let mut invalid_v5 = exported;
+        invalid_v5["provider"]["configuration"]["upstream_retry_policy_override"]
             ["stream_internal_errors"]["retry_keywords"] = serde_json::json!(["must reject"]);
-        assert!(parse_provider_share(invalid_v4.to_string().as_bytes()).is_err());
+        assert!(parse_provider_share(invalid_v5.to_string().as_bytes()).is_err());
     }
 
     #[test]
@@ -2265,7 +2400,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v4_preserves_explicit_model_routing_override() {
+    fn strict_v5_preserves_explicit_model_routing_override() {
         let mut share = minimal_share();
         share.provider.configuration.model_routing_policy_override =
             Some(crate::settings::ModelRoutingPolicy {
@@ -2277,8 +2412,8 @@ mod tests {
                 }],
             });
 
-        let bytes = serialize_provider_share_v4(&share).expect("serialize v4");
-        let parsed = parse_provider_share(&bytes).expect("parse v4");
+        let bytes = serialize_provider_share_v5(&share).expect("serialize v5");
+        let parsed = parse_provider_share(&bytes).expect("parse v5");
         let policy = parsed
             .provider
             .configuration
@@ -2294,9 +2429,9 @@ mod tests {
     }
 
     #[test]
-    fn strict_v4_preserves_inherit_and_disabled_model_routing_states() {
+    fn strict_v5_preserves_inherit_and_disabled_model_routing_states() {
         let inherit = parse_provider_share(
-            &serialize_provider_share_v4(&minimal_share()).expect("serialize inherit"),
+            &serialize_provider_share_v5(&minimal_share()).expect("serialize inherit"),
         )
         .expect("parse inherit");
         assert!(inherit
@@ -2311,7 +2446,7 @@ mod tests {
             .configuration
             .model_routing_policy_override = Some(crate::settings::ModelRoutingPolicy::default());
         let disabled = parse_provider_share(
-            &serialize_provider_share_v4(&disabled).expect("serialize disabled"),
+            &serialize_provider_share_v5(&disabled).expect("serialize disabled"),
         )
         .expect("parse disabled");
         assert!(disabled
@@ -2322,8 +2457,8 @@ mod tests {
     }
 
     #[test]
-    fn strict_v4_rejects_unknown_root_and_nested_fields() {
-        let bytes = serialize_provider_share_v4(&minimal_share()).expect("serialize");
+    fn strict_v5_rejects_unknown_root_and_nested_fields() {
+        let bytes = serialize_provider_share_v5(&minimal_share()).expect("serialize");
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
         value["unknown"] = serde_json::json!(true);
         assert!(parse_provider_share(value.to_string().as_bytes()).is_err());
@@ -2334,8 +2469,8 @@ mod tests {
     }
 
     #[test]
-    fn strict_v4_requires_complete_retry_rules_and_rejects_rule_extensions() {
-        let bytes = serialize_provider_share_v4(&minimal_share()).expect("serialize");
+    fn strict_v5_requires_complete_retry_rules_and_rejects_rule_extensions() {
+        let bytes = serialize_provider_share_v5(&minimal_share()).expect("serialize");
         let mut explicit_empty_passthrough: serde_json::Value =
             serde_json::from_slice(&bytes).expect("json");
         explicit_empty_passthrough["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
@@ -2423,9 +2558,9 @@ mod tests {
 
     #[test]
     fn strict_parser_rejects_future_version_and_oversized_content() {
-        let bytes = serialize_provider_share_v4(&minimal_share()).expect("serialize");
+        let bytes = serialize_provider_share_v5(&minimal_share()).expect("serialize");
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-        value["schema_version"] = serde_json::json!(5);
+        value["schema_version"] = serde_json::json!(6);
         let error = parse_provider_share(value.to_string().as_bytes())
             .err()
             .expect("future version must fail");
@@ -2440,7 +2575,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v4_rejects_oauth_provider_type_from_another_cli() {
+    fn strict_v5_rejects_oauth_provider_type_from_another_cli() {
         let mut share = minimal_share();
         let codex_provider_type = crate::gateway::oauth::registry::global_registry()
             .get_by_cli_key("codex")
@@ -2460,7 +2595,7 @@ mod tests {
             refresh_lead_seconds: DEFAULT_OAUTH_REFRESH_LEAD_SECONDS,
         };
 
-        let error = normalize_provider_share_v4(share)
+        let error = normalize_provider_share_v5(share)
             .err()
             .expect("cross-CLI oauth provider type must fail");
         assert!(error
@@ -2472,10 +2607,11 @@ mod tests {
     fn sensitive_share_types_do_not_derive_debug() {
         let source = include_str!("share.rs");
         for declaration in [
-            "pub(crate) struct ProviderShareEnvelope<RetryPolicy>",
-            "pub(crate) struct ProviderShareProvider<RetryPolicy>",
-            "struct ProviderShareConfiguration<RetryPolicy>",
+            "pub(crate) struct ProviderShareEnvelope<RetryPolicy, ClaudeModelsWire>",
+            "pub(crate) struct ProviderShareProvider<RetryPolicy, ClaudeModelsWire>",
+            "struct ProviderShareConfiguration<RetryPolicy, ClaudeModelsWire>",
             "struct ProviderShareClaudeModelsV1",
+            "struct ProviderShareClaudeModelsV5",
             "struct ProviderShareModelMappingV1",
             "struct ProviderShareLimitsV1",
             "struct ProviderShareRetryPolicyV1",
@@ -2673,7 +2809,7 @@ mod tests {
         );
         assert_eq!(stored.oauth_refresh_lead_s, 7_200);
 
-        let exported = export_provider_share_v4(&db, imported.id).expect("export oauth");
+        let exported = export_provider_share_v5(&db, imported.id).expect("export oauth");
         assert!(!exported.provider.enabled);
         let ProviderShareAuthenticationV1::Oauth {
             provider_type: exported_provider_type,
@@ -2726,7 +2862,7 @@ mod tests {
         )
         .expect("mark provider as referenced");
         drop(conn);
-        let error = export_provider_share_v4(&db, referenced.id)
+        let error = export_provider_share_v5(&db, referenced.id)
             .err()
             .expect("referenced provider export must fail");
         assert_eq!(
@@ -2738,12 +2874,16 @@ mod tests {
         let mut standalone_share = minimal_share();
         standalone_share.provider.name = "Standalone cx2cc".to_string();
         standalone_share.provider.configuration.bridge_type = Some(CX2CC_BRIDGE_TYPE.to_string());
-        standalone_share.provider.configuration.claude_models = ProviderShareClaudeModelsV1 {
+        standalone_share.provider.configuration.claude_models = ProviderShareClaudeModelsV5 {
             main_model: Some("claude-synthetic-main".to_string()),
             reasoning_model: Some("claude-synthetic-reasoning".to_string()),
             haiku_model: Some("claude-synthetic-haiku".to_string()),
             sonnet_model: Some("claude-synthetic-sonnet".to_string()),
             opus_model: Some("claude-synthetic-opus".to_string()),
+            main_context_window: Some(1_000_000),
+            haiku_context_window: Some(800_000),
+            sonnet_context_window: Some(600_000),
+            opus_context_window: Some(400_000),
         };
         standalone_share.provider.authentication = ProviderShareAuthenticationV1::ApiKey {
             api_key: String::new(),
@@ -2763,7 +2903,7 @@ mod tests {
         .expect("import standalone cx2cc");
         assert_eq!(standalone.source_provider_id, None);
         assert_eq!(standalone.bridge_type.as_deref(), Some(CX2CC_BRIDGE_TYPE));
-        let exported = export_provider_share_v4(&db, standalone.id).expect("export cx2cc");
+        let exported = export_provider_share_v5(&db, standalone.id).expect("export cx2cc");
         assert_eq!(
             exported.provider.configuration.bridge_type.as_deref(),
             Some(CX2CC_BRIDGE_TYPE)
@@ -2813,6 +2953,38 @@ mod tests {
                 .opus_model
                 .as_deref(),
             Some("claude-synthetic-opus")
+        );
+        assert_eq!(
+            exported
+                .provider
+                .configuration
+                .claude_models
+                .main_context_window,
+            Some(1_000_000)
+        );
+        assert_eq!(
+            exported
+                .provider
+                .configuration
+                .claude_models
+                .haiku_context_window,
+            Some(800_000)
+        );
+        assert_eq!(
+            exported
+                .provider
+                .configuration
+                .claude_models
+                .sonnet_context_window,
+            Some(600_000)
+        );
+        assert_eq!(
+            exported
+                .provider
+                .configuration
+                .claude_models
+                .opus_context_window,
+            Some(400_000)
         );
     }
 
@@ -3027,12 +3199,12 @@ mod tests {
         input.model_routing_policy_override_specified = true;
         let source = super::super::queries::upsert(&source_db, input).expect("create source");
 
-        let exported = export_provider_share_v4(&source_db, source.id).expect("export");
+        let exported = export_provider_share_v5(&source_db, source.id).expect("export");
         assert_eq!(
             exported.provider.extensions[0].values["routeGateEnabled"],
             false
         );
-        let bytes = serialize_provider_share_v4(&exported).expect("serialize");
+        let bytes = serialize_provider_share_v5(&exported).expect("serialize");
         let serialized = std::str::from_utf8(&bytes).expect("utf8");
         assert!(serialized.contains("SYNTHETIC_API_KEY"));
         assert!(!serialized.contains("SYNTHETIC_ACCOUNT_SECRET"));
@@ -3049,7 +3221,7 @@ mod tests {
         }
         let parsed = parse_provider_share(&bytes).expect("parse");
         assert_eq!(
-            serialize_provider_share_v4(&parsed).expect("serialize parsed"),
+            serialize_provider_share_v5(&parsed).expect("serialize parsed"),
             bytes
         );
 
@@ -3164,13 +3336,13 @@ WHERE provider_id = ?2 AND plugin_id = ?3 AND namespace = ?4
         )
         .expect("replace source account usage config");
         drop(conn);
-        let custom_export = export_provider_share_v4(&source_db, source.id)
+        let custom_export = export_provider_share_v5(&source_db, source.id)
             .expect("export provider with custom account usage");
         assert_eq!(custom_export.provider.extensions.len(), 1);
         assert_portable_custom_account_usage_is_disabled(
             &custom_export.provider.extensions[0].values,
         );
-        let custom_bytes = serialize_provider_share_v4(&custom_export).expect("serialize custom");
+        let custom_bytes = serialize_provider_share_v5(&custom_export).expect("serialize custom");
         let custom_text = std::str::from_utf8(&custom_bytes).expect("custom share utf8");
         for local_value in [
             "customScript",

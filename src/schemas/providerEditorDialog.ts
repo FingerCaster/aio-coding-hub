@@ -1,6 +1,7 @@
 // Usage: Zod schema for ProviderEditorDialog (RHF + toast-based submit validation).
 
 import { z } from "zod";
+import { CX2CC_CONTEXT_WINDOW_MAX, CX2CC_CONTEXT_WINDOW_MIN } from "../constants/cx2cc";
 
 const MAX_LIMIT_USD = 1_000_000_000;
 
@@ -128,13 +129,20 @@ export type ProviderEditorDialogFormOutput = z.output<ProviderEditorDialogSchema
 // Mirrors src-tauri/src/domain/providers/types.rs MAX_MODEL_NAME_LEN (guarded by crossLayerContracts.test.ts).
 export const MAX_MODEL_NAME_LEN = 200;
 
-export function validateProviderClaudeModels(input: {
-  main_model?: string | null;
-  reasoning_model?: string | null;
-  haiku_model?: string | null;
-  sonnet_model?: string | null;
-  opus_model?: string | null;
-}) {
+export function validateProviderClaudeModels(
+  input: {
+    main_model?: string | null;
+    reasoning_model?: string | null;
+    haiku_model?: string | null;
+    sonnet_model?: string | null;
+    opus_model?: string | null;
+    main_context_window?: number | null;
+    haiku_context_window?: number | null;
+    sonnet_context_window?: number | null;
+    opus_context_window?: number | null;
+  },
+  options: { allowCx2ccContextWindows?: boolean } = {}
+) {
   const fields: Array<[label: string, value: string | null | undefined]> = [
     ["主模型", input.main_model],
     ["推理模型(Thinking)", input.reasoning_model],
@@ -151,5 +159,35 @@ export function validateProviderClaudeModels(input: {
     }
   }
 
+  const contextFields: Array<
+    [label: string, model: string | null | undefined, value: number | null | undefined]
+  > = [
+    ["主模型", input.main_model, input.main_context_window],
+    ["Haiku 默认模型", input.haiku_model, input.haiku_context_window],
+    ["Sonnet 默认模型", input.sonnet_model, input.sonnet_context_window],
+    ["Opus 默认模型", input.opus_model, input.opus_context_window],
+  ];
+
+  for (const [label, model, value] of contextFields) {
+    if (value == null) continue;
+    if (!options.allowCx2ccContextWindows) {
+      return "上下文窗口仅支持 CX2CC Provider";
+    }
+    if (!normalizeModelName(model)) {
+      return `${label}必须先配置模型才能设置上下文窗口`;
+    }
+    if (
+      !Number.isInteger(value) ||
+      value < CX2CC_CONTEXT_WINDOW_MIN ||
+      value > CX2CC_CONTEXT_WINDOW_MAX
+    ) {
+      return `${label}上下文窗口必须是 ${CX2CC_CONTEXT_WINDOW_MIN}-${CX2CC_CONTEXT_WINDOW_MAX} 的整数`;
+    }
+  }
+
   return null;
+}
+
+function normalizeModelName(value: string | null | undefined) {
+  return value?.trim() || null;
 }

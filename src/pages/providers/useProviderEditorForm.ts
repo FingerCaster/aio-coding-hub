@@ -42,6 +42,7 @@ import {
   deriveCx2ccSourceValue,
   cliNameFromKey,
   normalizeTagsForCostMultiplier,
+  withoutCx2ccContextWindows,
   withCx2ccDefaultModel,
 } from "./providerEditorUtils";
 import { copyApiKey as copyApiKeyAction } from "./useProviderEditorActions";
@@ -446,6 +447,9 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
         // Clear it when returning to a direct mode so model discovery follows
         // the current form state instead of stale bridge metadata.
         setCx2ccSourceValue("");
+        if (cliKey === "claude") {
+          setClaudeModels((prev) => withoutCx2ccContextWindows(prev));
+        }
       }
       if (next === "cx2cc" && cliKey === "claude") {
         setClaudeModels((prev) => withCx2ccDefaultModel(prev));
@@ -954,7 +958,21 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
 
   const claudeModelCount =
     cliKey === "claude"
-      ? Object.values(claudeModels).filter((value) => {
+      ? (authMode === "cx2cc"
+          ? [
+              claudeModels.main_model,
+              claudeModels.haiku_model,
+              claudeModels.sonnet_model,
+              claudeModels.opus_model,
+            ]
+          : [
+              claudeModels.main_model,
+              claudeModels.reasoning_model,
+              claudeModels.haiku_model,
+              claudeModels.sonnet_model,
+              claudeModels.opus_model,
+            ]
+        ).filter((value) => {
           if (typeof value !== "string") return false;
           return Boolean(value.trim());
         }).length

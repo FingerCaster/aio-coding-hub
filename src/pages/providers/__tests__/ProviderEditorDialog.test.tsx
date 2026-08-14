@@ -954,6 +954,15 @@ describe("pages/providers/ProviderEditorDialog", () => {
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByText("模型路由")).toBeInTheDocument();
     expect(dialog.getByRole("tab", { name: "继承全局" })).toHaveAttribute("aria-selected", "true");
+    expect(dialog.getByLabelText("推理模型 (Thinking)")).toBeInTheDocument();
+    for (const label of [
+      "主模型上下文窗口",
+      "Haiku 默认模型上下文窗口",
+      "Sonnet 默认模型上下文窗口",
+      "Opus 默认模型上下文窗口",
+    ]) {
+      expect(dialog.queryByLabelText(label)).not.toBeInTheDocument();
+    }
   });
 
   it("prefills create mode from initial values and saves as a new provider", async () => {
@@ -1065,7 +1074,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
       expect(dialog.getByText("x1.80")).toBeInTheDocument();
       expect(dialog.getByText("https://codex.example.com/v1")).toBeInTheDocument();
       expect(dialog.getByText(/当前模型映射：/)).toBeInTheDocument();
-      expect(dialog.getAllByText("gpt-5.5").length).toBeGreaterThanOrEqual(1);
+      expect(dialog.getAllByText("gpt-5.6-sol").length).toBeGreaterThanOrEqual(1);
     });
 
     fireEvent.click(dialog.getByRole("button", { name: "保存" }));
@@ -1118,28 +1127,20 @@ describe("pages/providers/ProviderEditorDialog", () => {
     });
     const defaultModelSelect = dialog.getByLabelText("默认模型");
     await waitFor(() => {
-      expect(defaultModelSelect).toHaveValue("gpt-5.5");
-      expect(dialog.getByPlaceholderText(/kimi-k2-thinking/)).toHaveValue("gpt-5.5");
+      expect(defaultModelSelect).toHaveValue("gpt-5.6-sol");
     });
+    expect(dialog.getByText("已配置 4/4")).toBeInTheDocument();
+    expect(dialog.queryByLabelText("推理模型 (Thinking)")).not.toBeInTheDocument();
     expect(
       Array.from((defaultModelSelect as HTMLSelectElement).options, (option) => option.value)
-    ).toEqual([
-      "__manual__",
-      "gpt-5.6",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.6-luna",
-      "gpt-5.5",
-      "gpt-5.4",
-    ]);
+    ).toEqual(["__manual__", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"]);
     const mappedModelInputs = [
       dialog.getByLabelText("主模型"),
-      dialog.getByLabelText("推理模型 (Thinking)"),
       dialog.getByLabelText("Haiku 默认模型"),
       dialog.getByLabelText("Sonnet 默认模型"),
       dialog.getByLabelText("Opus 默认模型"),
     ];
-    for (const model of ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       fireEvent.change(defaultModelSelect, { target: { value: model } });
       expect(defaultModelSelect).toHaveValue(model);
       for (const input of mappedModelInputs) {
@@ -1147,16 +1148,31 @@ describe("pages/providers/ProviderEditorDialog", () => {
       }
     }
     fireEvent.change(defaultModelSelect, { target: { value: "gpt-5.5" } });
-    const thinkingInput = dialog.getByPlaceholderText(/kimi-k2-thinking/);
     fireEvent.change(defaultModelSelect, { target: { value: "__manual__" } });
     expect(defaultModelSelect).toHaveValue("__manual__");
-    expect(thinkingInput).toHaveValue("gpt-5.5");
-    fireEvent.change(defaultModelSelect, { target: { value: "gpt-5.4" } });
-    expect(thinkingInput).toHaveValue("gpt-5.4");
-    fireEvent.change(thinkingInput, { target: { value: "manual-thinking" } });
+    for (const input of mappedModelInputs) {
+      expect(input).toHaveValue("gpt-5.5");
+    }
+    fireEvent.change(mappedModelInputs[0], { target: { value: "manual-main" } });
     expect(defaultModelSelect).toHaveValue("__manual__");
-    fireEvent.change(defaultModelSelect, { target: { value: "gpt-5.5" } });
-    expect(thinkingInput).toHaveValue("gpt-5.5");
+    fireEvent.change(defaultModelSelect, { target: { value: "gpt-5.4" } });
+    for (const input of mappedModelInputs) {
+      expect(input).toHaveValue("gpt-5.4");
+    }
+    fireEvent.change(defaultModelSelect, { target: { value: "gpt-5.6-sol" } });
+
+    const contextInputs = [
+      dialog.getByLabelText("主模型上下文窗口"),
+      dialog.getByLabelText("Haiku 默认模型上下文窗口"),
+      dialog.getByLabelText("Sonnet 默认模型上下文窗口"),
+      dialog.getByLabelText("Opus 默认模型上下文窗口"),
+    ];
+    const contextValues = [1_024, 200_000, 1_000_000, 10_000_000];
+    contextInputs.forEach((input, index) => {
+      const value = contextValues[index];
+      fireEvent.change(input, { target: { value: String(value) } });
+      expect(input).toHaveValue(value);
+    });
 
     await waitFor(() => {
       expect(dialog.getByText("当前 AIO 服务 Codex 网关")).toBeInTheDocument();
@@ -1165,7 +1181,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
       expect(dialog.getByText("http://127.0.0.1:37123/v1")).toBeInTheDocument();
       expect(dialog.getByText("aio-coding-hub")).toBeInTheDocument();
       expect(dialog.getByText(/转译后的请求会进入当前 AIO 服务 Codex 网关/)).toBeInTheDocument();
-      expect(dialog.getAllByText("gpt-5.5").length).toBeGreaterThanOrEqual(1);
+      expect(dialog.getAllByText("gpt-5.6-sol").length).toBeGreaterThanOrEqual(1);
     });
 
     fireEvent.click(dialog.getByRole("button", { name: "保存" }));
@@ -1178,11 +1194,14 @@ describe("pages/providers/ProviderEditorDialog", () => {
           sourceProviderId: null,
           bridgeType: "cx2cc",
           claudeModels: {
-            main_model: "gpt-5.5",
-            reasoning_model: "gpt-5.5",
-            haiku_model: "gpt-5.5",
-            sonnet_model: "gpt-5.5",
-            opus_model: "gpt-5.5",
+            main_model: "gpt-5.6-sol",
+            haiku_model: "gpt-5.6-sol",
+            sonnet_model: "gpt-5.6-sol",
+            opus_model: "gpt-5.6-sol",
+            main_context_window: 1_024,
+            haiku_context_window: 200_000,
+            sonnet_context_window: 1_000_000,
+            opus_context_window: 10_000_000,
           },
         })
       )
@@ -1216,15 +1235,158 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     const dialog = within(screen.getByRole("dialog"));
     await waitFor(() => expect(dialog.getByLabelText("默认模型")).toHaveValue(manualModel));
-    for (const label of [
-      "主模型",
-      "推理模型 (Thinking)",
-      "Haiku 默认模型",
-      "Sonnet 默认模型",
-      "Opus 默认模型",
-    ]) {
+    expect(dialog.getByText("已配置 4/4")).toBeInTheDocument();
+    for (const label of ["主模型", "Haiku 默认模型", "Sonnet 默认模型", "Opus 默认模型"]) {
       expect(dialog.getByLabelText(label)).toHaveValue(manualModel);
     }
+    expect(dialog.queryByLabelText("推理模型 (Thinking)")).not.toBeInTheDocument();
+    for (const label of [
+      "主模型上下文窗口",
+      "Haiku 默认模型上下文窗口",
+      "Sonnet 默认模型上下文窗口",
+      "Opus 默认模型上下文窗口",
+    ]) {
+      expect(dialog.getByLabelText(label)).toHaveValue(null);
+    }
+    expect(vi.mocked(providerUpsert)).not.toHaveBeenCalled();
+  });
+
+  it("clears a slot context when its model changes and clears all contexts for a preset", async () => {
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          cli_key: "claude",
+          auth_mode: "api_key",
+          cost_multiplier: 0,
+          source_provider_id: null,
+          bridge_type: "cx2cc",
+          claude_models: {
+            main_model: "main-model",
+            main_context_window: 100_000,
+            haiku_model: "main-model",
+            haiku_context_window: 200_000,
+            sonnet_model: "sonnet-model",
+            sonnet_context_window: 300_000,
+            opus_model: "opus-model",
+            opus_context_window: 400_000,
+          },
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    const sonnetContext = dialog.getByLabelText("Sonnet 默认模型上下文窗口");
+    await waitFor(() => expect(sonnetContext).toHaveValue(300_000));
+
+    fireEvent.change(dialog.getByLabelText("Sonnet 默认模型"), {
+      target: { value: "next-sonnet-model" },
+    });
+    expect(sonnetContext).toHaveValue(null);
+    expect(dialog.getByLabelText("主模型上下文窗口")).toHaveValue(100_000);
+    expect(dialog.getByLabelText("Haiku 默认模型上下文窗口")).toHaveValue(200_000);
+    expect(dialog.getByLabelText("Opus 默认模型上下文窗口")).toHaveValue(400_000);
+
+    fireEvent.change(dialog.getByLabelText("主模型"), {
+      target: { value: "next-main-model" },
+    });
+    expect(dialog.getByLabelText("主模型上下文窗口")).toHaveValue(null);
+    expect(dialog.getByLabelText("Haiku 默认模型上下文窗口")).toHaveValue(null);
+    expect(dialog.getByLabelText("主模型")).toHaveValue("next-main-model");
+    expect(dialog.getByLabelText("Haiku 默认模型")).toHaveValue("next-main-model");
+    expect(dialog.getByLabelText("Opus 默认模型上下文窗口")).toHaveValue(400_000);
+
+    fireEvent.change(dialog.getByLabelText("默认模型"), {
+      target: { value: "gpt-5.6-terra" },
+    });
+    for (const label of [
+      "主模型上下文窗口",
+      "Haiku 默认模型上下文窗口",
+      "Sonnet 默认模型上下文窗口",
+      "Opus 默认模型上下文窗口",
+    ]) {
+      expect(dialog.getByLabelText(label)).toHaveValue(null);
+    }
+    for (const label of ["主模型", "Haiku 默认模型", "Sonnet 默认模型", "Opus 默认模型"]) {
+      expect(dialog.getByLabelText(label)).toHaveValue("gpt-5.6-terra");
+    }
+  });
+
+  it("clears all context windows when leaving cx2cc", async () => {
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          cli_key: "claude",
+          auth_mode: "api_key",
+          cost_multiplier: 0,
+          source_provider_id: null,
+          bridge_type: "cx2cc",
+          claude_models: {
+            main_model: "main-model",
+            main_context_window: 100_000,
+            haiku_model: "haiku-model",
+            haiku_context_window: 200_000,
+            sonnet_model: "sonnet-model",
+            sonnet_context_window: 300_000,
+            opus_model: "opus-model",
+            opus_context_window: 400_000,
+          },
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    await waitFor(() => expect(dialog.getByLabelText("主模型上下文窗口")).toHaveValue(100_000));
+
+    fireEvent.click(dialog.getByRole("tab", { name: "API 密钥" }));
+    expect(dialog.queryByLabelText("主模型上下文窗口")).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC" }));
+
+    for (const label of [
+      "主模型上下文窗口",
+      "Haiku 默认模型上下文窗口",
+      "Sonnet 默认模型上下文窗口",
+      "Opus 默认模型上下文窗口",
+    ]) {
+      expect(dialog.getByLabelText(label)).toHaveValue(null);
+    }
+  });
+
+  it("blocks cx2cc context windows outside the supported integer range", async () => {
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          cli_key: "claude",
+          auth_mode: "api_key",
+          cost_multiplier: 0,
+          source_provider_id: null,
+          bridge_type: "cx2cc",
+          claude_models: {
+            main_model: "gpt-5.6-sol",
+            main_context_window: 1_024,
+          },
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    const contextInput = dialog.getByLabelText("主模型上下文窗口");
+    await waitFor(() => expect(contextInput).toHaveValue(1_024));
+    fireEvent.change(contextInput, { target: { value: "1023" } });
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    expect(vi.mocked(toast)).toHaveBeenCalledWith("主模型上下文窗口必须是 1024-10000000 的整数");
     expect(vi.mocked(providerUpsert)).not.toHaveBeenCalled();
   });
 

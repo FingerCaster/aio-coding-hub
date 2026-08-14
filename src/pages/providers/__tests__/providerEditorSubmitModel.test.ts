@@ -102,6 +102,49 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     expect(result.value.payload.authMode).toBe("api_key");
   });
 
+  it("saves cx2cc context windows with their explicit model slots", () => {
+    const claudeModels = {
+      main_model: "gpt-5.6-sol",
+      main_context_window: 1_024,
+      haiku_model: "gpt-5.6-luna",
+      haiku_context_window: 200_000,
+      sonnet_model: "gpt-5.6-terra",
+      sonnet_context_window: 1_000_000,
+      opus_model: "gpt-5.5",
+      opus_context_window: 10_000_000,
+    };
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        authMode: "cx2cc",
+        isCodexGatewaySource: true,
+        claudeModels,
+      })
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.payload.claudeModels).toEqual(claudeModels);
+  });
+
+  it("rejects context windows for ordinary Claude providers", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        claudeModels: {
+          main_model: "claude-sonnet",
+          main_context_window: 200_000,
+        },
+      })
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "message",
+        message: "上下文窗口仅支持 CX2CC Provider",
+      },
+    });
+  });
+
   it("rejects cx2cc mode for Codex providers", () => {
     const result = buildProviderEditorUpsertInput(
       makeContext({

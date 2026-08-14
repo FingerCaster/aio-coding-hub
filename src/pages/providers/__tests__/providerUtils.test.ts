@@ -7,6 +7,8 @@ import {
   providerPrimaryBaseUrl,
 } from "../baseUrl";
 import { validateProviderClaudeModels } from "../../../schemas/providerEditorDialog";
+import { CX2CC_PROVIDER_DEFAULT_MODEL } from "../../../constants/cx2cc";
+import { resolveCx2ccDefaultModelSelectValue, withCx2ccDefaultModel } from "../providerEditorUtils";
 
 describe("pages/providers/baseUrl helpers", () => {
   it("summarizes provider base urls", () => {
@@ -73,5 +75,69 @@ describe("validateProviderClaudeModels", () => {
   it("validates Claude model mapping length", () => {
     expect(validateProviderClaudeModels({ main_model: "x".repeat(201) })).toMatch(/过长/);
     expect(validateProviderClaudeModels({ main_model: "ok" })).toBeNull();
+  });
+
+  it("validates cx2cc context windows, model pairing, and provider scope", () => {
+    expect(
+      validateProviderClaudeModels(
+        {
+          main_model: "main",
+          main_context_window: 1_024,
+          opus_model: "opus",
+          opus_context_window: 10_000_000,
+        },
+        { allowCx2ccContextWindows: true }
+      )
+    ).toBeNull();
+
+    for (const value of [1_023, 10_000_001, 1_024.5]) {
+      expect(
+        validateProviderClaudeModels(
+          { main_model: "main", main_context_window: value },
+          { allowCx2ccContextWindows: true }
+        )
+      ).toMatch(/1024-10000000 的整数/);
+    }
+
+    expect(
+      validateProviderClaudeModels(
+        { main_model: "", main_context_window: 1_024 },
+        { allowCx2ccContextWindows: true }
+      )
+    ).toMatch(/必须先配置模型/);
+    expect(validateProviderClaudeModels({ main_model: "main", main_context_window: 1_024 })).toBe(
+      "上下文窗口仅支持 CX2CC Provider"
+    );
+  });
+});
+
+describe("CX2CC provider model defaults", () => {
+  it("defaults only the four runtime mapper slots to the Sol model", () => {
+    expect(withCx2ccDefaultModel({})).toEqual({
+      main_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+      haiku_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+      sonnet_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+      opus_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+    });
+
+    expect(withCx2ccDefaultModel({ reasoning_model: "legacy-thinking" })).toEqual({
+      reasoning_model: "legacy-thinking",
+      main_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+      haiku_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+      sonnet_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+      opus_model: CX2CC_PROVIDER_DEFAULT_MODEL,
+    });
+  });
+
+  it("ignores the invalid reasoning slot when resolving the default dropdown", () => {
+    expect(
+      resolveCx2ccDefaultModelSelectValue({
+        main_model: "gpt-5.6-sol",
+        reasoning_model: "legacy-thinking",
+        haiku_model: "gpt-5.6-sol",
+        sonnet_model: "gpt-5.6-sol",
+        opus_model: "gpt-5.6-sol",
+      })
+    ).toBe("gpt-5.6-sol");
   });
 });

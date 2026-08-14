@@ -105,7 +105,7 @@ pub struct ProviderUpsertParams {
     pub model_routing_policy_override_specified: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 pub struct ClaudeModels {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,6 +122,18 @@ pub struct ClaudeModels {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub opus_model: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_context_window: Option<u64>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub haiku_context_window: Option<u64>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sonnet_context_window: Option<u64>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opus_context_window: Option<u64>,
 }
 
 pub(super) fn normalize_model_slot(raw: Option<String>) -> Option<String> {
@@ -144,6 +156,10 @@ impl ClaudeModels {
             haiku_model: normalize_model_slot(self.haiku_model),
             sonnet_model: normalize_model_slot(self.sonnet_model),
             opus_model: normalize_model_slot(self.opus_model),
+            main_context_window: self.main_context_window,
+            haiku_context_window: self.haiku_context_window,
+            sonnet_context_window: self.sonnet_context_window,
+            opus_context_window: self.opus_context_window,
         }
     }
 
@@ -153,6 +169,10 @@ impl ClaudeModels {
             || self.haiku_model.is_some()
             || self.sonnet_model.is_some()
             || self.opus_model.is_some()
+            || self.main_context_window.is_some()
+            || self.haiku_context_window.is_some()
+            || self.sonnet_context_window.is_some()
+            || self.opus_context_window.is_some()
     }
 
     pub(crate) fn map_model(&self, original_model: &str, has_thinking: bool) -> String {

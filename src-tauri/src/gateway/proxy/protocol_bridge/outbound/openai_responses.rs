@@ -1594,6 +1594,10 @@ mod tests {
             render(IRReasoningConfig::Effort("future-effort".to_string()))["reasoning"],
             json!({"effort": "future-effort"})
         );
+        assert_eq!(
+            render(IRReasoningConfig::Effort("ultra".to_string()))["reasoning"],
+            json!({"effort": "ultra"})
+        );
     }
 
     // ── response_to_ir ────────────────────────────────────────────────
