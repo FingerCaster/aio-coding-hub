@@ -31,8 +31,8 @@
 ## 5. Delivery
 
 - [x] Update the CX2CC routing contract with configurable mapping and delegated-timeout ownership.
-- [ ] Commit with hooks able to resolve `node` and `pnpm`.
-- [ ] Push the feature branch and create an explicit origin PR for `FingerCaster/aio-coding-hub`.
+- [x] Commit with hooks able to resolve `node` and `pnpm`.
+- [x] Push the feature branch and create an explicit origin PR for `FingerCaster/aio-coding-hub`.
 
 ## Rollback Points
 
