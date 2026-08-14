@@ -94,6 +94,9 @@ pub(crate) struct SettingsUpdate {
     #[serde(rename = "cx2CcModelReasoningEffort")]
     #[specta(rename = "cx2CcModelReasoningEffort")]
     pub cx2cc_model_reasoning_effort: Option<String>,
+    #[serde(rename = "cx2CcReasoningEffortMappings")]
+    #[specta(rename = "cx2CcReasoningEffortMappings")]
+    pub cx2cc_reasoning_effort_mappings: Option<Vec<settings::Cx2ccReasoningEffortMapping>>,
     #[serde(rename = "cx2CcServiceTier")]
     #[specta(rename = "cx2CcServiceTier")]
     pub cx2cc_service_tier: Option<String>,
@@ -183,6 +186,9 @@ pub(crate) struct SettingsPatch {
     #[serde(rename = "cx2CcModelReasoningEffort")]
     #[specta(rename = "cx2CcModelReasoningEffort")]
     pub cx2cc_model_reasoning_effort: Option<String>,
+    #[serde(rename = "cx2CcReasoningEffortMappings")]
+    #[specta(rename = "cx2CcReasoningEffortMappings")]
+    pub cx2cc_reasoning_effort_mappings: Option<Vec<settings::Cx2ccReasoningEffortMapping>>,
     #[serde(rename = "cx2CcServiceTier")]
     #[specta(rename = "cx2CcServiceTier")]
     pub cx2cc_service_tier: Option<String>,
@@ -263,6 +269,7 @@ impl SettingsPatch {
             cx2cc_fallback_model_haiku: self.cx2cc_fallback_model_haiku.clone(),
             cx2cc_fallback_model_main: self.cx2cc_fallback_model_main.clone(),
             cx2cc_model_reasoning_effort: self.cx2cc_model_reasoning_effort.clone(),
+            cx2cc_reasoning_effort_mappings: self.cx2cc_reasoning_effort_mappings.clone(),
             cx2cc_service_tier: self.cx2cc_service_tier.clone(),
             cx2cc_disable_response_storage: self.cx2cc_disable_response_storage,
             cx2cc_enable_reasoning_to_thinking: self.cx2cc_enable_reasoning_to_thinking,
@@ -327,6 +334,7 @@ struct SettingsServiceOwnedToken {
     cx2cc_fallback_model_haiku: String,
     cx2cc_fallback_model_main: String,
     cx2cc_model_reasoning_effort: String,
+    cx2cc_reasoning_effort_mappings: Vec<settings::Cx2ccReasoningEffortMapping>,
     cx2cc_service_tier: String,
     cx2cc_disable_response_storage: bool,
     cx2cc_enable_reasoning_to_thinking: bool,
@@ -391,6 +399,7 @@ impl SettingsServiceOwnedToken {
             cx2cc_fallback_model_haiku: settings.cx2cc_fallback_model_haiku.clone(),
             cx2cc_fallback_model_main: settings.cx2cc_fallback_model_main.clone(),
             cx2cc_model_reasoning_effort: settings.cx2cc_model_reasoning_effort.clone(),
+            cx2cc_reasoning_effort_mappings: settings.cx2cc_reasoning_effort_mappings.clone(),
             cx2cc_service_tier: settings.cx2cc_service_tier.clone(),
             cx2cc_disable_response_storage: settings.cx2cc_disable_response_storage,
             cx2cc_enable_reasoning_to_thinking: settings.cx2cc_enable_reasoning_to_thinking,
@@ -461,6 +470,7 @@ impl SettingsServiceOwnedToken {
         settings.cx2cc_fallback_model_haiku = self.cx2cc_fallback_model_haiku.clone();
         settings.cx2cc_fallback_model_main = self.cx2cc_fallback_model_main.clone();
         settings.cx2cc_model_reasoning_effort = self.cx2cc_model_reasoning_effort.clone();
+        settings.cx2cc_reasoning_effort_mappings = self.cx2cc_reasoning_effort_mappings.clone();
         settings.cx2cc_service_tier = self.cx2cc_service_tier.clone();
         settings.cx2cc_disable_response_storage = self.cx2cc_disable_response_storage;
         settings.cx2cc_enable_reasoning_to_thinking = self.cx2cc_enable_reasoning_to_thinking;
@@ -548,6 +558,7 @@ pub(crate) struct SettingsView {
     pub cx2cc_fallback_model_haiku: String,
     pub cx2cc_fallback_model_main: String,
     pub cx2cc_model_reasoning_effort: String,
+    pub cx2cc_reasoning_effort_mappings: Vec<settings::Cx2ccReasoningEffortMapping>,
     pub cx2cc_service_tier: String,
     pub cx2cc_disable_response_storage: bool,
     pub cx2cc_enable_reasoning_to_thinking: bool,
@@ -681,6 +692,7 @@ impl From<&settings::AppSettings> for SettingsView {
             cx2cc_fallback_model_haiku: value.cx2cc_fallback_model_haiku.clone(),
             cx2cc_fallback_model_main: value.cx2cc_fallback_model_main.clone(),
             cx2cc_model_reasoning_effort: value.cx2cc_model_reasoning_effort.clone(),
+            cx2cc_reasoning_effort_mappings: value.cx2cc_reasoning_effort_mappings.clone(),
             cx2cc_service_tier: value.cx2cc_service_tier.clone(),
             cx2cc_disable_response_storage: value.cx2cc_disable_response_storage,
             cx2cc_enable_reasoning_to_thinking: value.cx2cc_enable_reasoning_to_thinking,
@@ -1026,6 +1038,13 @@ fn apply_settings_update_owned_patch(
         .cx2cc_model_reasoning_effort
         .clone()
         .unwrap_or_else(|| previous_token.cx2cc_model_reasoning_effort.clone());
+    let mut cx2cc_reasoning_effort_mappings = update
+        .cx2cc_reasoning_effort_mappings
+        .clone()
+        .unwrap_or_else(|| previous_token.cx2cc_reasoning_effort_mappings.clone());
+    settings::normalize_cx2cc_reasoning_effort_mappings_for_write(
+        &mut cx2cc_reasoning_effort_mappings,
+    )?;
     let cx2cc_service_tier = update
         .cx2cc_service_tier
         .clone()
@@ -1166,6 +1185,7 @@ fn apply_settings_update_owned_patch(
         cx2cc_fallback_model_haiku,
         cx2cc_fallback_model_main,
         cx2cc_model_reasoning_effort,
+        cx2cc_reasoning_effort_mappings,
         cx2cc_service_tier,
         cx2cc_disable_response_storage,
         cx2cc_enable_reasoning_to_thinking,
@@ -2609,6 +2629,9 @@ mod tests {
             "cx2CcFallbackModelHaiku": "gpt-4.1-mini",
             "cx2CcFallbackModelMain": "gpt-5.4",
             "cx2CcModelReasoningEffort": "high",
+            "cx2CcReasoningEffortMappings": [
+                {"source": "ultra", "target": "max"}
+            ],
             "cx2CcServiceTier": "flex",
             "cx2CcDisableResponseStorage": false,
             "cx2CcEnableReasoningToThinking": true,
@@ -2630,6 +2653,14 @@ mod tests {
         );
         assert_eq!(update.cx2cc_fallback_model_main.as_deref(), Some("gpt-5.4"));
         assert_eq!(update.cx2cc_model_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            update
+                .cx2cc_reasoning_effort_mappings
+                .as_ref()
+                .expect("effort mappings")[0]
+                .source,
+            "ultra"
+        );
         assert_eq!(update.cx2cc_service_tier.as_deref(), Some("flex"));
         assert_eq!(update.cx2cc_disable_response_storage, Some(false));
         assert_eq!(update.cx2cc_enable_reasoning_to_thinking, Some(true));
@@ -2650,6 +2681,7 @@ mod tests {
         let update: SettingsUpdate = serde_json::from_value(json).expect("should deserialize");
         assert!(update.auto_start.is_none());
         assert!(update.cx2cc_model_reasoning_effort.is_none());
+        assert!(update.cx2cc_reasoning_effort_mappings.is_none());
         assert!(update.cx2cc_fallback_model_opus.is_none());
         assert!(update.cx2cc_filter_batch_tool.is_none());
     }
@@ -2718,6 +2750,7 @@ mod tests {
             cx2cc_fallback_model_haiku: Some(settings.cx2cc_fallback_model_haiku.clone()),
             cx2cc_fallback_model_main: Some(settings.cx2cc_fallback_model_main.clone()),
             cx2cc_model_reasoning_effort: Some(settings.cx2cc_model_reasoning_effort.clone()),
+            cx2cc_reasoning_effort_mappings: Some(settings.cx2cc_reasoning_effort_mappings.clone()),
             cx2cc_service_tier: Some(settings.cx2cc_service_tier.clone()),
             cx2cc_disable_response_storage: Some(settings.cx2cc_disable_response_storage),
             cx2cc_enable_reasoning_to_thinking: Some(settings.cx2cc_enable_reasoning_to_thinking),
@@ -2838,6 +2871,98 @@ mod tests {
                 .expect("canonical settings after strategy patch")
                 .provider_failback_strategy,
             settings::ProviderFailbackStrategy::Disabled
+        );
+    }
+
+    #[test]
+    fn partial_patch_normalizes_and_persists_cx2cc_reasoning_effort_mappings() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let result = tauri::async_runtime::block_on(settings_patch_impl_for_test(
+            handle.clone(),
+            SettingsPatch {
+                cx2cc_reasoning_effort_mappings: Some(vec![
+                    settings::Cx2ccReasoningEffortMapping {
+                        source: " ultra ".to_string(),
+                        target: " max ".to_string(),
+                    },
+                ]),
+                ..SettingsPatch::default()
+            },
+        ))
+        .expect("persist effort mappings");
+
+        assert_eq!(result.settings.cx2cc_reasoning_effort_mappings.len(), 1);
+        assert_eq!(
+            result.settings.cx2cc_reasoning_effort_mappings[0].source,
+            "ultra"
+        );
+        assert_eq!(
+            result.settings.cx2cc_reasoning_effort_mappings[0].target,
+            "max"
+        );
+        let canonical = settings::read(&handle).expect("canonical settings");
+        assert_eq!(
+            canonical.cx2cc_reasoning_effort_mappings,
+            result.settings.cx2cc_reasoning_effort_mappings
+        );
+    }
+
+    #[test]
+    fn partial_patch_preserves_empty_cx2cc_reasoning_effort_mappings() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let result = tauri::async_runtime::block_on(settings_patch_impl_for_test(
+            handle.clone(),
+            SettingsPatch {
+                cx2cc_reasoning_effort_mappings: Some(Vec::new()),
+                ..SettingsPatch::default()
+            },
+        ))
+        .expect("persist empty effort mappings");
+
+        assert!(result.settings.cx2cc_reasoning_effort_mappings.is_empty());
+        assert!(settings::read(&handle)
+            .expect("canonical settings")
+            .cx2cc_reasoning_effort_mappings
+            .is_empty());
+    }
+
+    #[test]
+    fn partial_patch_rejects_duplicate_cx2cc_reasoning_effort_sources() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let before = settings::read(&handle).expect("settings before patch");
+
+        let error = tauri::async_runtime::block_on(settings_patch_impl_for_test(
+            handle.clone(),
+            SettingsPatch {
+                cx2cc_reasoning_effort_mappings: Some(vec![
+                    settings::Cx2ccReasoningEffortMapping {
+                        source: "ultra".to_string(),
+                        target: "max".to_string(),
+                    },
+                    settings::Cx2ccReasoningEffortMapping {
+                        source: " ultra ".to_string(),
+                        target: "high".to_string(),
+                    },
+                ]),
+                ..SettingsPatch::default()
+            },
+        ))
+        .expect_err("duplicate effort sources must fail");
+
+        assert!(error.contains("duplicate cx2cc reasoning effort mapping source"));
+        assert_eq!(
+            settings::read(&handle)
+                .expect("canonical settings after rejected patch")
+                .cx2cc_reasoning_effort_mappings,
+            before.cx2cc_reasoning_effort_mappings
         );
     }
 

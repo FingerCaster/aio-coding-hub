@@ -4,6 +4,7 @@
 
 import type { AppSettings } from "../../services/settings/settings";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../services/gateway/upstreamRetryPolicy";
+import { createDefaultCx2ccReasoningEffortMappings } from "../../constants/cx2cc";
 
 export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSettings {
   return {
@@ -70,6 +71,7 @@ export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSett
     cx2cc_fallback_model_sonnet: "gpt-5.6-sol",
     cx2cc_fallback_model_haiku: "gpt-5.6-sol",
     cx2cc_fallback_model_main: "gpt-5.6-sol",
+    cx2cc_reasoning_effort_mappings: createDefaultCx2ccReasoningEffortMappings(),
     cx2cc_model_reasoning_effort: "",
     cx2cc_service_tier: "",
     cx2cc_disable_response_storage: true,

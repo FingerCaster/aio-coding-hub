@@ -3,7 +3,8 @@
 use super::defaults::*;
 use super::migration::{
     normalize_cli_priority_order, normalize_codex_home_override,
-    normalize_upstream_retry_policy_for_write, repair_settings,
+    normalize_cx2cc_reasoning_effort_mappings_for_write, normalize_upstream_retry_policy_for_write,
+    repair_settings,
 };
 use super::types::{AppSettings, CodexHomeMode, GatewayListenMode, WslHostAddressMode};
 use crate::app_paths;
@@ -375,6 +376,8 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         &settings.cx2cc_service_tier,
         MAX_CX2CC_OPTIONAL_FIELD_LEN,
     )?;
+    let mut effort_mappings = settings.cx2cc_reasoning_effort_mappings.clone();
+    normalize_cx2cc_reasoning_effort_mappings_for_write(&mut effort_mappings)?;
     validate_update_releases_url(&settings.update_releases_url)?;
 
     if settings.log_retention_days == 0 {
@@ -546,6 +549,9 @@ fn write_unlocked<R: tauri::Runtime>(
     settings.cx2cc_fallback_model_main = settings.cx2cc_fallback_model_main.trim().to_string();
     settings.cx2cc_model_reasoning_effort =
         settings.cx2cc_model_reasoning_effort.trim().to_string();
+    normalize_cx2cc_reasoning_effort_mappings_for_write(
+        &mut settings.cx2cc_reasoning_effort_mappings,
+    )?;
     settings.cx2cc_service_tier = settings.cx2cc_service_tier.trim().to_string();
     settings.codex_home_override = normalize_codex_home_override(&settings.codex_home_override);
     normalize_upstream_retry_policy_for_write(&mut settings.upstream_retry_policy)?;
@@ -1365,5 +1371,53 @@ mod tests {
         };
         let err = validate_bounds(&settings).unwrap_err().to_string();
         assert!(err.contains("cx2cc_service_tier must not contain control characters"));
+
+        let settings = AppSettings {
+            cx2cc_reasoning_effort_mappings: vec![
+                crate::settings::Cx2ccReasoningEffortMapping {
+                    source: "ultra".to_string(),
+                    target: "max".to_string(),
+                },
+                crate::settings::Cx2ccReasoningEffortMapping {
+                    source: " ultra ".to_string(),
+                    target: "high".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("duplicate cx2cc reasoning effort mapping source"));
+
+        let settings = AppSettings {
+            cx2cc_reasoning_effort_mappings: vec![crate::settings::Cx2ccReasoningEffortMapping {
+                source: "x".repeat(MAX_CX2CC_REASONING_EFFORT_BYTES + 1),
+                target: "max".to_string(),
+            }],
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("mapping source must be <="));
+
+        let settings = AppSettings {
+            cx2cc_reasoning_effort_mappings: (0..=MAX_CX2CC_REASONING_EFFORT_MAPPINGS)
+                .map(|index| crate::settings::Cx2ccReasoningEffortMapping {
+                    source: format!("source-{index}"),
+                    target: "max".to_string(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("must contain at most"));
+
+        let settings = AppSettings {
+            cx2cc_reasoning_effort_mappings: vec![crate::settings::Cx2ccReasoningEffortMapping {
+                source: "ultra".to_string(),
+                target: "max\ninjected".to_string(),
+            }],
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("mapping target must not contain control characters"));
     }
 }

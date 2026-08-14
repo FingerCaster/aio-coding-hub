@@ -89,19 +89,26 @@ literals.
 - The provider editor hides the generic configured-model routing section for a
   CX2CC bridge. Ordinary providers retain that section.
 
-#### Reasoning presence
+#### Reasoning presence and effort mapping
 
-- `output_config.effort` keeps its exact string and has precedence over an
-  enabled/adaptive `thinking` object.
+- `output_config.effort` has precedence over an enabled/adaptive `thinking`
+  object. An explicit effort is looked up exactly once in the ordered CX2CC
+  effort mapping; matching is case-sensitive and non-recursive. A value with no
+  matching source is preserved unchanged.
+- The default mapping is `low -> low`, `medium -> medium`, `high -> high`,
+  `xhigh -> xhigh`, `max -> max`, and `ultra -> max`. In particular, GPT-5.6
+  `max` must not be downgraded. Users may add, edit, delete, or restore these
+  rules; an explicitly empty mapping is valid passthrough configuration.
 - `thinking.type = "disabled"` maps to Responses
-  `reasoning.effort = "none"`.
+  `reasoning.effort = "none"` and bypasses the user mapping.
 - Enabled/adaptive without an effort remains an explicit state but does not
   invent an effort.
 - An absent reasoning configuration remains absent. The legacy persisted
   `cx2cc_model_reasoning_effort` field is schema-compatible but never supplies a
   runtime fallback.
-- Unknown future effort strings are preserved through the typed bridge. Do not
-  coerce Codex-only `ultra` into the Responses effort catalog.
+- Mapping sources must be non-empty and unique after trimming. Sources and
+  targets reject control characters and enforce the shared count and byte
+  bounds at every write/import boundary.
 - Non-reasoning CX2CC settings such as `service_tier`, response storage, and
   stream compatibility retain their existing ownership.
 
@@ -143,7 +150,8 @@ literals.
 - The private header is `x-aio-internal-reentry-nonce`. It carries a random
   256-bit, one-time nonce with a short TTL and bounded registry capacity.
 - Authorization binds the bridge provider and origin trace, and matches exactly
-  Codex `POST /v1/responses` with no query and a one-hop budget.
+  Codex `POST /v1/responses` with no query. The outer null-source CX2CC bridge
+  gets exactly one local delegation attempt.
 - The ingress removes the private header before all other request processing,
   then consumes it once. Invalid method/path/query, expiry, forgery, or replay
   fails closed and burns an issued nonce when present.
@@ -153,6 +161,9 @@ literals.
 - A trusted second hop skips generic configured-model route resolution so the
   mapper-selected model remains unchanged. Ordinary self-loop rejection remains
   enabled for every other request.
+- The authorized local delegation has no outer first-byte timeout. The inner
+  Codex route exclusively owns real-provider timeout, retry, and failover;
+  ordinary provider sends retain the configured first-byte timeout.
 
 ### 4. Validation & Error Matrix
 
@@ -164,7 +175,11 @@ literals.
 | Reasoning absent with legacy setting present | Emit no `reasoning.effort` |
 | `thinking.type = disabled` | Emit `reasoning.effort = none` |
 | Enabled/adaptive without effort | Preserve explicit state; emit no invented effort |
-| Unknown effort string | Preserve the exact value |
+| Default explicit `max` | Emit `max` |
+| Default explicit `ultra` | Emit `max` |
+| Custom mapping hit | Apply the target exactly once; never chain another rule |
+| Unknown effort string or empty mapping | Preserve the exact value |
+| Duplicate/empty/over-limit mapping entry | `SEC_INVALID_INPUT`; do not partially persist |
 | Ordinary Claude provider submits any context window | `SEC_INVALID_INPUT`; contexts are CX2CC-only |
 | CX2CC context has no explicit model in the same slot | `SEC_INVALID_INPUT`; do not borrow another slot or fallback model |
 | CX2CC context is outside `1024..=10000000` or is not an integer | `SEC_INVALID_INPUT` |
@@ -175,6 +190,7 @@ literals.
 | Forged, replayed, expired, or wrong-contract nonce | Untrusted request; ordinary recursion guard applies |
 | Authorized local origin returns 3xx | Return the 3xx; never follow it with the private header |
 | Proxy environment variables are set | Authorized reentry connects directly; proxy receives no request |
+| Authorized current-gateway delegation | One outer attempt, no outer first-byte timeout; inner route owns retries |
 | Default changes in one layer only | Cross-layer/default-contract tests fail |
 
 ### 5. Good / Base / Bad Cases
@@ -204,8 +220,9 @@ literals.
 - Mapper tests cover all four slots, configured overrides, runtime fallbacks,
   and shared-default constant ownership.
 - Protocol tests cover absent, disabled, enabled, adaptive, known effort,
-  unknown effort, precedence, and the legacy-field non-fallback behavior from
-  Anthropic input through the final Responses body.
+  unknown effort, default `max`/`ultra`, custom single-pass mapping, precedence,
+  empty passthrough configuration, and the legacy-field non-fallback behavior
+  from Anthropic input through the final Responses body.
 - Route tests prove CX2CC first hop and trusted second hop do not evaluate the
   configured resolver, while an ordinary request still resolves it.
 - Context tests cover exact identity, equal candidates, mixed minimum,
@@ -218,12 +235,13 @@ literals.
   `ANTHROPIC_MODEL`.
 - Reentry tests cover issue/consume once, forgery, replay, expiry, capacity
   eviction, wrong CLI/method/path/query, ingress header removal, typed target
-  matching, direct proxy bypass, and redirect refusal.
+  matching, one outer current-gateway attempt, delegated first-byte timeout,
+  ordinary timeout preservation, direct proxy bypass, and redirect refusal.
 - UI tests cover every GPT-5.6 preset, manual/historical preservation, CX2CC
   generic-route hiding, ordinary-provider visibility, four context controls,
-  per-slot/default model clearing, leaving-CX2CC clearing, and removal of the
-  fixed thinking control. New production UI code uses typed fields without
-  `any` or type assertions.
+  per-slot/default model clearing, leaving-CX2CC clearing, removal of the fixed
+  thinking control, and effort-rule add/edit/delete/restore-default behavior.
+  New production UI code uses typed fields without `any` or type assertions.
 - Run frontend coverage shards, generated-binding checks, full Rust library
   tests, Rust fmt/check/Clippy, and release contract self-tests before Beta.
 
@@ -253,7 +271,7 @@ let configured_route = configured_model_route_for_request(
     || configured_model_route::resolve(/* ordinary request facts */),
 );
 
-let reasoning = parse_reasoning_presence(request_body);
+let reasoning = parse_and_map_explicit_reasoning_once(request_body, cx2cc_effort_mappings);
 let responses_body = cx2cc_translate_once(request_body, reasoning);
 
 let projection = resolve_context_window_projection(
@@ -266,6 +284,7 @@ let nonce = internal_reentry_registry.issue(bridge_provider_id, trace_id)?;
 direct_no_proxy_no_redirect_client
     .post(local_gateway)
     .header(INTERNAL_REENTRY_HEADER, nonce)
+    .first_byte_timeout(None) // inner Codex route owns real-provider timeout
     .send()
     .await?;
 ```

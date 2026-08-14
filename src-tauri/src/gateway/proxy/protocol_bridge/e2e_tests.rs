@@ -130,7 +130,7 @@ mod tests {
         let ultra_effort = translate(json!({
             "output_config": {"effort": "ultra"}
         }));
-        assert_eq!(ultra_effort["reasoning"]["effort"], "ultra");
+        assert_eq!(ultra_effort["reasoning"]["effort"], "max");
 
         let non_string_effort = translate(json!({
             "output_config": {"effort": 42}

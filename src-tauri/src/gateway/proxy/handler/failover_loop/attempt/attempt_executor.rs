@@ -379,19 +379,27 @@ where
             });
         }
     };
-    // Matching consumes the typed intent. It only authorizes the exact self-loop
+    // Matching consumes the typed intent. It can only authorize the exact self-loop
     // exception below; ordinary target validation still runs for every request.
-    let authorized_internal_reentry = cx2cc_preparation::InternalCodexReentry::consume_and_match(
-        &mut prepared.internal_codex_reentry,
-        &input.trace_id,
-        prepared.provider_id,
-        &input.req_method,
-        &url,
-    );
+    let internal_reentry_intent_matched =
+        cx2cc_preparation::InternalCodexReentry::consume_and_match(
+            &mut prepared.internal_codex_reentry,
+            &input.trace_id,
+            prepared.provider_id,
+            &input.req_method,
+            &url,
+        );
     // Resolve first, but defer returning its result until after the authoritative
     // enabled-state read so the outer Provider switch remains the master gate.
     // The enabled-state read is therefore also the final async preparation step.
     let target_validation = crate::gateway::http_client::validate_gateway_target(&url).await;
+    let authorized_internal_reentry = confirm_internal_reentry(
+        internal_reentry_intent_matched,
+        matches!(
+            &target_validation,
+            Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop)
+        ),
+    );
     let db = ctx.state.db.clone();
     let provider_id = prepared.provider_id;
     let provider_uuid = prepared.provider_uuid.clone();
@@ -517,13 +525,15 @@ where
     } else {
         pinned_client.unwrap_or_else(|| ctx.state.client())
     };
+    let effective_first_byte_timeout =
+        first_byte_timeout_for_send(first_byte_timeout, authorized_internal_reentry);
     let send_result = send::send_upstream_with_first_byte_timeout(
         client,
         input.req_method.clone(),
         url,
         headers,
         upstream_body,
-        first_byte_timeout,
+        effective_first_byte_timeout,
         || {
             if let Some(ownership) = dispatch_ownership.as_ref() {
                 if !ownership.commit_at_transport_boundary(now_unix_seconds() as i64) {
@@ -572,6 +582,23 @@ where
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn confirm_internal_reentry(intent_matched: bool, target_is_current_gateway: bool) -> bool {
+    intent_matched && target_is_current_gateway
+}
+
+fn first_byte_timeout_for_send(
+    configured_timeout: Option<std::time::Duration>,
+    authorized_internal_reentry: bool,
+) -> Option<std::time::Duration> {
+    if authorized_internal_reentry {
+        // The local hop delegates timeout, retry, and failover ownership to the
+        // inner Codex gateway request.
+        None
+    } else {
+        configured_timeout
+    }
+}
 
 async fn gateway_provider_enabled_check(
     db: crate::db::Db,
@@ -940,6 +967,29 @@ mod tests {
         assert!(should_sync_final_wire_model("claude", false, true));
         assert!(!should_sync_final_wire_model("claude", false, false));
         assert!(!should_sync_final_wire_model("grok", false, false));
+    }
+
+    #[test]
+    fn authorized_internal_reentry_delegates_first_byte_timeout() {
+        let configured = Some(std::time::Duration::from_secs(120));
+
+        assert_eq!(first_byte_timeout_for_send(configured, true), None);
+    }
+
+    #[test]
+    fn internal_reentry_requires_matching_intent_and_current_gateway_target() {
+        assert!(confirm_internal_reentry(true, true));
+        assert!(!confirm_internal_reentry(true, false));
+        assert!(!confirm_internal_reentry(false, true));
+        assert!(!confirm_internal_reentry(false, false));
+    }
+
+    #[test]
+    fn ordinary_upstream_retains_configured_first_byte_timeout() {
+        let configured = Some(std::time::Duration::from_secs(120));
+
+        assert_eq!(first_byte_timeout_for_send(configured, false), configured);
+        assert_eq!(first_byte_timeout_for_send(None, false), None);
     }
 
     #[test]

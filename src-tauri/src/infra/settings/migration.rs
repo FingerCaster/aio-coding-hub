@@ -2,14 +2,76 @@
 
 use super::defaults::*;
 use super::types::{
-    AppSettings, CodexHomeMode, ModelRoutingPolicy, ModelRoutingRule, UpdateChannel,
-    UpstreamErrorMessageBehavior, UpstreamErrorResponseRule, UpstreamErrorStatusBehavior,
-    UpstreamHttpRetryRule, UpstreamRetryPolicy,
+    AppSettings, CodexHomeMode, Cx2ccReasoningEffortMapping, ModelRoutingPolicy, ModelRoutingRule,
+    UpdateChannel, UpstreamErrorMessageBehavior, UpstreamErrorResponseRule,
+    UpstreamErrorStatusBehavior, UpstreamHttpRetryRule, UpstreamRetryPolicy,
 };
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
 
 pub(super) const SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK: u32 = 36;
+
+pub fn normalize_cx2cc_reasoning_effort_mappings_for_write(
+    mappings: &mut Vec<Cx2ccReasoningEffortMapping>,
+) -> AppResult<bool> {
+    let original = mappings.clone();
+    if mappings.len() > MAX_CX2CC_REASONING_EFFORT_MAPPINGS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: cx2cc_reasoning_effort_mappings must contain at most {MAX_CX2CC_REASONING_EFFORT_MAPPINGS} entries"
+        )
+        .into());
+    }
+
+    let mut sources = HashSet::with_capacity(mappings.len());
+    for mapping in mappings.iter_mut() {
+        mapping.source = mapping.source.trim().to_string();
+        mapping.target = mapping.target.trim().to_string();
+        for (field, value) in [("source", &mapping.source), ("target", &mapping.target)] {
+            if value.is_empty() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: cx2cc reasoning effort mapping {field} cannot be empty"
+                )
+                .into());
+            }
+            if value.len() > MAX_CX2CC_REASONING_EFFORT_BYTES {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: cx2cc reasoning effort mapping {field} must be <= {MAX_CX2CC_REASONING_EFFORT_BYTES} bytes"
+                )
+                .into());
+            }
+            if value.chars().any(char::is_control) {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: cx2cc reasoning effort mapping {field} must not contain control characters"
+                )
+                .into());
+            }
+        }
+        if !sources.insert(mapping.source.clone()) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: duplicate cx2cc reasoning effort mapping source: {}",
+                mapping.source
+            )
+            .into());
+        }
+    }
+
+    Ok(*mappings != original)
+}
+
+fn sanitize_cx2cc_reasoning_effort_mappings(settings: &mut AppSettings) -> bool {
+    let mut normalized = settings.cx2cc_reasoning_effort_mappings.clone();
+    match normalize_cx2cc_reasoning_effort_mappings_for_write(&mut normalized) {
+        Ok(changed) => {
+            if changed {
+                settings.cx2cc_reasoning_effort_mappings = normalized;
+            }
+            changed
+        }
+        // Leave invalid input intact so the validation boundary rejects it;
+        // silently replacing a user-authored mapping would lose configuration.
+        Err(_) => false,
+    }
+}
 
 pub(super) fn normalize_cli_priority_order(input: &[String]) -> Vec<String> {
     let mut order = Vec::with_capacity(crate::shared::cli_key::SUPPORTED_CLI_KEYS.len());
@@ -1549,6 +1611,19 @@ fn migrate_restore_cyber_passthrough(
     changed
 }
 
+fn migrate_add_cx2cc_reasoning_effort_mappings(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    // Missing fields already deserialize through the field-level default.
+    // Do not overwrite an explicitly stored empty/custom list while bumping.
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CX2CC_REASONING_EFFORT_MAPPINGS,
+    )
+}
+
 pub(super) fn sanitize_codex_infinite_retry_test(settings: &mut AppSettings) -> bool {
     if settings.codex_infinite_retry_test_interval_ms <= MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
         return false;
@@ -1603,6 +1678,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_stream_terminal_firewall_legacy_fields,
     migrate_add_codex_infinite_retry_test,
     migrate_restore_cyber_passthrough,
+    migrate_add_cx2cc_reasoning_effort_mappings,
 ];
 
 pub(crate) fn migrate_to_current_schema(
@@ -1639,6 +1715,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_codex_provider_test_model(settings);
     repaired |= sanitize_cli_priority_order(settings);
     repaired |= sanitize_codex_infinite_retry_test(settings);
+    repaired |= sanitize_cx2cc_reasoning_effort_mappings(settings);
     let canonical = super::persistence::canonical_settings_json(settings)?;
     repaired |= raw_settings_json != &canonical;
     Ok(repaired)
@@ -2138,6 +2215,88 @@ mod tests {
     }
 
     #[test]
+    fn migrate_add_cx2cc_reasoning_effort_mappings_preserves_explicit_empty_list() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_RESTORE_CYBER_PASSTHROUGH,
+            cx2cc_reasoning_effort_mappings: Vec::new(),
+            ..Default::default()
+        };
+
+        assert!(migrate_add_cx2cc_reasoning_effort_mappings(
+            &mut settings,
+            true
+        ));
+        assert_eq!(settings.schema_version, SCHEMA_VERSION);
+        assert!(settings.cx2cc_reasoning_effort_mappings.is_empty());
+        assert!(!migrate_add_cx2cc_reasoning_effort_mappings(
+            &mut settings,
+            true
+        ));
+    }
+
+    #[test]
+    fn normalize_cx2cc_reasoning_effort_mappings_trims_and_preserves_order() {
+        let mut mappings = vec![
+            Cx2ccReasoningEffortMapping {
+                source: " ultra ".to_string(),
+                target: " max ".to_string(),
+            },
+            Cx2ccReasoningEffortMapping {
+                source: "max".to_string(),
+                target: "low".to_string(),
+            },
+        ];
+
+        assert!(normalize_cx2cc_reasoning_effort_mappings_for_write(&mut mappings).unwrap());
+        assert_eq!(mappings[0].source, "ultra");
+        assert_eq!(mappings[0].target, "max");
+        assert_eq!(mappings[1].source, "max");
+        assert_eq!(mappings[1].target, "low");
+
+        let mut empty = Vec::new();
+        assert!(!normalize_cx2cc_reasoning_effort_mappings_for_write(&mut empty).unwrap());
+    }
+
+    #[test]
+    fn normalize_cx2cc_reasoning_effort_mappings_rejects_duplicate_trimmed_sources() {
+        let mut mappings = vec![
+            Cx2ccReasoningEffortMapping {
+                source: "ultra".to_string(),
+                target: "max".to_string(),
+            },
+            Cx2ccReasoningEffortMapping {
+                source: " ultra ".to_string(),
+                target: "high".to_string(),
+            },
+        ];
+
+        let error = normalize_cx2cc_reasoning_effort_mappings_for_write(&mut mappings)
+            .expect_err("duplicate source must fail")
+            .to_string();
+        assert!(error.contains("duplicate cx2cc reasoning effort mapping source"));
+    }
+
+    #[test]
+    fn normalize_cx2cc_reasoning_effort_mappings_rejects_empty_fields() {
+        for mapping in [
+            Cx2ccReasoningEffortMapping {
+                source: " \t ".to_string(),
+                target: "max".to_string(),
+            },
+            Cx2ccReasoningEffortMapping {
+                source: "ultra".to_string(),
+                target: " \n ".to_string(),
+            },
+        ] {
+            let mut mappings = vec![mapping];
+            let error = normalize_cx2cc_reasoning_effort_mappings_for_write(&mut mappings)
+                .expect_err("empty mapping field must fail")
+                .to_string();
+            assert!(error.contains("cannot be empty"));
+        }
+    }
+
+    #[test]
     fn migrate_add_update_channel_bumps_schema_and_keeps_stable_default() {
         let mut settings = AppSettings {
             schema_version: SCHEMA_VERSION_ADD_MODEL_ROUTING_POLICY,
@@ -2626,10 +2785,7 @@ mod tests {
                 .clear();
 
             assert!(migrate_to_current_schema(&mut settings, true));
-            assert_eq!(
-                settings.schema_version,
-                SCHEMA_VERSION_RESTORE_CYBER_PASSTHROUGH
-            );
+            assert_eq!(settings.schema_version, SCHEMA_VERSION);
             assert_eq!(
                 settings
                     .upstream_retry_policy
@@ -2681,7 +2837,7 @@ mod tests {
 
     #[test]
     fn migrate_restore_cyber_passthrough_preserves_current_empty_and_custom_legacy_values() {
-        for schema_version in [SCHEMA_VERSION_RESTORE_CYBER_PASSTHROUGH, SCHEMA_VERSION + 1] {
+        for schema_version in [SCHEMA_VERSION, SCHEMA_VERSION + 1] {
             let mut settings = AppSettings {
                 schema_version,
                 ..Default::default()

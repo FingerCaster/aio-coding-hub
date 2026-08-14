@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/cx2cc-routing-contract.md","reason":"CX2CC reasoning presence, model ownership, context projection and authenticated local reentry contract"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Settings patch ownership, normalization and concurrent writer safety"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/reasoning-effort-observability-contract.md","reason":"Final outbound effort must remain the logging authority"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Attempt, retry, self-loop skip and route evidence behavior"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Outer delegated attempt budget must not corrupt inner retry ownership"}

@@ -178,19 +178,25 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
 
     let needs_oauth_reactive_refresh_retry = provider.auth_mode == "oauth";
     let needs_codex_previous_response_id_retry = codex_request_has_previous_response_id(input);
-    let provider_base_max_attempts = provider_max_attempts_for_request(
+    let ordinary_provider_base_max_attempts = provider_max_attempts_for_request(
         input.max_attempts_per_provider,
         needs_oauth_reactive_refresh_retry,
         needs_codex_previous_response_id_retry,
         0,
         input.is_codex_model_discovery,
     );
-    let provider_max_attempts = provider_max_attempts_for_request(
+    let ordinary_provider_max_attempts = provider_max_attempts_for_request(
         input.max_attempts_per_provider,
         needs_oauth_reactive_refresh_retry,
         needs_codex_previous_response_id_retry,
         configured_transient_retry_budget(&upstream_retry_policy),
         input.is_codex_model_discovery,
+    );
+    let (provider_base_max_attempts, provider_max_attempts) = provider_attempt_limits_for_target(
+        is_cx2cc_bridge,
+        provider.source_provider_id,
+        ordinary_provider_base_max_attempts,
+        ordinary_provider_max_attempts,
     );
 
     let mut provider_base_url_base = match provider_checks::resolve_base_url(
@@ -490,6 +496,21 @@ fn provider_max_attempts_for_request(
     configured_max_attempts.max(1 + required_internal_retries)
 }
 
+fn provider_attempt_limits_for_target(
+    is_cx2cc_bridge: bool,
+    source_provider_id: Option<i64>,
+    provider_base_max_attempts: u32,
+    provider_max_attempts: u32,
+) -> (u32, u32) {
+    if is_cx2cc_bridge && source_provider_id.is_none() {
+        // The current-gateway target is a one-shot delegation. The inner Codex
+        // request owns real Provider retries, repairs, and failover.
+        (1, 1)
+    } else {
+        (provider_base_max_attempts, provider_max_attempts)
+    }
+}
+
 fn configured_transient_retry_budget(policy: &crate::settings::UpstreamRetryPolicy) -> u32 {
     if policy.enabled {
         policy.max_retries
@@ -512,7 +533,7 @@ mod tests {
     use super::{
         codex_body_has_previous_response_id, configured_model_route_for_request,
         configured_transient_retry_budget, effective_upstream_retry_policy,
-        provider_max_attempts_for_request, IterationCounters,
+        provider_attempt_limits_for_target, provider_max_attempts_for_request, IterationCounters,
     };
     use crate::settings::{UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamTransportRetryKind};
 
@@ -621,6 +642,27 @@ mod tests {
     #[test]
     fn provider_max_attempts_honors_strict_request_limit() {
         assert_eq!(provider_max_attempts_for_request(1, true, true, 3, true), 1);
+    }
+
+    #[test]
+    fn current_gateway_cx2cc_delegation_uses_one_outer_attempt() {
+        assert_eq!(provider_attempt_limits_for_target(true, None, 5, 8), (1, 1));
+    }
+
+    #[test]
+    fn explicit_source_and_ordinary_providers_keep_their_attempt_limits() {
+        assert_eq!(
+            provider_attempt_limits_for_target(true, Some(42), 5, 8),
+            (5, 8)
+        );
+        assert_eq!(
+            provider_attempt_limits_for_target(false, None, 5, 8),
+            (5, 8)
+        );
+        assert_eq!(
+            provider_attempt_limits_for_target(false, Some(42), 5, 8),
+            (5, 8)
+        );
     }
 
     #[test]

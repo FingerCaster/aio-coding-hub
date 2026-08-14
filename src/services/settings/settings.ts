@@ -1,6 +1,7 @@
 import {
   commands,
   type CodexHomeMode,
+  type Cx2ccReasoningEffortMapping,
   type GatewayListenMode,
   type HomeUsagePeriod,
   type ModelRoutingPolicy,
@@ -31,6 +32,7 @@ import type {
 } from "../gateway/upstreamErrorResponseRules";
 
 export type {
+  Cx2ccReasoningEffortMapping,
   CodexHomeMode,
   GatewayListenMode,
   HomeUsagePeriod,
@@ -156,6 +158,7 @@ const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
   cx2CcFallbackModelSonnet: "cx2cc_fallback_model_sonnet",
   cx2CcFallbackModelHaiku: "cx2cc_fallback_model_haiku",
   cx2CcFallbackModelMain: "cx2cc_fallback_model_main",
+  cx2CcReasoningEffortMappings: "cx2cc_reasoning_effort_mappings",
   cx2CcModelReasoningEffort: "cx2cc_model_reasoning_effort",
   cx2CcServiceTier: "cx2cc_service_tier",
   cx2CcDisableResponseStorage: "cx2cc_disable_response_storage",
@@ -291,6 +294,7 @@ function toGeneratedSettingsUpdate(input: SettingsSetInput): FrontendSettingsUpd
     cx2CcFallbackModelSonnet: input.cx2CcFallbackModelSonnet ?? null,
     cx2CcFallbackModelHaiku: input.cx2CcFallbackModelHaiku ?? null,
     cx2CcFallbackModelMain: input.cx2CcFallbackModelMain ?? null,
+    cx2CcReasoningEffortMappings: input.cx2CcReasoningEffortMappings ?? null,
     cx2CcModelReasoningEffort: input.cx2CcModelReasoningEffort ?? null,
     cx2CcServiceTier: input.cx2CcServiceTier ?? null,
     cx2CcDisableResponseStorage: input.cx2CcDisableResponseStorage ?? null,

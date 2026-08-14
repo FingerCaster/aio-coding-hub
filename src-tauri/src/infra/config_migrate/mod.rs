@@ -570,6 +570,9 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
     } else {
         settings_to_write.model_routing_policy = settings::ModelRoutingPolicy::default();
     }
+    settings::normalize_cx2cc_reasoning_effort_mappings_for_write(
+        &mut settings_to_write.cx2cc_reasoning_effort_mappings,
+    )?;
     settings_to_write.schema_version = settings::SCHEMA_VERSION;
     // Imported settings are committed through the existing whole-snapshot CAS,
     // so normalize the device-local updater authorization before that boundary.

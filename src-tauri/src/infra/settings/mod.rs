@@ -40,9 +40,10 @@ pub use defaults::{
     SCHEMA_VERSION,
 };
 pub(crate) use migration::{
-    migrate_to_current_schema, normalize_model_routing_policy_for_write,
-    normalize_upstream_error_response_rules_for_write, normalize_upstream_retry_policy_for_write,
-    sanitize_model_routing_policy, sanitize_upstream_retry_policy,
+    migrate_to_current_schema, normalize_cx2cc_reasoning_effort_mappings_for_write,
+    normalize_model_routing_policy_for_write, normalize_upstream_error_response_rules_for_write,
+    normalize_upstream_retry_policy_for_write, sanitize_model_routing_policy,
+    sanitize_upstream_retry_policy,
 };
 pub(crate) use persistence::validate_bounds;
 pub use persistence::{
@@ -53,7 +54,8 @@ pub use persistence::{
 #[allow(unused_imports)]
 pub use types::ModelRoutingRule;
 pub use types::{
-    AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, ModelRoutingPolicy,
+    default_cx2cc_reasoning_effort_mappings, AppSettings, CodexHomeMode,
+    Cx2ccReasoningEffortMapping, GatewayListenMode, HomeUsagePeriod, ModelRoutingPolicy,
     ProviderFailbackStrategy, UpdateChannel, UpstreamErrorMessageBehavior,
     UpstreamErrorResponseMatchMode, UpstreamErrorResponseRule, UpstreamErrorStatusBehavior,
     UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamStreamInternalErrorPolicy,

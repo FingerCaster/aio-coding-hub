@@ -79,7 +79,7 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
         .unwrap_or_default();
 
     let metadata = IRMetadata {
-        reasoning: parse_reasoning_config(&body),
+        reasoning: parse_reasoning_config(&body, settings),
         ..Default::default()
     };
 
@@ -98,17 +98,19 @@ fn parse_request(body: Value, settings: &Cx2ccSettings) -> Result<InternalReques
     })
 }
 
-fn parse_reasoning_config(body: &Value) -> IRReasoningConfig {
+fn parse_reasoning_config(body: &Value, settings: &Cx2ccSettings) -> IRReasoningConfig {
     let effort = body
         .pointer("/output_config/effort")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+        .and_then(Value::as_str);
+    let mapped_effort = || effort.map(|value| settings.map_reasoning_effort(value));
 
     match body.pointer("/thinking/type").and_then(Value::as_str) {
         Some("disabled") => IRReasoningConfig::Disabled,
-        Some("enabled") => IRReasoningConfig::Enabled(effort),
-        Some("adaptive") => IRReasoningConfig::Adaptive(effort),
-        _ => effort.map(IRReasoningConfig::Effort).unwrap_or_default(),
+        Some("enabled") => IRReasoningConfig::Enabled(mapped_effort()),
+        Some("adaptive") => IRReasoningConfig::Adaptive(mapped_effort()),
+        _ => mapped_effort()
+            .map(IRReasoningConfig::Effort)
+            .unwrap_or_default(),
     }
 }
 
@@ -770,7 +772,7 @@ mod tests {
             request(json!({
                 "output_config": {"effort": "ultra"}
             })),
-            IRReasoningConfig::Effort("ultra".to_string())
+            IRReasoningConfig::Effort("max".to_string())
         );
         for non_string_effort in [
             serde_json::Value::Null,
@@ -788,6 +790,58 @@ mod tests {
             request(json!({
                 "thinking": {"type": "disabled"},
                 "output_config": {"effort": "high"}
+            })),
+            IRReasoningConfig::Disabled
+        );
+    }
+
+    #[test]
+    fn request_reasoning_config_uses_custom_mapping_once_without_legacy_fallback() {
+        let settings = Cx2ccSettings {
+            model_reasoning_effort: Some("high".to_string()),
+            reasoning_effort_mappings: vec![
+                crate::settings::Cx2ccReasoningEffortMapping {
+                    source: "ultra".to_string(),
+                    target: "max".to_string(),
+                },
+                crate::settings::Cx2ccReasoningEffortMapping {
+                    source: "max".to_string(),
+                    target: "low".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        let request = |reasoning_fields: Value| {
+            let mut body = json!({
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "Hello"}]
+            });
+            body.as_object_mut().expect("request object").extend(
+                reasoning_fields
+                    .as_object()
+                    .expect("reasoning fields")
+                    .clone(),
+            );
+            parse_request(body, &settings)
+                .expect("parse request")
+                .metadata
+                .reasoning
+        };
+
+        assert_eq!(request(json!({})), IRReasoningConfig::Absent);
+        assert_eq!(
+            request(json!({"output_config": {"effort": "ultra"}})),
+            IRReasoningConfig::Effort("max".to_string())
+        );
+        assert_eq!(
+            request(json!({"output_config": {"effort": "future"}})),
+            IRReasoningConfig::Effort("future".to_string())
+        );
+        assert_eq!(
+            request(json!({
+                "thinking": {"type": "disabled"},
+                "output_config": {"effort": "max"}
             })),
             IRReasoningConfig::Disabled
         );

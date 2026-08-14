@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { CliManagerCx2ccTab } from "../Cx2ccTab";
 import type { AppSettings } from "../../../../services/settings/settings";
+import { createDefaultCx2ccReasoningEffortMappings } from "../../../../constants/cx2cc";
 
 vi.mock("sonner", () => ({ toast: vi.fn() }));
 
@@ -14,6 +15,7 @@ function createAppSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     cx2cc_fallback_model_sonnet: "gpt-5.4-sonnet",
     cx2cc_fallback_model_haiku: "gpt-5.4-haiku",
     cx2cc_fallback_model_main: "gpt-5.4-main",
+    cx2cc_reasoning_effort_mappings: createDefaultCx2ccReasoningEffortMappings(),
     cx2cc_service_tier: "fast",
     cx2cc_model_reasoning_effort: "medium",
     cx2cc_disable_response_storage: true,
@@ -54,6 +56,7 @@ describe("components/cli-manager/tabs/Cx2ccTab", () => {
     );
 
     expect(screen.getByText("模型 Fallback 映射")).toBeInTheDocument();
+    expect(screen.getByText("思考强度转换")).toBeInTheDocument();
     expect(screen.getByText("上游请求注入")).toBeInTheDocument();
     expect(screen.getByText("转换行为开关")).toBeInTheDocument();
   });
@@ -72,6 +75,246 @@ describe("components/cli-manager/tabs/Cx2ccTab", () => {
     expect(screen.getByDisplayValue("gpt-5.4-sonnet")).toBeInTheDocument();
     expect(screen.getByDisplayValue("gpt-5.4-haiku")).toBeInTheDocument();
     expect(screen.getByDisplayValue("gpt-5.4-main")).toBeInTheDocument();
+  });
+
+  it("renders the default reasoning effort mappings and passthrough behavior", () => {
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={vi.fn().mockResolvedValue(null)}
+      />
+    );
+
+    expect(screen.getByLabelText("规则 5 来源强度")).toHaveValue("max");
+    expect(screen.getByLabelText("规则 5 目标强度")).toHaveValue("max");
+    expect(screen.getByLabelText("规则 6 来源强度")).toHaveValue("ultra");
+    expect(screen.getByLabelText("规则 6 目标强度")).toHaveValue("max");
+    expect(screen.getByText("按来源强度精确匹配；未命中时原样透传。")).toBeInTheDocument();
+  });
+
+  it("adds, edits and saves a reasoning effort mapping", async () => {
+    const persistSettings = vi.fn(async (patch: Partial<AppSettings>) => createAppSettings(patch));
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("规则 5 目标强度"), {
+      target: { value: "xhigh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加思考强度转换规则" }));
+    fireEvent.change(screen.getByLabelText("规则 7 来源强度"), {
+      target: { value: " future " },
+    });
+    fireEvent.change(screen.getByLabelText("规则 7 目标强度"), {
+      target: { value: " xhigh " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存思考强度转换规则" }));
+
+    await waitFor(() =>
+      expect(persistSettings).toHaveBeenCalledWith({
+        cx2cc_reasoning_effort_mappings: [
+          ...createDefaultCx2ccReasoningEffortMappings().slice(0, 4),
+          { source: "max", target: "xhigh" },
+          { source: "ultra", target: "max" },
+          { source: "future", target: "xhigh" },
+        ],
+      })
+    );
+  });
+
+  it("deletes a reasoning effort mapping from the saved array", async () => {
+    const persistSettings = vi.fn(async (patch: Partial<AppSettings>) => createAppSettings(patch));
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "删除思考强度转换规则 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存思考强度转换规则" }));
+
+    await waitFor(() =>
+      expect(persistSettings).toHaveBeenCalledWith({
+        cx2cc_reasoning_effort_mappings: createDefaultCx2ccReasoningEffortMappings().slice(1),
+      })
+    );
+  });
+
+  it("restores and persists the complete default reasoning effort mapping", async () => {
+    const persistSettings = vi.fn(async (patch: Partial<AppSettings>) => createAppSettings(patch));
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings({
+          cx2cc_reasoning_effort_mappings: [{ source: "ultra", target: "high" }],
+        })}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认思考强度转换规则" }));
+
+    await waitFor(() =>
+      expect(persistSettings).toHaveBeenCalledWith({
+        cx2cc_reasoning_effort_mappings: createDefaultCx2ccReasoningEffortMappings(),
+      })
+    );
+  });
+
+  it("blocks invalid reasoning effort mappings before persistence", () => {
+    const persistSettings = vi.fn().mockResolvedValue(null);
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("规则 6 来源强度"), {
+      target: { value: " max " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存思考强度转换规则" }));
+
+    expect(persistSettings).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith("第 6 条规则的来源强度“max”重复");
+  });
+
+  it("keeps an incomplete new rule as a draft and refuses to save it", () => {
+    const persistSettings = vi.fn().mockResolvedValue(null);
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "添加思考强度转换规则" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存思考强度转换规则" }));
+
+    expect(persistSettings).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("规则 7 来源强度")).toHaveValue("");
+    expect(toast).toHaveBeenCalledWith("第 7 条规则的来源强度不能为空");
+  });
+
+  it("rolls a failed reasoning effort mapping save back to the server snapshot", async () => {
+    const persistSettings = vi.fn().mockResolvedValue(null);
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("规则 1 目标强度"), {
+      target: { value: "xhigh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存思考强度转换规则" }));
+
+    await waitFor(() => expect(screen.getByLabelText("规则 1 目标强度")).toHaveValue("low"));
+  });
+
+  it("does not overwrite a newer mapping draft when an older save settles", async () => {
+    let resolvePersist: ((settings: AppSettings | null) => void) | undefined;
+    const persistSettings = vi.fn(
+      () =>
+        new Promise<AppSettings | null>((resolve) => {
+          resolvePersist = resolve;
+        })
+    );
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("规则 1 目标强度"), {
+      target: { value: "xhigh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存思考强度转换规则" }));
+    fireEvent.change(screen.getByLabelText("规则 1 目标强度"), {
+      target: { value: "max" },
+    });
+    resolvePersist?.(
+      createAppSettings({
+        cx2cc_reasoning_effort_mappings: [
+          { source: "low", target: "xhigh" },
+          ...createDefaultCx2ccReasoningEffortMappings().slice(1),
+        ],
+      })
+    );
+
+    await waitFor(() => expect(screen.getByLabelText("规则 1 目标强度")).toHaveValue("max"));
+  });
+
+  it("does not roll back a refreshed canonical mapping when an older save fails", async () => {
+    let resolvePersist: ((settings: AppSettings | null) => void) | undefined;
+    const persistSettings = vi.fn(
+      () =>
+        new Promise<AppSettings | null>((resolve) => {
+          resolvePersist = resolve;
+        })
+    );
+    const initialSettings = createAppSettings();
+    const canonicalMappings = [
+      { source: "low", target: "xhigh" },
+      ...createDefaultCx2ccReasoningEffortMappings().slice(1),
+    ];
+    const { rerender } = render(
+      <CliManagerCx2ccTab
+        appSettings={initialSettings}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("规则 1 目标强度"), {
+      target: { value: "xhigh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存思考强度转换规则" }));
+    rerender(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings({
+          cx2cc_reasoning_effort_mappings: canonicalMappings,
+        })}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+    resolvePersist?.(null);
+
+    await waitFor(() => expect(screen.getByLabelText("规则 1 目标强度")).toHaveValue("xhigh"));
+  });
+
+  it("allows only one reasoning effort mapping save at a time", () => {
+    const persistSettings = vi.fn(() => new Promise<AppSettings | null>(() => undefined));
+    render(
+      <CliManagerCx2ccTab
+        appSettings={createAppSettings()}
+        commonSettingsSaving={false}
+        onPersistCommonSettings={persistSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("规则 1 目标强度"), {
+      target: { value: "xhigh" },
+    });
+    const saveButton = screen.getByRole("button", { name: "保存思考强度转换规则" });
+    fireEvent.click(saveButton);
+    fireEvent.click(saveButton);
+
+    expect(persistSettings).toHaveBeenCalledTimes(1);
   });
 
   it("persists opus fallback model on blur", async () => {
