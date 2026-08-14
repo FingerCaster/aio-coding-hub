@@ -4,5 +4,5 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/reasoning-effort-observability-contract.md","reason":"确保最终 effort 日志读取不改变 CX2CC 请求"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"Beta 6 发布不得改稳定渠道"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"复核生成绑定、夹具与 UI 消费链"}
-{"file":".trellis/tasks/08-14-cx2cc-gpt56-sol-context/research/reasoning-passthrough.md","reason":"验证 effort 转换边界"}
-{"file":".trellis/tasks/08-14-cx2cc-gpt56-sol-context/research/context-overrides.md","reason":"验证覆盖优先级与 fail-closed 组合"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-cx2cc-gpt56-sol-context/research/reasoning-passthrough.md", "reason": "验证 effort 转换边界"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-cx2cc-gpt56-sol-context/research/context-overrides.md", "reason": "验证覆盖优先级与 fail-closed 组合"}
