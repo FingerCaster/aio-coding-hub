@@ -4,4 +4,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"attempt/failover 的 success、sent 与最终请求选择语义必须保持既有路由边界。"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"按最终 wire 到 UI 的跨层链路核对字段所有权与兼容性。"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用共享 attempt、request event、log query 与 badge 投影，避免 Claude/CX2CC 平行实现。"}
-{"file":".trellis/tasks/08-14-claude-reasoning-log/research/upstream-reasoning-log.md","reason":"记录 upstream 精确语义、Beta 5 缺口与本次适配边界。"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-claude-reasoning-log/research/upstream-reasoning-log.md", "reason": "记录 upstream 精确语义、Beta 5 缺口与本次适配边界。"}

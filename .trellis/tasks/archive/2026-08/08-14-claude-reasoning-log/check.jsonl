@@ -3,5 +3,5 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"验证最后成功/最后已发送 attempt 的选择规则与 failover 行为一致。"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"执行跨层数据流、兼容性、绑定与测试完整性审查。"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查是否复用共享提取、选择和 badge 组件且无重复来源。"}
-{"file":".trellis/tasks/08-14-claude-reasoning-log/prd.md","reason":"逐项核对产品约束与验收条件。"}
-{"file":".trellis/tasks/08-14-claude-reasoning-log/design.md","reason":"核对实现落点、协议矩阵、兼容与失败语义。"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-claude-reasoning-log/prd.md", "reason": "逐项核对产品约束与验收条件。"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-claude-reasoning-log/design.md", "reason": "核对实现落点、协议矩阵、兼容与失败语义。"}
