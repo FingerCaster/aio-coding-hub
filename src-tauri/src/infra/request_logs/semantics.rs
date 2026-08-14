@@ -24,6 +24,20 @@ impl Cx2ccCostBasisResolution {
     }
 }
 
+/// Select the effort that produced the final result: the last successful
+/// attempt wins, otherwise the last attempt that reached upstream transport.
+pub(crate) fn final_reasoning_effort<'a, I>(attempts: I) -> Option<String>
+where
+    I: DoubleEndedIterator<Item = (&'a str, bool, Option<&'a str>)> + Clone,
+{
+    attempts
+        .clone()
+        .rev()
+        .find(|(outcome, _, _)| *outcome == "success")
+        .or_else(|| attempts.rev().find(|(_, upstream_sent, _)| *upstream_sent))
+        .and_then(|(_, _, effort)| effort.map(str::to_string))
+}
+
 pub(crate) fn resolve_cx2cc_cost_basis(
     special_settings_json: Option<&str>,
     final_provider_id: Option<i64>,

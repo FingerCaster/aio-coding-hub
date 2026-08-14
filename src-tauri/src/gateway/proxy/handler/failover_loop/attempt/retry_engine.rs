@@ -245,6 +245,8 @@ where
                 timeout_secs: None,
                 stream_internal_error: None,
                 requested_upstream_model: prepared.active_requested_model.clone(),
+                reasoning_effort: None,
+                upstream_sent: false,
             });
             let requested_model = requested_model_for_audit(
                 ctx.special_settings,
@@ -328,6 +330,8 @@ where
                 timeout_secs: None,
                 stream_internal_error: None,
                 requested_upstream_model: None,
+                reasoning_effort: None,
+                upstream_sent: false,
             });
             if loop_state.last_outcome.is_none() {
                 *loop_state.last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
@@ -416,7 +420,7 @@ fn push_pre_send_gate_skip<R: tauri::Runtime>(
 fn build_error_contexts<'a, R: tauri::Runtime>(
     _input: &RequestContext<R>,
     prepared: &'a PreparedProvider,
-    timing: &AttemptTiming,
+    timing: &'a AttemptTiming,
     attempt_index: u32,
     retry_index: u32,
 ) -> (AttemptCtx<'a>, ProviderCtx<'a>) {
@@ -431,6 +435,8 @@ fn build_error_contexts<'a, R: tauri::Runtime>(
         cx2cc_active: prepared.cx2cc_active,
         active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
+        reasoning_effort: timing.reasoning_effort.as_deref(),
+        upstream_sent: timing.upstream_sent,
     };
     let provider_ctx = ProviderCtx {
         provider_id: prepared.provider_id,

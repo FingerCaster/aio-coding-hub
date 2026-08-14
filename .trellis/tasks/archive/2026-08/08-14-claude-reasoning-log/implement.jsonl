@@ -1,0 +1,7 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"遵循 Rust/Tauri 后端分层、测试与错误处理规则。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"任务跨越 gateway、事件、持久日志、生成绑定与 React UI，需要完整追踪数据流。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/cx2cc-routing-contract.md","reason":"保证日志观测不改变 CX2CC 四槽模型路由、来源选择和思考透传。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"attempt/failover 的 success、sent 与最终请求选择语义必须保持既有路由边界。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"按最终 wire 到 UI 的跨层链路核对字段所有权与兼容性。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用共享 attempt、request event、log query 与 badge 投影，避免 Claude/CX2CC 平行实现。"}
+{"file": ".trellis/tasks/archive/2026-08/08-14-claude-reasoning-log/research/upstream-reasoning-log.md", "reason": "记录 upstream 精确语义、Beta 5 缺口与本次适配边界。"}

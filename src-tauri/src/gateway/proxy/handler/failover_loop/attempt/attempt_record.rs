@@ -190,6 +190,8 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         timeout_secs,
         stream_internal_error: None,
         requested_upstream_model: provider_ctx.active_requested_model.map(str::to_string),
+        reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+        upstream_sent: attempt_ctx.upstream_sent,
     });
 
     emit_attempt_event_and_log_with_circuit_before(

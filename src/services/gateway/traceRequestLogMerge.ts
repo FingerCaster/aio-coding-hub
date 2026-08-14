@@ -25,6 +25,7 @@ export type RequestLogTraceMergeSource = Pick<
   | "cache_creation_5m_input_tokens"
   | "cache_creation_1h_input_tokens"
   | "requested_model"
+  | "reasoning_effort"
   | "cost_usd"
   | "cost_multiplier"
   | "special_settings_json"
@@ -129,6 +130,7 @@ export function mergeTraceWithRequestLog(
       requestLog.cache_creation_5m_input_tokens ?? summary?.cache_creation_5m_input_tokens ?? null,
     cache_creation_1h_input_tokens:
       requestLog.cache_creation_1h_input_tokens ?? summary?.cache_creation_1h_input_tokens ?? null,
+    reasoning_effort: summary?.reasoning_effort ?? requestLog.reasoning_effort ?? null,
     cost_usd: requestLog.cost_usd ?? summary?.cost_usd ?? null,
     cost_multiplier: requestLog.cost_multiplier ?? summary?.cost_multiplier ?? null,
     claude_model_mapping: claudeModelMapping,

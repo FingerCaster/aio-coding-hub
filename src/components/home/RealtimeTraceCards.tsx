@@ -11,6 +11,7 @@ import type { ProjectedRealtimeCard } from "../../services/gateway/requestActivi
 import { REALTIME_TRACE_EXIT_START_MS } from "../../services/gateway/requestActivityProjection";
 import {
   formatUpstreamErrorResponseRuleTooltip,
+  resolveRequestLogReasoningEffort,
   resolveUpstreamErrorResponseRuleMarker,
 } from "../../services/gateway/requestLogSpecialSettings";
 import { requestLogActiveActivityState } from "../../services/gateway/requestLogState";
@@ -36,7 +37,7 @@ import {
   resolveRequestLogModelDisplayMeta,
   resolveCacheCreationDisplay,
 } from "./requestLogPresentation";
-import { FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
+import { FolderBadge, FreeBadge, ReasoningEffortBadge, SessionReuseBadge } from "./LogBadges";
 import { CliBrandIcon } from "./CliBrandIcon";
 import { getErrorCodeLabel } from "./requestLogErrorLabels";
 
@@ -252,6 +253,12 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
           ? `${cliLabel} / ${modelDisplayMeta.title}`
           : `${cliLabel} / ${modelText}`;
         const isSevereRouteMismatch = modelDisplayMeta.isSevereRouteMismatch;
+        const reasoningEffort = resolveRequestLogReasoningEffort({
+          observedReasoningEffort: summary?.reasoning_effort,
+          cliKey: trace.cli_key,
+          requestedModel: trace.requested_model,
+          specialSettingsJson,
+        });
 
         const cacheWrite = summary ? resolveCacheCreationDisplay(summary) : null;
 
@@ -404,6 +411,8 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                       {modelText}
                     </span>
                   </span>
+
+                  <ReasoningEffortBadge value={reasoningEffort} />
 
                   {modelDisplayMeta.isConfiguredRoute ? (
                     <span

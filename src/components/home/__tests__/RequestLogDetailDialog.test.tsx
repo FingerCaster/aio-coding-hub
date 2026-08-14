@@ -224,13 +224,14 @@ describe("home/RequestLogDetailDialog", () => {
     expectMetricValue("费用系数", "x1.50");
   });
 
-  it("shows Codex reasoning effort and source on the summary tab", () => {
+  it("shows one observed reasoning effort badge ahead of the Codex fallback", () => {
     setRequestLogQueryState({
       selectedLog: createSelectedLog({
         cli_key: "codex",
         requested_model: "gpt-5.5",
         status: 200,
         error_code: null,
+        reasoning_effort: "xhigh",
         special_settings_json: JSON.stringify([
           { type: "codex_reasoning_effort", source: "request", effort: "max" },
         ]),
@@ -245,8 +246,11 @@ describe("home/RequestLogDetailDialog", () => {
 
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
-    expectMetricValue("请求等级", "max");
-    expectMetricValue("等级来源", "请求显式");
+    expect(screen.getAllByTitle(/思考等级：/)).toHaveLength(1);
+    expect(screen.getByTitle("思考等级：xhigh")).toBeInTheDocument();
+    expect(screen.queryByTitle("思考等级：max")).not.toBeInTheDocument();
+    expect(screen.queryByText("请求等级")).not.toBeInTheDocument();
+    expect(screen.queryByText("等级来源")).not.toBeInTheDocument();
   });
 
   it("shows Codex reasoning effort from raw effort on the summary tab", () => {
@@ -265,8 +269,7 @@ describe("home/RequestLogDetailDialog", () => {
 
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
-    expectMetricValue("请求等级", "ultra");
-    expectMetricValue("等级来源", "请求显式");
+    expect(screen.getAllByTitle("思考等级：ultra")).toHaveLength(1);
   });
 
   it("shows Codex model route mismatch on the summary tab", () => {
@@ -345,7 +348,7 @@ describe("home/RequestLogDetailDialog", () => {
     expect(screen.getByText("自动审核映射")).toBeInTheDocument();
   });
 
-  it("shows unknown Codex reasoning effort when no explicit or known default exists", () => {
+  it("does not show an unknown Codex reasoning effort badge", () => {
     setRequestLogQueryState({
       selectedLog: createSelectedLog({
         cli_key: "codex",
@@ -359,8 +362,7 @@ describe("home/RequestLogDetailDialog", () => {
 
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
-    expectMetricValue("请求等级", "unknown");
-    expectMetricValue("等级来源", "未知");
+    expect(screen.queryByTitle(/思考等级：/)).not.toBeInTheDocument();
   });
 
   it("shows Codex reasoning effort even when token metrics are absent", () => {
@@ -390,8 +392,7 @@ describe("home/RequestLogDetailDialog", () => {
     render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
     expect(screen.getByText("关键指标")).toBeInTheDocument();
-    expectMetricValue("请求等级", "medium");
-    expectMetricValue("等级来源", "默认推断");
+    expect(screen.getAllByTitle("思考等级：medium")).toHaveLength(1);
   });
 
   it("does not promote the Codex system marker into request details", () => {

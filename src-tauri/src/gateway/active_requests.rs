@@ -272,6 +272,8 @@ mod tests {
             probe_result: None,
             probe_generation: None,
             claude_model_mapping: None,
+            reasoning_effort: None,
+            upstream_sent: false,
         }
     }
 

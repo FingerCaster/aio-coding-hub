@@ -120,6 +120,8 @@ fn inject_oauth_auth<R: tauri::Runtime>(
                     timeout_secs: None,
                     stream_internal_error: None,
                     requested_upstream_model: None,
+                    reasoning_effort: None,
+                    upstream_sent: false,
                 }));
             }
             Ok(())
@@ -160,6 +162,8 @@ fn inject_oauth_auth<R: tauri::Runtime>(
                 timeout_secs: None,
                 stream_internal_error: None,
                 requested_upstream_model: None,
+                reasoning_effort: None,
+                upstream_sent: false,
             }))
         }
     }

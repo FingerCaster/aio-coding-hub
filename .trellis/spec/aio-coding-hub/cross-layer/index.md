@@ -20,6 +20,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [CX2CC routing contract](./cx2cc-routing-contract.md): single-owner model
   mapping, reasoning presence, provider-scoped context projection, shared
   defaults, and authenticated direct one-hop local gateway reentry.
+- [Reasoning effort observability contract](./reasoning-effort-observability-contract.md):
+  final outbound explicit fields, per-attempt send evidence, coherent
+  realtime/history projection, legacy compatibility, and one shared UI badge.
 - [Upstream error handling contract](./upstream-error-handling-contract.md):
   configured retry budgets, native Codex SSE recovery, terminal HTTP response
   rewriting, bounded diagnostics, and the shared segmented settings entry.
@@ -134,6 +137,18 @@ local gateway reentry:
    unknown context behavior, and terminal environment omission together.
 5. Verify nonce issue/consume order, header stripping, fingerprint order,
    direct/no-proxy/no-redirect transport, and ordinary self-loop rejection.
+
+When changing reasoning-effort transformation, attempt evidence, request-log
+projection, or display:
+
+1. Read [Reasoning effort observability contract](./reasoning-effort-observability-contract.md).
+2. Trace the final path and semantic body through every protocol transformation
+   to the transport boundary; never substitute original request intent.
+3. Keep effort and send evidence on each attempt, then apply the shared
+   last-success/last-sent selector to both realtime and historical logs.
+4. Verify legacy attempt/event defaults and regenerate TypeScript bindings.
+5. Preserve CX2CC routing/thinking behavior and render one observed-first badge,
+   with the existing Codex resolver used only as a compatibility fallback.
 
 When changing provider deletion or request-log provider identity:
 
@@ -309,6 +324,10 @@ When changing usage folders, development-time estimates, or provider metrics tre
   reasoning presence is preserved without legacy fallback, context is trusted
   only from discovered provider-scoped rows, authenticated local reentry skips
   second-hop mapping, and the private nonce cannot traverse a proxy or redirect.
+- When changing reasoning-effort observability, verify final-wire explicit-field
+  extraction, truthful per-attempt send evidence, last-success/last-sent
+  selection, old JSON/event defaults, realtime/history parity, future string
+  preservation, and exactly one shared badge with Codex fallback precedence.
 - When changing upstream error handling, verify retry/rewrite save isolation,
   shared retry budget/backoff, pre-commit-only stream recovery, terminal-only
   HTTP rewrite, client/attempt status separation, and bounded redacted evidence.

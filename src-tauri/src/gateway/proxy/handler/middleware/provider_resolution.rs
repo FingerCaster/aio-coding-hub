@@ -451,6 +451,8 @@ fn not_triggered_probe_observation(
         timeout_secs: None,
         requested_upstream_model: None,
         stream_internal_error: None,
+        reasoning_effort: None,
+        upstream_sent: false,
     }
 }
 

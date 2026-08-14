@@ -1311,3 +1311,25 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 38: Claude 思考强度调用日志
+
+**Date**: 2026-08-14
+**Task**: Claude 思考强度调用日志
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/claude-reasoning-logs-beta6`
+
+### Summary
+
+实现最终出站 reasoning effort 的逐 attempt 观测、历史与实时日志投影及统一徽标；完整 pre-push 和独立跨层检查通过，准备提交 Beta 6 PR。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0d0b77bc` | (see git log) |
+
+### Status
+
+[OK] **Completed**

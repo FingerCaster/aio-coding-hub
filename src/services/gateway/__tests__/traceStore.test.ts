@@ -57,6 +57,8 @@ function makeAttemptEvent(overrides: Partial<GatewayAttemptEvent> = {}): Gateway
     claude_model_mapping: null,
     ...overrides,
     requested_upstream_model: overrides.requested_upstream_model ?? null,
+    reasoning_effort: overrides.reasoning_effort ?? null,
+    upstream_sent: overrides.upstream_sent ?? false,
   };
 }
 
@@ -87,6 +89,7 @@ function makeRequestEvent(overrides: Partial<GatewayRequestEvent> = {}): Gateway
     effective_input_tokens: null,
     claude_model_mapping: null,
     ...overrides,
+    reasoning_effort: overrides.reasoning_effort ?? null,
   };
 }
 
@@ -303,6 +306,44 @@ describe("services/gateway/traceStore", () => {
       probe_result: "failed",
       probe_generation: 7,
     });
+  });
+
+  it("promotes terminal effort and send evidence on the realtime attempt and summary", async () => {
+    const { ingestTraceAttempt, ingestTraceRequest, useTraceStore } = await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+
+    act(() => {
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "reasoning-evidence",
+          outcome: "started",
+          reasoning_effort: null,
+          upstream_sent: false,
+        })
+      );
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "reasoning-evidence",
+          outcome: "success",
+          status: 200,
+          reasoning_effort: "future-effort",
+          upstream_sent: true,
+        })
+      );
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "reasoning-evidence",
+          reasoning_effort: "future-effort",
+        })
+      );
+    });
+
+    expect(result.current.traces[0]?.attempts[0]).toMatchObject({
+      outcome: "success",
+      reasoning_effort: "future-effort",
+      upstream_sent: true,
+    });
+    expect(result.current.traces[0]?.summary?.reasoning_effort).toBe("future-effort");
   });
 
   it("ingestTraceAttempt backfills requested_model when request_start is missing", async () => {

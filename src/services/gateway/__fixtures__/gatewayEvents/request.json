@@ -41,7 +41,9 @@
       "probe_generation": null,
       "provider_bridged": false,
       "timeout_secs": null,
-      "requested_upstream_model": null
+      "requested_upstream_model": null,
+      "reasoning_effort": "high",
+      "upstream_sent": true
     }
   ],
   "input_tokens": 1200,
@@ -59,5 +61,6 @@
     "providerId": 7,
     "providerName": "Provider A",
     "applied": true
-  }
+  },
+  "reasoning_effort": "high"
 }

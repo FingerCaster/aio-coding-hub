@@ -126,6 +126,8 @@ pub(super) struct FailoverAttempt {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) stream_internal_error: Option<crate::usage::StreamInternalErrorEvidence>,
     pub(super) requested_upstream_model: Option<String>,
+    pub(super) reasoning_effort: Option<String>,
+    pub(super) upstream_sent: bool,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, specta::Type)]
@@ -167,6 +169,7 @@ pub(crate) struct GatewayRequestEvent {
     // frontend never re-derives the formula (single source of truth).
     effective_input_tokens: Option<i64>,
     claude_model_mapping: Option<ClaudeModelMapping>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, specta::Type)]
@@ -221,6 +224,8 @@ pub(crate) struct GatewayAttemptEvent {
     pub(super) probe_result: Option<&'static str>,
     pub(super) probe_generation: Option<u64>,
     pub(super) claude_model_mapping: Option<ClaudeModelMapping>,
+    pub(super) reasoning_effort: Option<String>,
+    pub(super) upstream_sent: bool,
 }
 
 #[derive(Debug, Serialize, Clone, specta::Type)]
@@ -463,6 +468,7 @@ fn bound_failover_attempt(mut attempt: FailoverAttempt) -> FailoverAttempt {
         &mut attempt.requested_upstream_model,
         EVENT_SHORT_TEXT_MAX_CHARS,
     );
+    truncate_optional_chars(&mut attempt.reasoning_effort, EVENT_STATE_MAX_CHARS);
     attempt
 }
 
@@ -490,6 +496,7 @@ fn bound_request_event(mut payload: GatewayRequestEvent) -> GatewayRequestEvent 
     payload.attempts = trim_request_event_attempts(payload.attempts);
     payload.claude_model_mapping =
         bound_optional_claude_model_mapping(payload.claude_model_mapping);
+    truncate_optional_chars(&mut payload.reasoning_effort, EVENT_STATE_MAX_CHARS);
     payload
 }
 
@@ -532,6 +539,16 @@ fn request_event_effective_input_tokens(
     )
 }
 
+fn final_reasoning_effort(attempts: &[FailoverAttempt]) -> Option<String> {
+    crate::infra::request_logs::final_reasoning_effort(attempts.iter().map(|attempt| {
+        (
+            attempt.outcome.as_str(),
+            attempt.upstream_sent,
+            attempt.reasoning_effort.as_deref(),
+        )
+    }))
+}
+
 pub(super) fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAttemptEvent {
     payload.method = truncate_chars(payload.method, EVENT_METHOD_MAX_CHARS);
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
@@ -550,6 +567,7 @@ pub(super) fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAt
     payload.outcome = truncate_chars(payload.outcome, EVENT_STATE_MAX_CHARS);
     payload.claude_model_mapping =
         bound_optional_claude_model_mapping(payload.claude_model_mapping);
+    truncate_optional_chars(&mut payload.reasoning_effort, EVENT_STATE_MAX_CHARS);
     payload
 }
 
@@ -603,6 +621,7 @@ pub(super) fn emit_request_event<R: tauri::Runtime>(
 
     let usage = usage.unwrap_or_default();
     let effective_input_tokens = request_event_effective_input_tokens(&cli_key, &attempts, &usage);
+    let reasoning_effort = final_reasoning_effort(&attempts);
     let payload = GatewayRequestEvent {
         trace_id,
         cli_key,
@@ -628,6 +647,7 @@ pub(super) fn emit_request_event<R: tauri::Runtime>(
         cache_creation_1h_input_tokens: usage.cache_creation_1h_input_tokens,
         effective_input_tokens,
         claude_model_mapping,
+        reasoning_effort,
     };
 
     gated_emit(
@@ -789,6 +809,8 @@ mod tests {
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: None,
+            reasoning_effort: None,
+            upstream_sent: false,
         }
     }
 
@@ -917,6 +939,8 @@ mod tests {
                 timeout_secs: None,
                 stream_internal_error: None,
                 requested_upstream_model: None,
+                reasoning_effort: Some("high".to_string()),
+                upstream_sent: true,
             }],
             input_tokens: Some(1200),
             output_tokens: Some(350),
@@ -928,6 +952,7 @@ mod tests {
             // claude + non-bridged provider: effective input == raw input.
             effective_input_tokens: Some(1200),
             claude_model_mapping: Some(fixture_mapping()),
+            reasoning_effort: Some("high".to_string()),
         };
 
         assert_matches_fixture(
@@ -1007,6 +1032,8 @@ mod tests {
             probe_result: None,
             probe_generation: None,
             claude_model_mapping: Some(fixture_mapping()),
+            reasoning_effort: Some("high".to_string()),
+            upstream_sent: true,
         };
 
         assert_matches_fixture(
@@ -1229,6 +1256,8 @@ mod tests {
                 provider_name: repeated_ascii(EVENT_SHORT_TEXT_MAX_CHARS + 1),
                 applied: true,
             }),
+            reasoning_effort: Some(repeated_ascii(EVENT_STATE_MAX_CHARS + 1)),
+            upstream_sent: true,
         };
 
         let bounded = bound_attempt_event(payload);
@@ -1260,6 +1289,11 @@ mod tests {
             EVENT_QUERY_MAX_CHARS
         );
         assert_eq!(ascii_len(&bounded.outcome), EVENT_STATE_MAX_CHARS);
+        assert_eq!(
+            bounded.reasoning_effort.as_deref().map(ascii_len),
+            Some(EVENT_STATE_MAX_CHARS)
+        );
+        assert!(bounded.upstream_sent);
         let mapping = bounded.claude_model_mapping.expect("mapping retained");
         assert_eq!(
             ascii_len(&mapping.requested_model),
@@ -1306,6 +1340,8 @@ mod tests {
             probe_result: None,
             probe_generation: None,
             claude_model_mapping: Some(sample_mapping()),
+            reasoning_effort: Some("high".to_string()),
+            upstream_sent: true,
         };
 
         let value = serde_json::to_value(payload).expect("serializable attempt event");
@@ -1349,6 +1385,7 @@ mod tests {
             cache_creation_1h_input_tokens: None,
             effective_input_tokens: None,
             claude_model_mapping: None,
+            reasoning_effort: None,
         };
 
         let value = serde_json::to_value(payload).expect("serializable request event");

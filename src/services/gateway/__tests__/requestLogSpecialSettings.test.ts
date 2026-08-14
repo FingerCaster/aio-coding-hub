@@ -12,6 +12,7 @@ import {
   resolveCodexReasoningEffort,
   resolveConfiguredModelRouteFromSpecialSettings,
   resolveModelRouteMappingFromSpecialSettings,
+  resolveRequestLogReasoningEffort,
   resolveUpstreamErrorResponseRuleMarker,
 } from "../requestLogSpecialSettings";
 
@@ -300,6 +301,45 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     expect(formatCodexReasoningEffortSource("request")).toBe("请求显式");
     expect(formatCodexReasoningEffortSource("default")).toBe("默认推断");
     expect(formatCodexReasoningEffortSource("unknown")).toBe("未知");
+  });
+
+  it("prefers observed effort and only falls back for compatible Codex records", () => {
+    const settings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+
+    expect(
+      resolveRequestLogReasoningEffort({
+        observedReasoningEffort: " Future-Level ",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        specialSettingsJson: settings,
+      })
+    ).toBe("Future-Level");
+    expect(
+      resolveRequestLogReasoningEffort({
+        observedReasoningEffort: null,
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        specialSettingsJson: settings,
+      })
+    ).toBe("high");
+    expect(
+      resolveRequestLogReasoningEffort({
+        observedReasoningEffort: null,
+        cliKey: "claude",
+        requestedModel: "claude-sonnet",
+        specialSettingsJson: settings,
+      })
+    ).toBeNull();
+    expect(
+      resolveRequestLogReasoningEffort({
+        observedReasoningEffort: null,
+        cliKey: "codex",
+        requestedModel: "gpt-future",
+        specialSettingsJson: null,
+      })
+    ).toBeNull();
   });
 
   it("resolves model route mapping with final provider preference", () => {

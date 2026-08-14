@@ -92,6 +92,7 @@ export function createRequestLogSummary(
     ...overrides,
     cli_key: cliKey,
     is_interrupted: isInterrupted,
+    reasoning_effort: overrides.reasoning_effort ?? null,
     created_at_ms: createdAtMs,
     created_at: createdAt,
     route: (overrides.route ?? []).map((routeItem) => createRequestLogRouteHop(routeItem)),
@@ -146,5 +147,6 @@ export function createRequestLogDetail(
     created_at: createdAt,
     ...overrides,
     is_interrupted: isInterrupted,
+    reasoning_effort: overrides.reasoning_effort ?? null,
   };
 }

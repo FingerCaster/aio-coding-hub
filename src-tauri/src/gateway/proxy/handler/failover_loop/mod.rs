@@ -48,6 +48,8 @@ mod attempt_auth;
 mod attempt_executor;
 #[path = "attempt/attempt_record.rs"]
 mod attempt_record;
+#[path = "attempt/reasoning_effort.rs"]
+mod reasoning_effort;
 #[path = "attempt/retry_engine.rs"]
 mod retry_engine;
 #[path = "attempt/send.rs"]
@@ -923,6 +925,8 @@ mod infinite_retry_usage_tests {
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: None,
+            reasoning_effort: None,
+            upstream_sent: false,
         }
     }
 

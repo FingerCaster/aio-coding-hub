@@ -68,6 +68,8 @@ where
         cx2cc_active: prepared.cx2cc_active,
         active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
+        reasoning_effort: timing.reasoning_effort.as_deref(),
+        upstream_sent: timing.upstream_sent,
     };
     let provider_ctx = ProviderCtx {
         provider_id: prepared.provider_id,
@@ -176,6 +178,8 @@ where
         cx2cc_active: prepared.cx2cc_active,
         active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
+        reasoning_effort: timing.reasoning_effort.as_deref(),
+        upstream_sent: timing.upstream_sent,
     };
     let provider_ctx = ProviderCtx {
         provider_id: prepared.provider_id,

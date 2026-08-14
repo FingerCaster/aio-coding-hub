@@ -269,6 +269,25 @@ export function resolveCodexReasoningEffort(
   return { effort: "unknown", source: "unknown" };
 }
 
+export function resolveRequestLogReasoningEffort({
+  observedReasoningEffort,
+  cliKey,
+  requestedModel,
+  specialSettingsJson,
+}: {
+  observedReasoningEffort: string | null | undefined;
+  cliKey: string | null | undefined;
+  requestedModel: string | null | undefined;
+  specialSettingsJson: string | null | undefined;
+}): string | null {
+  const observed = observedReasoningEffort?.trim();
+  if (observed) return observed;
+  if (cliKey?.trim().toLowerCase() !== "codex") return null;
+
+  const fallback = resolveCodexReasoningEffort(requestedModel, specialSettingsJson).effort;
+  return fallback === "unknown" ? null : fallback;
+}
+
 export function hasExplicitCodexReasoningEffortSpecialSetting(
   specialSettingsJson: string | null | undefined
 ) {

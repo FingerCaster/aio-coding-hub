@@ -98,6 +98,10 @@ pub(super) struct AttemptRow {
     reason: Option<String>,
     session_reuse: Option<bool>,
     probe_result: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    upstream_sent: bool,
 }
 
 impl AttemptRow {
@@ -108,6 +112,16 @@ impl AttemptRow {
 
 pub(super) fn parse_attempts(attempts_json: &str) -> Vec<AttemptRow> {
     serde_json::from_str(attempts_json).unwrap_or_default()
+}
+
+fn final_reasoning_effort_from_attempts(attempts: &[AttemptRow]) -> Option<String> {
+    super::final_reasoning_effort(attempts.iter().map(|attempt| {
+        (
+            attempt.outcome.as_str(),
+            attempt.upstream_sent,
+            attempt.reasoning_effort.as_deref(),
+        )
+    }))
 }
 
 pub(super) fn start_provider_from_attempts(attempts: &[AttemptRow]) -> (i64, String) {
@@ -349,6 +363,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite
     let session_reuse = attempts
         .iter()
         .any(|row| row.session_reuse.unwrap_or(false));
+    let reasoning_effort = final_reasoning_effort_from_attempts(&attempts);
     let cost_usd = cost_usd_from_femto(row.get("cost_usd_femto")?);
 
     let status: Option<i64> = row.get("status")?;
@@ -365,6 +380,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite
         excluded_from_stats: row.get::<_, i64>("excluded_from_stats").unwrap_or(0) != 0,
         special_settings_json: row.get("special_settings_json")?,
         requested_model: row.get("requested_model")?,
+        reasoning_effort,
         status,
         error_code,
         is_interrupted,
@@ -405,6 +421,7 @@ fn row_to_detail(row: &rusqlite::Row<'_>) -> Result<RequestLogDetail, rusqlite::
     let attempts_json: String = row.get("attempts_json")?;
     let attempts = parse_attempts(&attempts_json);
     let (final_provider_id, final_provider_name) = final_provider_from_attempts(&attempts);
+    let reasoning_effort = final_reasoning_effort_from_attempts(&attempts);
     let cost_usd = cost_usd_from_femto(row.get("cost_usd_femto")?);
     let status: Option<i64> = row.get("status")?;
     let error_code: Option<String> = row.get("error_code")?;
@@ -438,6 +455,7 @@ fn row_to_detail(row: &rusqlite::Row<'_>) -> Result<RequestLogDetail, rusqlite::
         effective_input_tokens: None,
         usage_json: row.get("usage_json")?,
         requested_model: row.get("requested_model")?,
+        reasoning_effort,
         final_provider_id,
         final_provider_name,
         final_provider_source_id: None,
@@ -698,8 +716,9 @@ pub fn terminal_trace_ids(
 #[cfg(test)]
 mod tests {
     use super::{
-        final_provider_from_attempts, get_by_id, get_by_trace_id, list_after_id_all, list_recent,
-        list_recent_all, load_source_provider_info_map, parse_attempts, route_from_attempts,
+        final_provider_from_attempts, final_reasoning_effort_from_attempts, get_by_id,
+        get_by_trace_id, list_after_id_all, list_recent, list_recent_all,
+        load_source_provider_info_map, parse_attempts, route_from_attempts,
         start_provider_from_attempts, terminal_trace_ids,
     };
     use crate::db;
@@ -901,6 +920,50 @@ INSERT INTO request_logs (
         assert_eq!(route[0].provider_id, 1);
         assert_eq!(route[0].attempts, 1);
         assert!(route[0].ok);
+    }
+
+    #[test]
+    fn final_reasoning_effort_prefers_success_then_last_sent_and_keeps_legacy_null() {
+        let attempts = parse_attempts(
+            r#"[
+                {"provider_id":1,"provider_name":"A","outcome":"success","reasoning_effort":"low","upstream_sent":true},
+                {"provider_id":2,"provider_name":"B","outcome":"success","reasoning_effort":"high","upstream_sent":true},
+                {"provider_id":3,"provider_name":"C","outcome":"failed","reasoning_effort":"xhigh","upstream_sent":true},
+                {"provider_id":4,"provider_name":"D","outcome":"skipped","reasoning_effort":"max","upstream_sent":false}
+            ]"#,
+        );
+        assert_eq!(
+            final_reasoning_effort_from_attempts(&attempts).as_deref(),
+            Some("high")
+        );
+
+        let failed = parse_attempts(
+            r#"[
+                {"provider_id":1,"provider_name":"A","outcome":"failed","reasoning_effort":"low","upstream_sent":true},
+                {"provider_id":2,"provider_name":"B","outcome":"failed","reasoning_effort":"medium","upstream_sent":true},
+                {"provider_id":3,"provider_name":"C","outcome":"skipped","reasoning_effort":"max","upstream_sent":false}
+            ]"#,
+        );
+        assert_eq!(
+            final_reasoning_effort_from_attempts(&failed).as_deref(),
+            Some("medium")
+        );
+
+        let success_without_effort = parse_attempts(
+            r#"[
+                {"provider_id":1,"provider_name":"A","outcome":"failed","reasoning_effort":"high","upstream_sent":true},
+                {"provider_id":2,"provider_name":"B","outcome":"success","upstream_sent":true},
+                {"provider_id":3,"provider_name":"C","outcome":"skipped","reasoning_effort":"max","upstream_sent":false}
+            ]"#,
+        );
+        assert_eq!(
+            final_reasoning_effort_from_attempts(&success_without_effort),
+            None
+        );
+
+        let legacy =
+            parse_attempts(r#"[{"provider_id":1,"provider_name":"A","outcome":"success"}]"#);
+        assert_eq!(final_reasoning_effort_from_attempts(&legacy), None);
     }
 
     #[test]

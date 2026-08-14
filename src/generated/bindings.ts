@@ -3134,6 +3134,8 @@ export type FailoverAttempt = {
   timeout_secs: number | null;
   stream_internal_error?: StreamInternalErrorEvidence | null;
   requested_upstream_model: string | null;
+  reasoning_effort: string | null;
+  upstream_sent: boolean;
 };
 export type FrontendErrorReportInput = {
   source: string;
@@ -3184,6 +3186,8 @@ export type GatewayAttemptEvent = {
   probe_result: string | null;
   probe_generation: number | null;
   claude_model_mapping: ClaudeModelMapping | null;
+  reasoning_effort: string | null;
+  upstream_sent: boolean;
 };
 export type GatewayCircuitEvent = {
   trace_id: string;
@@ -3258,6 +3262,7 @@ export type GatewayRequestEvent = {
   cache_creation_1h_input_tokens: number | null;
   effective_input_tokens: number | null;
   claude_model_mapping: ClaudeModelMapping | null;
+  reasoning_effort: string | null;
 };
 export type GatewayRequestSignalEvent = {
   trace_id: string;
@@ -4286,6 +4291,7 @@ export type RequestLogDetail = {
   effective_input_tokens: number | null;
   usage_json: string | null;
   requested_model: string | null;
+  reasoning_effort: string | null;
   final_provider_id: number;
   final_provider_name: string;
   final_provider_source_id: number | null;
@@ -4323,6 +4329,7 @@ export type RequestLogSummary = {
   excluded_from_stats: boolean;
   special_settings_json: string | null;
   requested_model: string | null;
+  reasoning_effort: string | null;
   status: number | null;
   error_code: string | null;
   is_interrupted: boolean;

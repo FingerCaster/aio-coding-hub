@@ -64,6 +64,8 @@ impl RetryLoopState {
 pub(super) struct AttemptTiming {
     pub(super) attempt_started_ms: u128,
     pub(super) attempt_started: Instant,
+    pub(super) reasoning_effort: Option<String>,
+    pub(super) upstream_sent: bool,
 }
 
 /// Result of building + sending one attempt.
@@ -464,6 +466,11 @@ where
             outcome,
         );
     }
+    let reasoning_effort = reasoning_effort::extract(
+        body_state_for_attempt.decoded(),
+        &prepared.upstream_forwarded_path,
+        prepared.gemini_oauth_response_mode,
+    );
     let upstream_body = body_state_for_attempt
         .finalize_for_upstream(&mut headers, crate::gateway::util::max_request_body_bytes());
 
@@ -497,9 +504,11 @@ where
         );
     }
 
-    let timing = AttemptTiming {
+    let mut timing = AttemptTiming {
         attempt_started_ms,
         attempt_started: Instant::now(),
+        reasoning_effort,
+        upstream_sent: true,
     };
 
     let dispatch_ownership = prepared.dispatch_ownership.clone();
@@ -521,7 +530,7 @@ where
                     return false;
                 }
             }
-            if let Some(abort_guard) = abort_guard {
+            if let Some(abort_guard) = abort_guard.as_deref_mut() {
                 abort_guard.replace_dispatch_ownership(dispatch_ownership.clone());
                 emit_started_event(
                     input,
@@ -537,6 +546,20 @@ where
         },
     )
     .await;
+
+    if let send::SendResult::Err(error) = &send_result {
+        if error.is_connect() {
+            timing.upstream_sent = false;
+        }
+    }
+    if !matches!(&send_result, send::SendResult::DispatchRejected) {
+        if let Some(abort_guard) = abort_guard {
+            abort_guard.update_in_flight_attempt_send_state(
+                timing.reasoning_effort.clone(),
+                timing.upstream_sent,
+            );
+        }
+    }
 
     match send_result {
         send::SendResult::Ok(resp) => PreparedSendOutcome::Response(resp, timing),
@@ -772,6 +795,8 @@ fn build_attempt_ctx<'a>(
         cx2cc_active: prepared.cx2cc_active,
         active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
+        reasoning_effort: None,
+        upstream_sent: false,
     }
 }
 
@@ -843,6 +868,8 @@ fn emit_started_event<R: tauri::Runtime>(
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: prepared.active_requested_model.clone(),
+        reasoning_effort: None,
+        upstream_sent: false,
     };
     let audit_requested_model = requested_model_for_audit(
         &input.special_settings,
@@ -884,6 +911,8 @@ fn emit_started_event<R: tauri::Runtime>(
             probe_result: probe_ownership.map(|_| "started"),
             probe_generation: probe_ownership.and_then(|ownership| ownership.probe_generation()),
             claude_model_mapping: prepared.claude_model_mapping.clone(),
+            reasoning_effort: None,
+            upstream_sent: false,
         })
     });
     if let Some(started_event) = started_event.as_ref() {

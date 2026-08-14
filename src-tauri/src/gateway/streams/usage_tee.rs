@@ -1595,6 +1595,8 @@ mod tests {
             timeout_secs: None,
             requested_upstream_model: Some("gpt-5".to_string()),
             stream_internal_error: None,
+            reasoning_effort: None,
+            upstream_sent: true,
         }
     }
 

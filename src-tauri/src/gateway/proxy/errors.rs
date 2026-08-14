@@ -337,6 +337,8 @@ mod tests {
             timeout_secs: None,
             stream_internal_error,
             requested_upstream_model: None,
+            reasoning_effort: None,
+            upstream_sent: false,
         }
     }
 

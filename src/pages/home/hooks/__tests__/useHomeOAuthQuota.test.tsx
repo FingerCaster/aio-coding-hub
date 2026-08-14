@@ -90,6 +90,7 @@ function makeRequestLog(
     excluded_from_stats: partial.excluded_from_stats ?? false,
     special_settings_json: partial.special_settings_json ?? null,
     requested_model: partial.requested_model ?? null,
+    reasoning_effort: partial.reasoning_effort ?? null,
     status: partial.status ?? 200,
     error_code: partial.error_code ?? null,
     is_interrupted: partial.is_interrupted ?? false,

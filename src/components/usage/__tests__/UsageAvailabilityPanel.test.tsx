@@ -51,6 +51,7 @@ function makeLog(
     ...overrides,
     is_interrupted: overrides.is_interrupted ?? false,
     effective_input_tokens: overrides.effective_input_tokens ?? null,
+    reasoning_effort: overrides.reasoning_effort ?? null,
   };
 }
 

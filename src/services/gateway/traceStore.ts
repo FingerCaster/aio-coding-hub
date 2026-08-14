@@ -88,6 +88,8 @@ function upsertAttempt(
     probe_trigger: payload.probe_trigger ?? existing?.probe_trigger ?? null,
     probe_result: payload.probe_result ?? existing?.probe_result ?? null,
     probe_generation: payload.probe_generation ?? existing?.probe_generation ?? null,
+    reasoning_effort: payload.reasoning_effort ?? existing?.reasoning_effort ?? null,
+    upstream_sent: payload.upstream_sent || existing?.upstream_sent || false,
   };
   const next = attempts.filter((a) => a.attempt_index !== payload.attempt_index);
   next.push(mergedPayload);

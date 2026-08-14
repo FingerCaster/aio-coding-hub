@@ -774,6 +774,8 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         timeout_secs: None,
         stream_internal_error: evidence,
         requested_upstream_model: active_requested_model.map(str::to_string),
+        reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+        upstream_sent: attempt_ctx.upstream_sent,
     });
 
     emit_attempt_event_and_log(
@@ -912,6 +914,8 @@ async fn finalize_sanitized_stream_terminal<R: tauri::Runtime>(
         timeout_secs: None,
         stream_internal_error: Some(evidence),
         requested_upstream_model: provider.active_requested_model.clone(),
+        reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+        upstream_sent: attempt_ctx.upstream_sent,
     });
 
     emit_attempt_event_and_log_with_circuit_before(
@@ -1046,6 +1050,8 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+        reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+        upstream_sent: attempt_ctx.upstream_sent,
     });
 
     emit_attempt_event_and_log_with_circuit_before(
@@ -1466,6 +1472,8 @@ where
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: provider.active_requested_model.clone(),
+        reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+        upstream_sent: attempt_ctx.upstream_sent,
     });
     emit_attempt_event_and_log_with_circuit_before(
         ctx,
@@ -2224,6 +2232,8 @@ where
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+            reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+            upstream_sent: attempt_ctx.upstream_sent,
         });
 
         emit_attempt_event_and_log_with_circuit_before(
@@ -2491,6 +2501,8 @@ mod tests {
             timeout_secs: None,
             requested_upstream_model: Some("gpt-5".to_string()),
             stream_internal_error: None,
+            reasoning_effort: None,
+            upstream_sent: true,
         }
     }
 

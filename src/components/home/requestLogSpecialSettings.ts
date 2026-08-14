@@ -10,6 +10,7 @@ import {
 export {
   hasClaudeModelMappingSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
+  resolveRequestLogReasoningEffort,
 } from "../../services/gateway/requestLogSpecialSettings";
 
 export function formatClaudeModelMappingText(

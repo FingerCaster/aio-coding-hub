@@ -722,6 +722,8 @@ where
                     timeout_secs: None,
                     stream_internal_error: None,
                     requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+                    reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+                    upstream_sent: attempt_ctx.upstream_sent,
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -820,6 +822,8 @@ where
                     timeout_secs: None,
                     stream_internal_error: None,
                     requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+                    reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+                    upstream_sent: attempt_ctx.upstream_sent,
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -1173,6 +1177,8 @@ where
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+            reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+            upstream_sent: attempt_ctx.upstream_sent,
         });
 
         emit_attempt_event_and_log_with_circuit_before(
@@ -1448,6 +1454,8 @@ where
                 timeout_secs: None,
                 stream_internal_error: None,
                 requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+                reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+                upstream_sent: attempt_ctx.upstream_sent,
             });
 
             let terminal_snapshot = complete_probe_failure_or_current_snapshot(
@@ -1585,6 +1593,8 @@ where
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+            reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+            upstream_sent: attempt_ctx.upstream_sent,
         });
 
         emit_attempt_event_and_log_with_circuit_before(
@@ -1829,6 +1839,8 @@ where
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+            reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+            upstream_sent: attempt_ctx.upstream_sent,
         });
         emit_attempt_event_and_log_with_circuit_before(
             ctx,
@@ -2077,6 +2089,8 @@ mod tests {
             timeout_secs: None,
             requested_upstream_model: Some("gpt-5".to_string()),
             stream_internal_error: None,
+            reasoning_effort: None,
+            upstream_sent: true,
         }
     }
 

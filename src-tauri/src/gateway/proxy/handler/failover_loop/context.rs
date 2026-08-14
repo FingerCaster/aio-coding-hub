@@ -380,6 +380,8 @@ pub(super) struct AttemptCtx<'a> {
     pub(super) cx2cc_active: bool,
     pub(super) active_bridge_type: Option<&'a str>,
     pub(super) anthropic_stream_requested: bool,
+    pub(super) reasoning_effort: Option<&'a str>,
+    pub(super) upstream_sent: bool,
 }
 
 pub(super) struct LoopState<'a, R: tauri::Runtime = tauri::Wry> {

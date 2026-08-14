@@ -135,6 +135,17 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
         self.in_flight_attempt = Some(attempt.clone());
     }
 
+    pub(super) fn update_in_flight_attempt_send_state(
+        &mut self,
+        reasoning_effort: Option<String>,
+        upstream_sent: bool,
+    ) {
+        if let Some(attempt) = self.in_flight_attempt.as_mut() {
+            attempt.reasoning_effort = reasoning_effort;
+            attempt.upstream_sent = upstream_sent;
+        }
+    }
+
     pub(super) fn replace_dispatch_ownership(
         &mut self,
         ownership: Option<Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
@@ -384,6 +395,8 @@ mod tests {
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: None,
+            reasoning_effort: None,
+            upstream_sent: false,
         };
 
         let logged_attempts: Vec<FailoverAttempt> = Some(attempt.clone()).iter().cloned().collect();
