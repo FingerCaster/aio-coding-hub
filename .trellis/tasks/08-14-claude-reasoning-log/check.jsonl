@@ -1,0 +1,7 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"独立检查从最终 outbound request 到实时/历史 UI 的每一层字段。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/cx2cc-routing-contract.md","reason":"确认仅增加可观测性，没有引入第二层 CX2CC 模型路由或固定 effort。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"验证最后成功/最后已发送 attempt 的选择规则与 failover 行为一致。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"执行跨层数据流、兼容性、绑定与测试完整性审查。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查是否复用共享提取、选择和 badge 组件且无重复来源。"}
+{"file":".trellis/tasks/08-14-claude-reasoning-log/prd.md","reason":"逐项核对产品约束与验收条件。"}
+{"file":".trellis/tasks/08-14-claude-reasoning-log/design.md","reason":"核对实现落点、协议矩阵、兼容与失败语义。"}
