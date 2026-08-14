@@ -1371,3 +1371,25 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Next Steps
 
 - 创建并合并 origin PR，随后从不可变 merge SHA 发布和验收 v0.60.41-beta.6。
+
+
+## Session 40: CX2CC 思考强度映射与本地网关委托修复
+
+**Date**: 2026-08-14
+**Task**: CX2CC 思考强度映射与本地网关委托修复
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/cx2cc-effort-map-loopback-fix`
+
+### Summary
+
+新增可配置且可恢复默认的 CX2CC effort 映射，保持显式透传与 disabled 语义；修复当前 AIO Codex 网关的双层首字节超时和回环重试，并补充设置、日志、授权与前端并发回滚测试。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b8236504` | (see git log) |
+
+### Status
+
+[OK] **Completed**
