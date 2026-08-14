@@ -1333,3 +1333,41 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 39: 修正 CX2CC Sol 默认与模型上下文
+
+**Date**: 2026-08-14
+**Task**: 修正 CX2CC Sol 默认与模型上下文
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/gpt56-sol-context-beta6`
+
+### Summary
+
+移除 CX2CC 裸 gpt-5.6 预设并统一默认 gpt-5.6-sol，增加四槽自定义上下文安全投影，锁定 reasoning effort 原值透传，准备发布 Beta 6。
+
+### Main Changes
+
+- CX2CC Provider 四个有效映射槽支持独立上下文窗口，显式值优先、未知 fail closed、混合容量取最小值。
+- Provider share 升级到严格 v5，配置 bundle、复制、前后端校验和生成绑定完整贯通。
+- 移除用户可见裸 gpt-5.6，默认改为 gpt-5.6-sol；保留字段转换但不做 effort 等级重命名。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fcf21657` | (see git log) |
+| `7e99cc6f` | (see git log) |
+
+### Testing
+
+- [OK] pnpm check:prepush 15/15、Rust 全量测试、Clippy、typecheck、lint、生成绑定和定向前端测试全部通过。
+- [OK] 独立 Trellis check 代理复核并修正普通非 Claude Provider 静默丢弃配置等边界。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 创建并合并 origin PR，随后从不可变 merge SHA 发布和验收 v0.60.41-beta.6。
