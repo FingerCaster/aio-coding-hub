@@ -39,6 +39,8 @@ fn skipped_attempt(reason_code: Option<&'static str>) -> FailoverAttempt {
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: None,
+        reasoning_effort: None,
+        upstream_sent: false,
     }
 }
 
@@ -74,6 +76,8 @@ fn terminal_bridge_attempt() -> FailoverAttempt {
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: None,
+        reasoning_effort: None,
+        upstream_sent: false,
     }
 }
 
@@ -109,6 +113,8 @@ fn real_attempt() -> FailoverAttempt {
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: None,
+        reasoning_effort: None,
+        upstream_sent: false,
     }
 }
 
@@ -148,6 +154,8 @@ fn timeout_attempt(
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: None,
+        reasoning_effort: None,
+        upstream_sent: true,
     }
 }
 
@@ -382,6 +390,8 @@ fn non_circuit_attempts_serialize_without_circuit_attribution_keys() {
         "provider_bridged",
         "timeout_secs",
         "requested_upstream_model",
+        "reasoning_effort",
+        "upstream_sent",
     ];
 
     let mut success = real_attempt();

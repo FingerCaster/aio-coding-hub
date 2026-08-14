@@ -10,10 +10,7 @@ import {
   sanitizeTtfbMs,
 } from "../../utils/formatters";
 import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard";
-import {
-  formatCodexReasoningEffortSource,
-  resolveCodexReasoningEffort,
-} from "../../services/gateway/requestLogSpecialSettings";
+import { resolveRequestLogReasoningEffort } from "../../services/gateway/requestLogSpecialSettings";
 import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
@@ -21,7 +18,7 @@ import {
   resolveRequestLogModelDisplayMeta,
   resolveRequestLogUsageReasoningTokens,
 } from "./requestLogPresentation";
-import { FastModeBadge } from "./LogBadges";
+import { FastModeBadge, ReasoningEffortBadge } from "./LogBadges";
 import { hasPriorityServiceTierSpecialSetting } from "./requestLogSpecialSettings";
 
 export type RequestLogDetailSummaryTabProps = {
@@ -45,10 +42,12 @@ export function RequestLogDetailSummaryTab({
 }: RequestLogDetailSummaryTabProps) {
   const auditMeta = buildRequestLogAuditMeta(selectedLog);
   const usageReasoningTokens = resolveRequestLogUsageReasoningTokens(selectedLog.usage_json);
-  const codexReasoningEffort =
-    selectedLog.cli_key === "codex"
-      ? resolveCodexReasoningEffort(selectedLog.requested_model, selectedLog.special_settings_json)
-      : null;
+  const reasoningEffort = resolveRequestLogReasoningEffort({
+    observedReasoningEffort: selectedLog.reasoning_effort,
+    cliKey: selectedLog.cli_key,
+    requestedModel: selectedLog.requested_model,
+    specialSettingsJson: selectedLog.special_settings_json,
+  });
   const modelDisplayMeta = resolveRequestLogModelDisplayMeta(
     selectedLog.cli_key,
     selectedLog.requested_model,
@@ -56,8 +55,7 @@ export function RequestLogDetailSummaryTab({
     null,
     selectedLog.final_provider_id
   );
-  const showKeyMetrics =
-    hasTokens || codexReasoningEffort != null || modelDisplayMeta.isRouteMismatch;
+  const showKeyMetrics = hasTokens || reasoningEffort != null || modelDisplayMeta.isRouteMismatch;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
@@ -100,6 +98,7 @@ export function RequestLogDetailSummaryTab({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="text-sm font-semibold text-foreground">关键指标</div>
             <div className="flex flex-wrap items-center gap-2">
+              <ReasoningEffortBadge value={reasoningEffort} />
               {isPriorityServiceTier ? <FastModeBadge showCustomTooltip={false} /> : null}
               {statusBadge ? (
                 <span
@@ -123,15 +122,6 @@ export function RequestLogDetailSummaryTab({
                 tone={modelDisplayMeta.isSevereRouteMismatch ? "danger" : "info"}
                 title={modelDisplayMeta.title}
               />
-            ) : null}
-            {codexReasoningEffort ? (
-              <>
-                <MetricCard label="请求等级" value={codexReasoningEffort.effort} />
-                <MetricCard
-                  label="等级来源"
-                  value={formatCodexReasoningEffortSource(codexReasoningEffort.source)}
-                />
-              </>
             ) : null}
             {cacheCreation ? (
               <MetricCard

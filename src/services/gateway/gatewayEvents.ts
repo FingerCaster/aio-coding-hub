@@ -39,10 +39,16 @@ export type GatewayAttempt = Pick<
   AttemptProbeMetadata & {
     selection_method?: string | null;
     stream_internal_error?: FailoverAttempt["stream_internal_error"];
+    reasoning_effort?: string | null;
+    upstream_sent?: boolean;
   };
 
-export type GatewayRequestEvent = Omit<GeneratedGatewayRequestEvent, "attempts"> & {
+export type GatewayRequestEvent = Omit<
+  GeneratedGatewayRequestEvent,
+  "attempts" | "reasoning_effort"
+> & {
   attempts: GatewayAttempt[];
+  reasoning_effort?: string | null;
   special_settings_json?: string | null;
   visible_ttfb_ms?: number | null;
   cost_usd?: number | null;
@@ -53,9 +59,14 @@ export type GatewayRequestStartEvent = GeneratedGatewayRequestStartEvent & {
   special_settings_json?: string | null;
 };
 
-export type GatewayAttemptEvent = Omit<GeneratedGatewayAttemptEvent, keyof AttemptProbeMetadata> &
+export type GatewayAttemptEvent = Omit<
+  GeneratedGatewayAttemptEvent,
+  keyof AttemptProbeMetadata | "reasoning_effort" | "upstream_sent"
+> &
   AttemptProbeMetadata & {
     special_settings_json?: string | null;
+    reasoning_effort?: string | null;
+    upstream_sent?: boolean;
   };
 
 // phase 在 Rust 侧是 &'static str（生成为 string），由运行时 normalizer 收窄为字面量联合。
@@ -245,7 +256,9 @@ function isGatewayAttempt(payload: unknown): payload is GatewayAttempt {
     isString(payload.outcome) &&
     isNullableNumber(payload.status) &&
     isNullableString(payload.requested_upstream_model) &&
-    isNullableString(payload.selection_method)
+    isNullableString(payload.selection_method) &&
+    isNullableStringWithin(payload.reasoning_effort, EVENT_STATE_MAX_LENGTH) &&
+    isNullableBoolean(payload.upstream_sent)
   );
 }
 
@@ -264,6 +277,9 @@ function normalizeGatewayAttempt(payload: unknown): GatewayAttempt | null {
       truncateNullableString(payload.requested_upstream_model, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
     selection_method:
       truncateNullableString(payload.selection_method, EVENT_STATE_MAX_LENGTH) ?? null,
+    reasoning_effort:
+      truncateNullableString(payload.reasoning_effort, EVENT_STATE_MAX_LENGTH) ?? null,
+    upstream_sent: payload.upstream_sent ?? false,
     ...probeMetadata,
   };
 }
@@ -364,7 +380,9 @@ export function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEv
     !isNullableString(payload.circuit_state_after) ||
     !isNullableNumber(payload.circuit_failure_count) ||
     !isNullableNumber(payload.circuit_failure_threshold) ||
-    !isNullableClaudeModelMapping(payload.claude_model_mapping)
+    !isNullableClaudeModelMapping(payload.claude_model_mapping) ||
+    !isNullableStringWithin(payload.reasoning_effort, EVENT_STATE_MAX_LENGTH) ||
+    !isNullableBoolean(payload.upstream_sent)
   ) {
     return null;
   }
@@ -399,6 +417,9 @@ export function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEv
     circuit_failure_threshold: payload.circuit_failure_threshold ?? null,
     ...probeMetadata,
     claude_model_mapping: payload.claude_model_mapping ?? null,
+    reasoning_effort:
+      truncateNullableString(payload.reasoning_effort, EVENT_STATE_MAX_LENGTH) ?? null,
+    upstream_sent: payload.upstream_sent ?? false,
   };
 }
 
@@ -437,7 +458,8 @@ export function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEv
     isNullableNumber(payload.cache_creation_5m_input_tokens) &&
     isNullableNumber(payload.cache_creation_1h_input_tokens) &&
     isNullableNumber(payload.effective_input_tokens) &&
-    isNullableClaudeModelMapping(payload.claude_model_mapping)
+    isNullableClaudeModelMapping(payload.claude_model_mapping) &&
+    isNullableStringWithin(payload.reasoning_effort, EVENT_STATE_MAX_LENGTH)
   ) {
     return {
       trace_id: payload.trace_id,
@@ -467,6 +489,8 @@ export function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEv
       cache_creation_1h_input_tokens: payload.cache_creation_1h_input_tokens ?? null,
       effective_input_tokens: payload.effective_input_tokens ?? null,
       claude_model_mapping: payload.claude_model_mapping ?? null,
+      reasoning_effort:
+        truncateNullableString(payload.reasoning_effort, EVENT_STATE_MAX_LENGTH) ?? null,
     };
   }
 

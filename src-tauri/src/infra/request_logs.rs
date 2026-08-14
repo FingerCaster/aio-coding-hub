@@ -21,6 +21,7 @@ mod costing;
 use costing::{has_any_cost_usage, is_success_status, usage_for_cost};
 
 mod semantics;
+pub(crate) use semantics::final_reasoning_effort;
 
 mod queries;
 use queries::{final_provider_from_attempts, parse_attempts, validate_cli_key};

@@ -48,10 +48,17 @@ import {
   resolveCacheCreationDisplay,
   resolveRequestLogModelDisplayMeta,
 } from "./requestLogPresentation";
-import { FastModeBadge, FolderBadge, FreeBadge, SessionReuseBadge } from "./LogBadges";
+import {
+  FastModeBadge,
+  FolderBadge,
+  FreeBadge,
+  ReasoningEffortBadge,
+  SessionReuseBadge,
+} from "./LogBadges";
 import {
   hasPriorityServiceTierSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
+  resolveRequestLogReasoningEffort,
 } from "./requestLogSpecialSettings";
 import { getErrorCodeLabel } from "./requestLogErrorLabels";
 import { Clock, CheckCircle2, XCircle, Server, RefreshCw, ArrowUpRight } from "lucide-react";
@@ -154,6 +161,12 @@ const RequestLogCard = memo(function RequestLogCard({
     ? `${cliLabel} / ${modelDisplayMeta.title}`
     : `${cliLabel} / ${modelText}`;
   const isSevereRouteMismatch = modelDisplayMeta.isSevereRouteMismatch;
+  const reasoningEffort = resolveRequestLogReasoningEffort({
+    observedReasoningEffort: log.reasoning_effort,
+    cliKey: log.cli_key,
+    requestedModel: log.requested_model,
+    specialSettingsJson: log.special_settings_json,
+  });
 
   const isCodexSystemRequest =
     log.cli_key === "codex" && hasCodexSystemRequestSpecialSetting(log.special_settings_json);
@@ -265,6 +278,8 @@ const RequestLogCard = memo(function RequestLogCard({
                   {modelText}
                 </span>
               </span>
+
+              <ReasoningEffortBadge value={reasoningEffort} />
 
               {modelDisplayMeta.isConfiguredRoute ? (
                 <span

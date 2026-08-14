@@ -305,6 +305,8 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
             .filter(|ownership| ownership.is_probe())
             .and_then(|ownership| ownership.probe_generation()),
         claude_model_mapping: claude_model_mapping.cloned(),
+        reasoning_effort: attempt_ctx.reasoning_effort.map(str::to_string),
+        upstream_sent: attempt_ctx.upstream_sent,
     };
 
     let state = ctx.state;

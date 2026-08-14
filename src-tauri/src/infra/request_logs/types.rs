@@ -70,6 +70,7 @@ pub struct RequestLogSummary {
     pub excluded_from_stats: bool,
     pub special_settings_json: Option<String>,
     pub requested_model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub status: Option<i64>,
     pub error_code: Option<String>,
     // Persisted row never resolved (no status, no error): the request was cut
@@ -140,6 +141,7 @@ pub struct RequestLogDetail {
     pub effective_input_tokens: Option<i64>,
     pub usage_json: Option<String>,
     pub requested_model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub final_provider_id: i64,
     pub final_provider_name: String,
     pub final_provider_source_id: Option<i64>,

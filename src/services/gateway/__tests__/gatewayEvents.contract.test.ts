@@ -28,6 +28,8 @@ describe("gateway event payload contract (shared fixtures)", () => {
     expect(normalized?.attempts).toHaveLength(1);
     expect(normalized?.attempts[0]?.provider_id).toBe(7);
     expect(normalized?.attempts[0]?.requested_upstream_model).toBeNull();
+    expect(normalized?.attempts[0]?.reasoning_effort).toBe("high");
+    expect(normalized?.attempts[0]?.upstream_sent).toBe(true);
     expect(normalized?.attempts[0]?.probe).toBeNull();
     expect(normalized?.attempts[0]?.probe_result).toBeNull();
     // Nested mapping is camelCase inside an otherwise snake_case payload.
@@ -36,6 +38,7 @@ describe("gateway event payload contract (shared fixtures)", () => {
     // Backend-computed field must survive normalization (it is optional in the
     // type, so dropping the copy would not fail typecheck).
     expect(normalized?.effective_input_tokens).toBe(1200);
+    expect(normalized?.reasoning_effort).toBe("high");
   });
 
   it("accepts null forms of the optional gateway:request fields", () => {
@@ -78,6 +81,8 @@ describe("gateway event payload contract (shared fixtures)", () => {
     expect(normalized?.probe).toBeNull();
     expect(normalized?.probe_result).toBeNull();
     expect(normalized?.claude_model_mapping?.requestedModel).toBe("claude-sonnet-4-5");
+    expect(normalized?.reasoning_effort).toBe("high");
+    expect(normalized?.upstream_sent).toBe(true);
   });
 
   it("projects structured probe metadata from attempt and final request events", () => {
@@ -112,6 +117,8 @@ describe("gateway event payload contract (shared fixtures)", () => {
       probe_trigger: _trigger,
       probe_result: _result,
       probe_generation: _generation,
+      reasoning_effort: _effort,
+      upstream_sent: _sent,
       ...legacy
     } = attemptFixture;
 
@@ -120,6 +127,22 @@ describe("gateway event payload contract (shared fixtures)", () => {
       probe_trigger: null,
       probe_result: null,
       probe_generation: null,
+      reasoning_effort: null,
+      upstream_sent: false,
+    });
+  });
+
+  it("accepts legacy final request payloads without reasoning evidence", () => {
+    const { reasoning_effort: _requestEffort, attempts, ...legacyRequest } = requestFixture;
+    const legacyAttempts = attempts.map(
+      ({ reasoning_effort: _effort, upstream_sent: _sent, ...attempt }) => attempt
+    );
+
+    expect(
+      normalizeGatewayRequestEvent({ ...legacyRequest, attempts: legacyAttempts })
+    ).toMatchObject({
+      reasoning_effort: null,
+      attempts: [{ reasoning_effort: null, upstream_sent: false }],
     });
   });
 

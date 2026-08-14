@@ -461,7 +461,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getByText("claude-sonnet → gpt-5.4")).toBeInTheDocument();
   });
 
-  it("renders Codex model with reasoning effort from explicit settings or unknown fallback", () => {
+  it("renders one observed effort badge ahead of Codex fallback", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
@@ -477,6 +477,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
               path: "/v1/responses",
               requested_model: "gpt-5.5",
               status: 200,
+              reasoning_effort: "xhigh",
               special_settings_json: JSON.stringify([
                 { type: "codex_reasoning_effort", source: "request", effort: "high" },
               ]),
@@ -507,6 +508,9 @@ describe("components/home/HomeRequestLogsPanel", () => {
 
     expect(screen.getByTitle("Codex / gpt-5.5-high")).toBeInTheDocument();
     expect(screen.getByTitle("Codex / gpt-future-unknown")).toBeInTheDocument();
+    expect(screen.getAllByTitle("思考等级：xhigh")).toHaveLength(1);
+    expect(screen.queryByTitle("思考等级：high")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("思考等级：unknown")).not.toBeInTheDocument();
   });
 
   it("renders Codex model route mismatch and system request signals together", () => {

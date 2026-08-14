@@ -1140,6 +1140,8 @@ mod tests {
             timeout_secs: None,
             stream_internal_error: None,
             requested_upstream_model: None,
+            reasoning_effort: None,
+            upstream_sent: true,
         }
     }
 
@@ -1179,6 +1181,8 @@ mod tests {
             timeout_secs: Some(1),
             stream_internal_error: None,
             requested_upstream_model: None,
+            reasoning_effort: None,
+            upstream_sent: true,
         }
     }
 

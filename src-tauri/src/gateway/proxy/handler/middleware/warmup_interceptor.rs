@@ -115,6 +115,8 @@ fn respond_warmup_intercept<R: tauri::Runtime>(
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: None,
+        reasoning_effort: None,
+        upstream_sent: false,
     }];
 
     emit_request_event_and_spawn_request_log(

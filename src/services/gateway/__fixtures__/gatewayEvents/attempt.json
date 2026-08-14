@@ -32,5 +32,7 @@
     "providerId": 7,
     "providerName": "Provider A",
     "applied": true
-  }
+  },
+  "reasoning_effort": "high",
+  "upstream_sent": true
 }

@@ -93,6 +93,8 @@ pub(super) fn push_skipped_provider_attempt(
         timeout_secs: None,
         stream_internal_error: None,
         requested_upstream_model: None,
+        reasoning_effort: None,
+        upstream_sent: false,
     });
 }
 
@@ -213,6 +215,8 @@ mod tests {
             timeout_secs: None,
             requested_upstream_model: None,
             stream_internal_error: None,
+            reasoning_effort: None,
+            upstream_sent: false,
         }
     }
 

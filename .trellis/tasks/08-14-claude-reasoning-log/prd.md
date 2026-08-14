@@ -22,13 +22,13 @@
 
 ## Acceptance Criteria
 
-- [ ] Rust 单元测试覆盖四类协议、空值/非字符串/数值预算、未知未来字符串与 Gemini 包装 body。
-- [ ] attempt 测试证明成功优先、最后已发送失败回退，以及未发送 attempt 不污染最终值。
-- [ ] Claude `/messages`、CX2CC `/responses` 和 Codex 回归测试均能得到最终实际 outbound effort；只有 thinking 开关或预算时保持无 badge。
-- [ ] RequestLog summary/detail 与实时事件均包含可选 `reasoning_effort`，旧 attempts JSON 可正常读取。
-- [ ] 历史列表、实时 trace、详情摘要展示一致且无重复，Codex 既有模型/强度兼容展示不回归。
-- [ ] 生成绑定已更新，前端 lint/typecheck/test 与 Rust fmt/clippy/test 通过。
-- [ ] 独立检查代理完成跨层数据流核对，发布前完整 `pnpm check:prepush` 通过。
+- [x] Rust 单元测试覆盖四类协议、空值/非字符串/数值预算、未知未来字符串与 Gemini 包装 body。
+- [x] attempt 测试证明成功优先、最后已发送失败回退，以及未发送 attempt 不污染最终值。
+- [x] Claude `/messages`、CX2CC `/responses` 和 Codex 回归测试均能得到最终实际 outbound effort；只有 thinking 开关或预算时保持无 badge。
+- [x] RequestLog summary/detail 与实时事件均包含可选 `reasoning_effort`，旧 attempts JSON 可正常读取。
+- [x] 历史列表、实时 trace、详情摘要展示一致且无重复，Codex 既有模型/强度兼容展示不回归。
+- [x] 生成绑定已更新，前端 lint/typecheck/test 与 Rust fmt/clippy/test 通过。
+- [x] 独立检查代理完成跨层数据流核对，发布前完整 `pnpm check:prepush` 通过。
 
 ## Notes
 

@@ -654,6 +654,54 @@ describe("components/home/RealtimeTraceCards", () => {
 
     expect(screen.getByTitle("Codex / gpt-5.5-high")).toBeInTheDocument();
     expect(screen.getByTitle("Codex / gpt-5.5-medium")).toBeInTheDocument();
+    expect(screen.getByTitle("思考等级：high")).toBeInTheDocument();
+    expect(screen.getByTitle("思考等级：medium")).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it("renders one final observed effort badge instead of the Codex fallback", () => {
+    vi.useFakeTimers();
+    const baseTime = 1_700_000_000_000;
+    vi.setSystemTime(baseTime);
+
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "t-observed-effort",
+            cli_key: "codex",
+            path: "/v1/responses",
+            requested_model: "gpt-5.5",
+            special_settings_json: JSON.stringify([
+              { type: "codex_reasoning_effort", source: "request", effort: "high" },
+            ]),
+            first_seen_ms: baseTime - 1000,
+            last_seen_ms: baseTime,
+            summary: {
+              trace_id: "t-observed-effort",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              query: null,
+              status: 200,
+              error_code: null,
+              duration_ms: 100,
+              ttfb_ms: 10,
+              reasoning_effort: "xhigh",
+            },
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    expect(screen.getAllByTitle(/思考等级：/)).toHaveLength(1);
+    expect(screen.getByTitle("思考等级：xhigh")).toBeInTheDocument();
+    expect(screen.queryByTitle("思考等级：high")).not.toBeInTheDocument();
 
     vi.useRealTimers();
   });
