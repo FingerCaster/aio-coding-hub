@@ -439,11 +439,8 @@ fn parse_usage(usage: Option<&Value>) -> IRUsage {
     let detail_cache_creation_input_tokens =
         crate::usage::extract_openai_detail_cache_creation_input_tokens(u)
             .and_then(|tokens| u64::try_from(tokens).ok());
-    let cache_creation_input_tokens = detail_cache_creation_input_tokens
-        .or_else(|| {
-            crate::usage::extract_openai_cache_creation_input_tokens(u)
-                .and_then(|tokens| u64::try_from(tokens).ok())
-        })
+    let cache_creation_input_tokens = crate::usage::extract_openai_cache_creation_input_tokens(u)
+        .and_then(|tokens| u64::try_from(tokens).ok())
         .or_else(|| {
             match (
                 cache_creation_5m_input_tokens,
@@ -1891,6 +1888,28 @@ mod tests {
         assert_eq!(ir.usage.cache_creation_input_tokens, Some(30));
         assert_eq!(ir.usage.cache_creation_5m_input_tokens, Some(20));
         assert_eq!(ir.usage.cache_creation_1h_input_tokens, Some(10));
+    }
+
+    #[test]
+    fn response_to_ir_uses_nested_cache_creation_only_for_subtraction() {
+        for (detail_tokens, top_level_tokens, expected_input) in [(0, 30, 100), (30, 25, 70)] {
+            let body = json!({
+                "id": format!("resp_mixed_cache_creation_{detail_tokens}"),
+                "status": "completed",
+                "model": "gpt-5.6-sol",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 1,
+                    "cache_creation_input_tokens": top_level_tokens,
+                    "input_tokens_details": {"cache_write_tokens": detail_tokens}
+                }
+            });
+
+            let ir = response_to_ir(body, &default_settings()).unwrap();
+            assert_eq!(ir.usage.input_tokens, expected_input);
+            assert_eq!(ir.usage.cache_creation_input_tokens, Some(top_level_tokens));
+        }
     }
 
     #[test]

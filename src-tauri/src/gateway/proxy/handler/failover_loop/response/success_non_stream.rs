@@ -1998,6 +1998,9 @@ where
     } else {
         finalize_infinite_retry_activity(&common, "succeeded").await
     };
+    let log_usage_metrics = infinite_terminal
+        .log_usage_metrics
+        .or_else(|| usage_metrics.clone());
     let completion = if response_build_failed {
         RequestCompletion::failure_with_visible_ttfb(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
@@ -2012,7 +2015,7 @@ where
             provider_ttfb_ms,
             Some(duration_ms),
             usage_metrics,
-            infinite_terminal.log_usage_metrics,
+            log_usage_metrics,
             client_usage,
         )
         .with_log_cost_usd_femto(infinite_terminal.log_cost_usd_femto)

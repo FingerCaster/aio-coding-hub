@@ -1390,6 +1390,135 @@ INSERT INTO codex_managed_profiles(
         .expect("terminal request log enqueue")
     }
 
+    async fn run_cx2cc_buffered_usage_route(
+        db_name: &str,
+        stream: bool,
+    ) -> (Vec<u8>, request_logs::RequestLogDetail) {
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "claude", true, "http://127.0.0.1:37123")
+            .expect("enable claude cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join(db_name)).expect("init test db");
+        let (upstream_base_url, captured_rx, upstream_task) = spawn_capturing_raw_upstream(
+            r#"{"id":"resp_usage","object":"response","status":"completed","model":"gpt-5.3-codex","output":[{"id":"msg_usage","type":"message","role":"assistant","content":[{"type":"output_text","text":"usage response"}]}],"usage":{"input_tokens":100,"output_tokens":10,"total_tokens":110,"input_tokens_details":{"cached_tokens":80}}}"#,
+        )
+        .await;
+        let source_provider_id =
+            insert_provider_with_priority(&db, "codex", "CX2CC Usage Source", upstream_base_url, 0);
+        let bridge_provider_id = insert_cx2cc_bridge_provider(&db, source_provider_id, 0);
+        let (log_tx, writer_task) =
+            request_logs::start_buffered_writer(app_handle.clone(), db.clone());
+        let router = build_router(gateway_state(app_handle, db.clone(), log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/claude/_aio/provider/{bridge_provider_id}/v1/messages"
+            ))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "model": "claude-opus-4-6",
+                    "max_tokens": 128,
+                    "stream": stream,
+                    "messages": [{"role": "user", "content": "hello"}]
+                }))
+                .expect("request body"),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let trace_id = response
+            .headers()
+            .get("x-trace-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("trace header")
+            .to_string();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body")
+            .to_vec();
+        let captured = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("captured upstream request timeout")
+            .expect("captured upstream request");
+        let upstream_body: Value =
+            serde_json::from_slice(&captured.body).expect("upstream request JSON");
+        assert_eq!(
+            upstream_body.get("stream").and_then(Value::as_bool),
+            Some(stream)
+        );
+        tokio::time::timeout(Duration::from_secs(2), writer_task)
+            .await
+            .expect("writer drain timeout")
+            .expect("writer task joins");
+        let request_log = request_logs::get_by_trace_id(&db, &trace_id)
+            .expect("query request log")
+            .expect("persisted request log");
+        upstream_task.abort();
+
+        (body, request_log)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cx2cc_buffered_usage_keeps_raw_accounting_for_json_and_json_to_sse() {
+        let _env_lock = crate::test_support::test_env_lock();
+
+        for (stream, db_name) in [
+            (false, "cx2cc-buffered-json-usage.sqlite"),
+            (true, "cx2cc-buffered-json-to-sse-usage.sqlite"),
+        ] {
+            let (body, log) = run_cx2cc_buffered_usage_route(db_name, stream).await;
+
+            assert_eq!(log.input_tokens, Some(100));
+            assert_eq!(log.output_tokens, Some(10));
+            assert_eq!(log.total_tokens, Some(110));
+            assert_eq!(log.cache_read_input_tokens, Some(80));
+            assert_eq!(log.effective_input_tokens, Some(20));
+            let client_usage: Value = serde_json::from_str(
+                log.usage_json
+                    .as_deref()
+                    .expect("client usage projection should be logged"),
+            )
+            .expect("client usage JSON");
+            assert_eq!(
+                client_usage.get("input_tokens"),
+                Some(&serde_json::json!(20))
+            );
+            assert_eq!(
+                client_usage.get("cache_read_input_tokens"),
+                Some(&serde_json::json!(80))
+            );
+
+            let response_text = String::from_utf8(body).expect("response UTF-8");
+            if stream {
+                assert!(response_text.contains("event: message_start"));
+                assert!(response_text.contains("event: message_stop"));
+            } else {
+                let response: Value =
+                    serde_json::from_str(&response_text).expect("Anthropic response JSON");
+                assert_eq!(
+                    response.pointer("/usage/input_tokens"),
+                    Some(&serde_json::json!(20))
+                );
+                assert_eq!(
+                    response.pointer("/usage/cache_read_input_tokens"),
+                    Some(&serde_json::json!(80))
+                );
+            }
+        }
+    }
+
     async fn run_encoded_codex_route(
         db_name: &str,
         forwarded_path: &str,
