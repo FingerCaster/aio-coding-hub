@@ -1,0 +1,42 @@
+{
+  "id": "cx2cc-ttfb-reentry-port",
+  "name": "cx2cc-ttfb-reentry-port",
+  "title": "移植 CX2CC 嵌套首字节预算与 reentry 直连",
+  "description": "将旧分支三个提交的嵌套 TTFB 预算所有权与 loopback/reentry 代理绕过语义最小移植到最新 origin/main，并保留现有 CX2CC/Codex 可靠性行为。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "backend",
+  "package": "aio-coding-hub",
+  "priority": "P1",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-15",
+  "completedAt": "2026-08-15",
+  "branch": "FingerCaster/beta8-ttfb-reentry-port",
+  "base_branch": "origin/main",
+  "worktree_path": "D:\\OrcaProjects\\aio-coding-hub-fork\\beta8-ttfb-reentry-port",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md",
+    ".trellis/spec/aio-coding-hub/backend/index.md",
+    ".trellis/spec/aio-coding-hub/cross-layer/cx2cc-routing-contract.md",
+    "src-tauri/src/gateway/proxy/handler/failover_loop/attempt/attempt_executor.rs",
+    "src-tauri/src/gateway/proxy/handler/failover_loop/response/response_router.rs",
+    "src-tauri/src/gateway/proxy/handler/failover_loop/response/success_event_stream.rs",
+    "src-tauri/src/gateway/routes.rs"
+  ],
+  "notes": "外部父任务（当前 checkout 不可见）：08-15-merge-balance-fix-beta-release。未新增完整 outer-to-inner nested route E2E；以 typed owner、header wall-clock、SSE probe 和真实 Provider 524 route 的组合测试覆盖，保留路由级集成风险。",
+  "meta": {
+    "validation": {
+      "focused_rust": "passed",
+      "fmt": "passed",
+      "clippy": "passed",
+      "spec_links": "passed",
+      "generated_bindings": "Rust exporter passed; prettier unavailable because node_modules is absent; generated output restored"
+    }
+  }
+}

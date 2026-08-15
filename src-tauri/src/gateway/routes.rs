@@ -12794,6 +12794,12 @@ INSERT INTO codex_managed_profiles(
         assert!(full_body.contains("response.created"));
         assert!(full_body.contains("response.completed"));
         assert!(full_body.contains("resp-disabled-stream"));
+        assert!(full_body.contains("first visible"));
+        assert_eq!(
+            full_body.matches("\"type\":\"response.completed\"").count(),
+            1,
+            "response.completed payload must remain visible exactly once"
+        );
 
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(200));

@@ -1,7 +1,6 @@
 //! Usage: Handle successful event-stream upstream responses inside `failover_loop::run`.
 
-use super::attempt_executor::RetryLoopState;
-use super::provider_iterator::PreparedProvider;
+use super::attempt_executor::{AttemptTiming, RetryLoopState};
 use super::upstream_retry_policy::{
     configured_retry_backoff_delay, should_record_circuit_failure, transient_failure_decision,
     RetryPolicyMatch,
@@ -117,6 +116,36 @@ async fn next_event_stream_chunk(
     std::future::poll_fn(|cx| stream.as_mut().poll_next(cx))
         .await
         .transpose()
+}
+
+enum FirstChunkProbe {
+    Skipped,
+    Ok(Option<Bytes>, Option<u128>),
+    ReadError(reqwest::Error),
+    Timeout,
+}
+
+async fn probe_first_event_stream_chunk(
+    upstream: &mut DecodedEventStream,
+    attempt_started: std::time::Instant,
+    first_byte_timeout: Option<Duration>,
+) -> FirstChunkProbe {
+    let Some(total) = first_byte_timeout else {
+        return FirstChunkProbe::Skipped;
+    };
+    let elapsed = attempt_started.elapsed();
+    if elapsed >= total {
+        return FirstChunkProbe::Timeout;
+    }
+
+    match tokio::time::timeout(total - elapsed, next_event_stream_chunk(upstream)).await {
+        Ok(Ok(Some(chunk))) => {
+            FirstChunkProbe::Ok(Some(chunk), Some(attempt_started.elapsed().as_millis()))
+        }
+        Ok(Ok(None)) => FirstChunkProbe::Ok(None, None),
+        Ok(Err(err)) => FirstChunkProbe::ReadError(err),
+        Err(_) => FirstChunkProbe::Timeout,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1592,7 +1621,7 @@ pub(super) async fn handle_success_event_stream<R>(
     _input: &RequestContext<R>,
     provider_ctx: ProviderCtx<'_>,
     attempt_ctx: AttemptCtx<'_>,
-    _prepared: PreparedProvider,
+    attempt_timing: &AttemptTiming,
     loop_state: LoopState<'_, R>,
     retry_state: &mut RetryLoopState,
     resp: reqwest::Response,
@@ -1607,7 +1636,8 @@ where
     let provider_ctx_owned = ProviderCtxOwned::from(provider_ctx);
 
     let upstream_first_byte_timeout_secs = common.upstream_first_byte_timeout_secs;
-    let upstream_first_byte_timeout = common.upstream_first_byte_timeout;
+    let upstream_first_byte_timeout =
+        attempt_timing.sse_first_chunk_timeout(common.upstream_first_byte_timeout);
     let effective_stream_idle_timeout = resolve_effective_stream_idle_timeout(
         provider_ctx_owned.stream_idle_timeout_seconds,
         common.upstream_stream_idle_timeout,
@@ -1708,35 +1738,12 @@ where
             decode_event_stream(raw_upstream, decode_gzip_before_guard)
         };
 
-        enum FirstChunkProbe {
-            Skipped,
-            Ok(Option<Bytes>, Option<u128>),
-            ReadError(reqwest::Error),
-            Timeout,
-        }
-
-        let probe = match upstream_first_byte_timeout {
-            Some(total) => {
-                let elapsed = attempt_started.elapsed();
-                if elapsed >= total {
-                    FirstChunkProbe::Timeout
-                } else {
-                    let remaining = total - elapsed;
-                    match tokio::time::timeout(remaining, next_event_stream_chunk(&mut upstream))
-                        .await
-                    {
-                        Ok(Ok(Some(chunk))) => FirstChunkProbe::Ok(
-                            Some(chunk),
-                            Some(attempt_started.elapsed().as_millis()),
-                        ),
-                        Ok(Ok(None)) => FirstChunkProbe::Ok(None, None),
-                        Ok(Err(err)) => FirstChunkProbe::ReadError(err),
-                        Err(_) => FirstChunkProbe::Timeout,
-                    }
-                }
-            }
-            None => FirstChunkProbe::Skipped,
-        };
+        let probe = probe_first_event_stream_chunk(
+            &mut upstream,
+            attempt_started,
+            upstream_first_byte_timeout,
+        )
+        .await;
         let probe_is_empty_event_stream = matches!(probe, FirstChunkProbe::Ok(None, None));
 
         let mut first_chunk: Option<Bytes> = None;
@@ -2413,10 +2420,12 @@ mod tests {
         collect_bounded_final_wire, effective_terminal_failure_status,
         inspect_buffered_event_stream_prefix, is_codex_responses_event_stream_path,
         is_native_codex_responses_event_stream_path, mark_last_stream_attempt_terminal_failure,
+        next_event_stream_chunk, probe_first_event_stream_chunk,
         resolve_effective_stream_idle_timeout, resolve_requested_model_for_log,
         BufferedFinalWireError, BufferedStreamPrefixConfig, BufferedStreamPrefixDecision,
-        BufferedStreamPrefixState, DecodedEventStream, INFINITE_FINAL_WIRE_WALL_CLOCK_CAP,
-        MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES, MIN_SUPPORTED_PATH_TTFB,
+        BufferedStreamPrefixState, DecodedEventStream, FirstChunkProbe,
+        INFINITE_FINAL_WIRE_WALL_CLOCK_CAP, MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
+        MIN_SUPPORTED_PATH_TTFB,
     };
     use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
     use crate::gateway::events::FailoverAttempt;
@@ -2452,6 +2461,32 @@ mod tests {
                 Poll::Pending => Poll::Pending,
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delegated_sse_first_event_budget_skips_outer_deadline() {
+        let delay = Duration::from_millis(100);
+        let configured_timeout = Duration::from_millis(25);
+
+        let mut delegated: DecodedEventStream = Box::pin(SlowDripStream::new(delay));
+        let delegated_probe =
+            probe_first_event_stream_chunk(&mut delegated, std::time::Instant::now(), None).await;
+        assert!(matches!(delegated_probe, FirstChunkProbe::Skipped));
+        assert_eq!(
+            next_event_stream_chunk(&mut delegated)
+                .await
+                .expect("delegated first event read"),
+            Some(Bytes::from_static(b"x"))
+        );
+
+        let mut ordinary: DecodedEventStream = Box::pin(SlowDripStream::new(delay));
+        let ordinary_probe = probe_first_event_stream_chunk(
+            &mut ordinary,
+            std::time::Instant::now(),
+            Some(configured_timeout),
+        )
+        .await;
+        assert!(matches!(ordinary_probe, FirstChunkProbe::Timeout));
     }
 
     fn native_prefix_config(

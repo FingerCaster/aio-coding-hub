@@ -66,6 +66,68 @@ pub(super) struct AttemptTiming {
     pub(super) attempt_started: Instant,
     pub(super) reasoning_effort: Option<String>,
     pub(super) upstream_sent: bool,
+    target: AttemptTarget,
+}
+
+impl AttemptTiming {
+    pub(super) fn response_header_timeout(
+        &self,
+        configured_timeout: Option<std::time::Duration>,
+    ) -> Option<std::time::Duration> {
+        self.target.effective_first_byte_timeout(configured_timeout)
+    }
+
+    pub(super) fn sse_first_chunk_timeout(
+        &self,
+        configured_timeout: Option<std::time::Duration>,
+    ) -> Option<std::time::Duration> {
+        self.target.effective_first_byte_timeout(configured_timeout)
+    }
+}
+
+/// Final per-attempt target ownership, minted only after the prepared internal
+/// intent and the ordinary self-loop validator agree on the exact target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttemptTarget {
+    ExternalProvider,
+    InternalCodexReentry,
+}
+
+impl AttemptTarget {
+    fn after_validation(
+        internal_reentry_intent_matched: bool,
+        target_validation: &Result<
+            crate::gateway::http_client::ValidatedGatewayTarget,
+            crate::gateway::http_client::GatewayTargetValidationError,
+        >,
+    ) -> Self {
+        if internal_reentry_intent_matched
+            && matches!(
+                target_validation,
+                Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop)
+            )
+        {
+            Self::InternalCodexReentry
+        } else {
+            Self::ExternalProvider
+        }
+    }
+
+    fn is_internal_codex_reentry(self) -> bool {
+        self == Self::InternalCodexReentry
+    }
+
+    fn effective_first_byte_timeout(
+        self,
+        configured_timeout: Option<std::time::Duration>,
+    ) -> Option<std::time::Duration> {
+        match self {
+            Self::ExternalProvider => configured_timeout,
+            // The local scheduling hop delegates Provider timeout ownership to
+            // the inner Codex gateway request. Other timeout families remain.
+            Self::InternalCodexReentry => None,
+        }
+    }
 }
 
 /// Result of building + sending one attempt.
@@ -393,13 +455,8 @@ where
     // enabled-state read so the outer Provider switch remains the master gate.
     // The enabled-state read is therefore also the final async preparation step.
     let target_validation = crate::gateway::http_client::validate_gateway_target(&url).await;
-    let authorized_internal_reentry = confirm_internal_reentry(
-        internal_reentry_intent_matched,
-        matches!(
-            &target_validation,
-            Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop)
-        ),
-    );
+    let attempt_target =
+        AttemptTarget::after_validation(internal_reentry_intent_matched, &target_validation);
     let db = ctx.state.db.clone();
     let provider_id = prepared.provider_id;
     let provider_uuid = prepared.provider_uuid.clone();
@@ -450,7 +507,7 @@ where
             }
         },
         Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop)
-            if authorized_internal_reentry =>
+            if attempt_target.is_internal_codex_reentry() =>
         {
             None
         }
@@ -491,7 +548,7 @@ where
         &headers,
         &upstream_body,
     );
-    if authorized_internal_reentry {
+    if attempt_target.is_internal_codex_reentry() {
         let Some(nonce) = ctx
             .state
             .internal_reentry
@@ -517,16 +574,16 @@ where
         attempt_started: Instant::now(),
         reasoning_effort,
         upstream_sent: true,
+        target: attempt_target,
     };
 
     let dispatch_ownership = prepared.dispatch_ownership.clone();
-    let client = if authorized_internal_reentry {
+    let client = if attempt_target.is_internal_codex_reentry() {
         ctx.state.direct_internal_reentry_client()
     } else {
         pinned_client.unwrap_or_else(|| ctx.state.client())
     };
-    let effective_first_byte_timeout =
-        first_byte_timeout_for_send(first_byte_timeout, authorized_internal_reentry);
+    let effective_first_byte_timeout = timing.response_header_timeout(first_byte_timeout);
     let send_result = send::send_upstream_with_first_byte_timeout(
         client,
         input.req_method.clone(),
@@ -582,23 +639,6 @@ where
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn confirm_internal_reentry(intent_matched: bool, target_is_current_gateway: bool) -> bool {
-    intent_matched && target_is_current_gateway
-}
-
-fn first_byte_timeout_for_send(
-    configured_timeout: Option<std::time::Duration>,
-    authorized_internal_reentry: bool,
-) -> Option<std::time::Duration> {
-    if authorized_internal_reentry {
-        // The local hop delegates timeout, retry, and failover ownership to the
-        // inner Codex gateway request.
-        None
-    } else {
-        configured_timeout
-    }
-}
 
 async fn gateway_provider_enabled_check(
     db: crate::db::Db,
@@ -960,6 +1000,16 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn timing_for_target(target: AttemptTarget) -> AttemptTiming {
+        AttemptTiming {
+            attempt_started_ms: 0,
+            attempt_started: Instant::now(),
+            reasoning_effort: None,
+            upstream_sent: true,
+            target,
+        }
+    }
+
     #[test]
     fn final_wire_model_sync_is_scoped_to_codex_or_managed_routes() {
         assert!(should_sync_final_wire_model("codex", false, false));
@@ -970,26 +1020,101 @@ mod tests {
     }
 
     #[test]
-    fn authorized_internal_reentry_delegates_first_byte_timeout() {
+    fn confirmed_internal_reentry_delegates_both_first_byte_deadlines() {
         let configured = Some(std::time::Duration::from_secs(120));
+        let validation = Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop);
+        let timing = timing_for_target(AttemptTarget::after_validation(true, &validation));
 
-        assert_eq!(first_byte_timeout_for_send(configured, true), None);
+        assert_eq!(timing.response_header_timeout(configured), None);
+        assert_eq!(timing.sse_first_chunk_timeout(configured), None);
+        assert_eq!(timing.response_header_timeout(None), None);
+        assert_eq!(timing.sse_first_chunk_timeout(None), None);
     }
 
     #[test]
     fn internal_reentry_requires_matching_intent_and_current_gateway_target() {
-        assert!(confirm_internal_reentry(true, true));
-        assert!(!confirm_internal_reentry(true, false));
-        assert!(!confirm_internal_reentry(false, true));
-        assert!(!confirm_internal_reentry(false, false));
+        use crate::gateway::http_client::{GatewayTargetValidationError, ValidatedGatewayTarget};
+
+        let self_loop = Err(GatewayTargetValidationError::SelfLoop);
+        let resolution_failed = Err(GatewayTargetValidationError::ResolutionFailed);
+        let external = Ok(ValidatedGatewayTarget::default());
+
+        assert_eq!(
+            AttemptTarget::after_validation(true, &self_loop),
+            AttemptTarget::InternalCodexReentry
+        );
+        for (intent_matched, validation) in [
+            (false, &self_loop),
+            (true, &resolution_failed),
+            (false, &resolution_failed),
+            (true, &external),
+            (false, &external),
+        ] {
+            assert_eq!(
+                AttemptTarget::after_validation(intent_matched, validation),
+                AttemptTarget::ExternalProvider
+            );
+        }
     }
 
     #[test]
-    fn ordinary_upstream_retains_configured_first_byte_timeout() {
+    fn ordinary_and_explicit_source_targets_retain_both_first_byte_deadlines() {
         let configured = Some(std::time::Duration::from_secs(120));
+        let validation = Ok(crate::gateway::http_client::ValidatedGatewayTarget::default());
+        let timing = timing_for_target(AttemptTarget::after_validation(false, &validation));
 
-        assert_eq!(first_byte_timeout_for_send(configured, false), configured);
-        assert_eq!(first_byte_timeout_for_send(None, false), None);
+        assert_eq!(timing.response_header_timeout(configured), configured);
+        assert_eq!(timing.sse_first_chunk_timeout(configured), configured);
+        assert_eq!(timing.response_header_timeout(None), None);
+        assert_eq!(timing.sse_first_chunk_timeout(None), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delegated_header_budget_outlives_configured_timeout_with_wall_clock_cap() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind delayed local scheduling hop");
+        let address = listener.local_addr().expect("delayed hop address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept delayed hop");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
+                .await
+                .expect("write delayed response");
+        });
+
+        let validation = Err(crate::gateway::http_client::GatewayTargetValidationError::SelfLoop);
+        let timing = timing_for_target(AttemptTarget::after_validation(true, &validation));
+        let configured_timeout = Some(std::time::Duration::from_millis(25));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build direct test client");
+        let send = send::send_upstream_with_first_byte_timeout(
+            client,
+            axum::http::Method::GET,
+            reqwest::Url::parse(&format!("http://{address}/nested")).expect("delayed hop URL"),
+            axum::http::HeaderMap::new(),
+            Bytes::new(),
+            timing.response_header_timeout(configured_timeout),
+            || true,
+        );
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), send)
+            .await
+            .expect("delegated scheduling hop exceeded wall-clock cap");
+        match result {
+            send::SendResult::Ok(response) => {
+                assert_eq!(response.status(), reqwest::StatusCode::OK)
+            }
+            _ => panic!("delegated scheduling hop should outlive the configured timeout"),
+        }
+        server.await.expect("delayed hop task");
     }
 
     #[test]

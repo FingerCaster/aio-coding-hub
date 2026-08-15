@@ -50,6 +50,9 @@ fn configured_model_route_for_request<T>(
 InternalReentryRegistry::issue(bridge_provider_id, origin_trace_id) -> Option<String>;
 InternalReentryRegistry::consume(nonce, cli_key, method, path, query)
     -> Option<TrustedInternalReentry>;
+
+AttemptTiming::response_header_timeout(configured) -> Option<Duration>;
+AttemptTiming::sse_first_chunk_timeout(configured) -> Option<Duration>;
 ```
 
 The shared new/blank default is exposed by both layers:
@@ -161,9 +164,15 @@ literals.
 - A trusted second hop skips generic configured-model route resolution so the
   mapper-selected model remains unchanged. Ordinary self-loop rejection remains
   enabled for every other request.
-- The authorized local delegation has no outer first-byte timeout. The inner
-  Codex route exclusively owns real-provider timeout, retry, and failover;
-  ordinary provider sends retain the configured first-byte timeout.
+- Only a typed intent match plus the final validator's `SelfLoop` result may
+  mint the private attempt target used after the capability itself is consumed.
+  That one attempt target disables both the outer response-header and SSE
+  first-chunk deadlines. It is never inferred from localhost, `source_id`, or
+  `cx2cc_active`.
+- The inner Codex route exclusively owns real-provider first-byte timeout,
+  retry, and failover. Ordinary Providers and explicit CX2CC sources retain
+  both configured first-byte deadlines; stream-idle and non-stream total
+  timeouts remain enabled for every route.
 
 ### 4. Validation & Error Matrix
 
@@ -190,7 +199,9 @@ literals.
 | Forged, replayed, expired, or wrong-contract nonce | Untrusted request; ordinary recursion guard applies |
 | Authorized local origin returns 3xx | Return the 3xx; never follow it with the private header |
 | Proxy environment variables are set | Authorized reentry connects directly; proxy receives no request |
-| Authorized current-gateway delegation | One outer attempt, no outer first-byte timeout; inner route owns retries |
+| Authorized current-gateway delegation | One outer attempt; header and SSE first-chunk deadlines are both delegated |
+| Ordinary Provider or explicit CX2CC source | Both configured first-byte deadlines remain active |
+| Real inner Provider exceeds its first-byte deadline | Preserve normal retry/failover and 524 classification |
 | Default changes in one layer only | Cross-layer/default-contract tests fail |
 
 ### 5. Good / Base / Bad Cases
@@ -235,8 +246,10 @@ literals.
   `ANTHROPIC_MODEL`.
 - Reentry tests cover issue/consume once, forgery, replay, expiry, capacity
   eviction, wrong CLI/method/path/query, ingress header removal, typed target
-  matching, one outer current-gateway attempt, delegated first-byte timeout,
-  ordinary timeout preservation, direct proxy bypass, and redirect refusal.
+  matching plus final `SelfLoop` confirmation, both delegated first-byte
+  deadlines, ordinary/explicit-source timeout preservation, a bounded delayed
+  local hop, real Provider timeout classification, direct proxy bypass, and
+  redirect refusal.
 - UI tests cover every GPT-5.6 preset, manual/historical preservation, CX2CC
   generic-route hiding, ordinary-provider visibility, four context controls,
   per-slot/default model clearing, leaving-CX2CC clearing, removal of the fixed
@@ -281,10 +294,20 @@ let projection = resolve_context_window_projection(
 
 emit_fingerprint_without_private_nonce();
 let nonce = internal_reentry_registry.issue(bridge_provider_id, trace_id)?;
+let target = AttemptTarget::after_validation(typed_intent_match, &target_validation);
+let timing = AttemptTiming {
+    attempt_started_ms,
+    attempt_started: Instant::now(),
+    reasoning_effort,
+    upstream_sent: true,
+    target,
+};
 direct_no_proxy_no_redirect_client
     .post(local_gateway)
     .header(INTERNAL_REENTRY_HEADER, nonce)
-    .first_byte_timeout(None) // inner Codex route owns real-provider timeout
+    .first_byte_timeout(timing.response_header_timeout(configured))
     .send()
     .await?;
+
+let first_chunk_timeout = timing.sse_first_chunk_timeout(configured);
 ```

@@ -6,9 +6,9 @@
 
 Use this contract when changing provider attempt limits, OAuth reactive refresh,
 Codex `previous_response_id` repair, transient upstream retries, pre-commit
-Codex stream-internal retries, Codex model discovery, or circuit-breaker
-thresholds. These controls share the failover loop, but they do not share one
-lifecycle.
+Codex stream-internal retries, nested-Gateway first-byte ownership, Codex model
+discovery, or circuit-breaker thresholds. These controls share the failover
+loop, but they do not share one lifecycle.
 
 ### 2. Signatures
 
@@ -32,6 +32,19 @@ fn provider_max_attempts_for_request(
     configured_transient_retries: u32,
     strict_configured_limit: bool,
 ) -> u32;
+```
+
+The outbound attempt owns one private, typed target decision. It is created
+only after the prepared `InternalCodexReentry` matches the final request and
+the ordinary target validator confirms `SelfLoop`:
+
+```rust
+struct AttemptTiming {
+    target: AttemptTarget, // private: ExternalProvider | InternalCodexReentry
+}
+
+timing.response_header_timeout(configured);
+timing.sse_first_chunk_timeout(configured);
 ```
 
 ### 3. Contracts
@@ -93,6 +106,15 @@ fn provider_max_attempts_for_request(
 - The configured attempt limit is a user-facing baseline. Request-scoped internal
   recovery may raise the effective budget only through the explicit formula
   above; no other subsystem may add implicit capacity.
+- A confirmed null-source CX2CC reentry is a local scheduling hop, so its
+  response-header and SSE first-chunk deadlines are both `None`. The two
+  projections must come from the same private `AttemptTarget`; never infer
+  ownership from localhost, `source_provider_id`, `cx2cc_active`, or a response-
+  phase copy of the already-consumed capability.
+- The nested Codex request creates ordinary real-Provider attempts. Those
+  attempts retain configured first-byte timeout, retry/backoff, failover,
+  circuit accounting, and 524 classification. Delegation does not disable
+  stream-idle or non-stream total timeouts.
 
 ### 4. Validation & Error Matrix
 
@@ -110,6 +132,9 @@ fn provider_max_attempts_for_request(
 | Exact error parameter plus an unrelated response-format/input-field error | Do not repair or remove the field |
 | Plain text has target and semantics only in distant HTML/line segments | Do not repair or remove the field |
 | circuit threshold outside `1..=50` | Reject independently of attempt-limit validation |
+| Typed internal intent matches and final validation is `SelfLoop` | Delegate both outer first-byte deadlines |
+| Intent is absent/mismatched, target is external, or validation is not `SelfLoop` | Retain both configured first-byte deadlines or reject under normal target validation |
+| Real nested Provider exceeds its configured first-byte deadline | Preserve normal retry/failover and 524 classification |
 
 ### 5. Good / Base / Bad Cases
 
@@ -157,6 +182,10 @@ fn provider_max_attempts_for_request(
 - Run the full Rust suite after changing failover preparation. Focused budget
   tests do not expose every route helper's runtime settings or multi-request
   circuit behavior.
+- Test the confirmed/ordinary owner matrix for both response-header and SSE
+  first-chunk projections, including configured and disabled timeouts. Bound a
+  delayed local scheduling-hop test with an explicit wall-clock timeout, and
+  retain the ordinary real-Provider 524 regression.
 
 ### 7. Wrong vs Correct
 
@@ -194,3 +223,15 @@ exact_param && has_locally_anchored_previous_response_id_semantics(message)
 ```
 
 The message still has to describe the response-ID lookup failure locally.
+
+Do not split nested timeout ownership across routing guesses:
+
+```rust
+// Wrong: independent conditions can diverge or be influenced by public routing.
+let header = (!cx2cc_active).then_some(configured);
+let first_chunk = source_provider_id.map(|_| configured);
+
+// Correct: both projections use the same post-validation attempt target.
+let header = timing.response_header_timeout(configured);
+let first_chunk = timing.sse_first_chunk_timeout(configured);
+```
