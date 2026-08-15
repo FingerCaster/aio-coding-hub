@@ -50,6 +50,30 @@ For each boundary:
 
 ---
 
+## Usage Projection Ownership Checklist
+
+Use this when one upstream usage payload feeds both a translated client
+protocol and provider accounting.
+
+- [ ] Name two separate products before transforming anything: raw provider
+      metrics for quota/cost/logs/ledger, and client-protocol usage for the
+      response projection.
+- [ ] Preserve provider-inclusive input totals in the raw metrics channel. Do
+      not overwrite them with a client-normalized value before persistence or
+      cost calculation.
+- [ ] Normalize only at the client protocol boundary. For OpenAI-shaped usage,
+      subtract only nested cache detail buckets that are defined as subsets of
+      `input_tokens`, using saturating arithmetic.
+- [ ] Treat top-level Anthropic cache fields as already separate buckets. Pass
+      them through; never subtract them from top-level `input_tokens` again.
+- [ ] In synthesized SSE, emit input/cache buckets once and output buckets once;
+      do not repeat the same input/cache usage in both start and delta events.
+- [ ] Test non-stream, real upstream SSE, synthesized SSE, no-cache input, and
+      already-Anthropic usage. Assert the client projection and persisted raw
+      accounting independently.
+
+---
+
 ## Long-Lived Binding Concurrency Checklist
 
 Use this when a request selects a route in one layer, crosses async transport or
