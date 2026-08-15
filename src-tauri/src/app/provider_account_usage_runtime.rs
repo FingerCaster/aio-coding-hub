@@ -2,8 +2,9 @@
 
 pub(crate) use crate::domain::provider_account_usage::ProviderAccountUsageTarget;
 use crate::domain::provider_account_usage::{
-    ProviderAccountUsageAdapterKind, ProviderAccountUsageFreshness,
-    ProviderAccountUsageRefreshSchedule, ProviderAccountUsageResult, ProviderAccountUsageStatus,
+    ProviderAccountUsageAdapterKind, ProviderAccountUsageFetchIntent,
+    ProviderAccountUsageFreshness, ProviderAccountUsageRefreshSchedule, ProviderAccountUsageResult,
+    ProviderAccountUsageStatus,
 };
 use std::collections::{HashMap, HashSet};
 #[cfg(test)]
@@ -25,8 +26,12 @@ const MAX_CONCURRENT_PROVIDER_FETCHES: usize = 4;
 type TestAccountUsageFetchFuture =
     Pin<Box<dyn Future<Output = Result<ProviderAccountUsageResult, String>> + Send>>;
 #[cfg(test)]
-type TestAccountUsageFetcher =
-    Arc<dyn Fn(i64) -> TestAccountUsageFetchFuture + Send + Sync + 'static>;
+type TestAccountUsageFetcher = Arc<
+    dyn Fn(i64, ProviderAccountUsageFetchIntent) -> TestAccountUsageFetchFuture
+        + Send
+        + Sync
+        + 'static,
+>;
 
 #[derive(Clone)]
 pub(crate) struct ProviderAccountUsageRuntimeState {
@@ -680,6 +685,11 @@ impl ProviderAccountUsageRuntimeState {
         force_epoch: Option<u64>,
         permit: OwnedSemaphorePermit,
     ) {
+        let intent = if force_epoch.is_some() {
+            ProviderAccountUsageFetchIntent::Manual
+        } else {
+            ProviderAccountUsageFetchIntent::Background
+        };
         #[cfg(test)]
         let test_fetcher = self
             .shared
@@ -689,19 +699,26 @@ impl ProviderAccountUsageRuntimeState {
             .clone();
         #[cfg(test)]
         let result = if let Some(fetcher) = test_fetcher {
-            fetcher(provider_id)
+            fetcher(provider_id, intent)
                 .await
                 .unwrap_or_else(|_| unavailable_result())
         } else {
-            crate::commands::providers::fetch_account_usage_uncached(app.clone(), provider_id)
-                .await
-                .unwrap_or_else(|_| unavailable_result())
+            crate::commands::providers::fetch_account_usage_uncached(
+                app.clone(),
+                provider_id,
+                intent,
+            )
+            .await
+            .unwrap_or_else(|_| unavailable_result())
         };
         #[cfg(not(test))]
-        let result =
-            crate::commands::providers::fetch_account_usage_uncached(app.clone(), provider_id)
-                .await
-                .unwrap_or_else(|_| unavailable_result());
+        let result = crate::commands::providers::fetch_account_usage_uncached(
+            app.clone(),
+            provider_id,
+            intent,
+        )
+        .await
+        .unwrap_or_else(|_| unavailable_result());
         let completed_at = Instant::now();
         let route_result = result.clone();
         {
@@ -1068,10 +1085,13 @@ mod tests {
         let target = route_target(2);
         seed_runtime_snapshot(&state, &target, zero_result(), false).await;
         let calls = Arc::new(AtomicUsize::new(0));
+        let intents = Arc::new(std::sync::Mutex::new(Vec::new()));
         state.set_test_fetcher(Arc::new({
             let calls = calls.clone();
-            move |_| {
+            let intents = intents.clone();
+            move |_, intent| {
                 calls.fetch_add(1, AtomicOrdering::SeqCst);
+                intents.lock().expect("intent lock").push(intent);
                 Box::pin(async { Ok(result()) })
             }
         }));
@@ -1083,6 +1103,10 @@ mod tests {
             .expect("manual refresh");
 
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(
+            *intents.lock().expect("intent lock"),
+            vec![ProviderAccountUsageFetchIntent::Manual]
+        );
         assert_eq!(refreshed.status, ProviderAccountUsageStatus::Available);
         assert_eq!(refreshed.balance, Some(12.5));
         assert_eq!(
@@ -1119,7 +1143,7 @@ mod tests {
             let mut zero = zero_result();
             zero.adapter_kind = Some(adapter_kind);
             seed_runtime_snapshot(&state, &target, zero, false).await;
-            state.set_test_fetcher(Arc::new(move |_| {
+            state.set_test_fetcher(Arc::new(move |_, _intent| {
                 Box::pin(async move {
                     let mut available = result();
                     available.adapter_kind = Some(adapter_kind);
@@ -1147,14 +1171,17 @@ mod tests {
         seed_runtime_snapshot(&state, &target, zero_result(), true).await;
 
         let calls = Arc::new(AtomicUsize::new(0));
+        let intents = Arc::new(std::sync::Mutex::new(Vec::new()));
         let first_started = Arc::new(Notify::new());
         let release_first = Arc::new(Notify::new());
         state.set_test_fetcher(Arc::new({
             let calls = calls.clone();
+            let intents = intents.clone();
             let first_started = first_started.clone();
             let release_first = release_first.clone();
-            move |_| {
+            move |_, intent| {
                 let call = calls.fetch_add(1, AtomicOrdering::SeqCst);
+                intents.lock().expect("intent lock").push(intent);
                 let first_started = first_started.clone();
                 let release_first = release_first.clone();
                 Box::pin(async move {
@@ -1204,6 +1231,13 @@ mod tests {
             .expect("second manual refresh");
 
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(
+            *intents.lock().expect("intent lock"),
+            vec![
+                ProviderAccountUsageFetchIntent::Background,
+                ProviderAccountUsageFetchIntent::Manual,
+            ]
+        );
         assert_eq!(first_result, second_result);
         assert_eq!(first_result.status, ProviderAccountUsageStatus::Available);
         assert_eq!(first_result.balance, Some(12.5));
@@ -1219,7 +1253,7 @@ mod tests {
         state.set_test_fetcher(Arc::new({
             let fetch_started = fetch_started.clone();
             let release_fetch = release_fetch.clone();
-            move |_| {
+            move |_, _intent| {
                 let fetch_started = fetch_started.clone();
                 let release_fetch = release_fetch.clone();
                 Box::pin(async move {

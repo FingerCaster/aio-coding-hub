@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"账户用量 query/runtime/remote adapter、路由副作用和敏感信息合同"}
+{"file":".trellis/tasks/08-15-fix-sub2api-balance-window-refresh/research/sub2api-window-maintenance.md","reason":"现场时序、Sub2API 服务端维护链路和已证伪假设"}
+{"file":".trellis/tasks/08-15-fix-sub2api-balance-window-refresh/design.md","reason":"Manual/Background intent、严格触发谓词和 GET-POST-GET 设计"}
+{"file":".trellis/tasks/08-13-fix-balance-refresh/bug-analysis.md","reason":"上一轮缓存归因及回归缺口，防止重复只修本地缓存层"}

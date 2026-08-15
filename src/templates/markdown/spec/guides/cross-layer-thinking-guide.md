@@ -858,3 +858,30 @@ Create detailed flow docs when:
 - Data format is complex
 - Feature has caused bugs before
 - One Tauri command is used by multiple pages or services
+
+### Cross-Layer Refresh: Upstream State Maintenance Checklist
+
+When a user-visible refresh still returns an old value after a new network
+request, enumerate every state boundary before changing cache policy:
+
+- [ ] UI/query cache, process snapshot, in-flight request ordering, and HTTP
+      proxy/CDN cache are all bypassed or ordered as intended.
+- [ ] The upstream read endpoint is checked for `skipBilling`, lazy window
+      rollover, eventual consistency, or another condition that can return a
+      stale projection even on a fresh GET.
+- [ ] If an explicit maintenance request is needed, classify it as a typed
+      manual intent; automatic/timed/background paths must not inherit it.
+- [ ] Trigger only from strict raw response evidence. Do not use a display DTO
+      status as a second interpretation of the upstream mode or billing state.
+- [ ] Define the exact method, path, credentials, body, accepted status, and
+      bounded response behavior. Fail closed on network/non-expected statuses.
+- [ ] Prove the maintenance request has no model cost and no provider-health,
+      circuit, availability, route, order, session, or cache side effects.
+- [ ] Add a captured request-sequence regression and a live/sanitized upstream
+      timing observation; a mock fetcher returning a new value is insufficient.
+
+**Real-world example**: Sub2API Plus `/v1/usage` skipped subscription window
+maintenance while the ordinary model route performed it. A fresh GET and
+cache-busting headers therefore kept returning zero until a model request ran.
+The durable fix was a manual-only, raw-predicate-gated `GET -> POST {} 400 -> GET`
+adapter flow, with no availability test or real model body.

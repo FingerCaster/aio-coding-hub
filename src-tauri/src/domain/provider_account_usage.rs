@@ -50,6 +50,17 @@ pub(crate) enum NewapiQueryMode {
     Account,
 }
 
+/// Describes why a remote account-usage fetch was scheduled.
+///
+/// This stays internal to the runtime/adapter boundary.  It is deliberately
+/// not serialized or exposed through IPC because only an explicit manual
+/// refresh may perform the Sub2API window-maintenance preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderAccountUsageFetchIntent {
+    Background,
+    Manual,
+}
+
 impl ProviderAccountUsageAdapterKind {
     pub(crate) fn endpoint_label(self) -> &'static str {
         match self {
@@ -1305,6 +1316,43 @@ pub(crate) fn build_account_usage_url(
     Ok(url.to_string())
 }
 
+/// Derive the Sub2API maintenance endpoint from the already validated usage
+/// URL.  Keeping the path prefix and origin from that URL prevents a second,
+/// independently parsed base URL from widening the request boundary.
+pub(crate) fn build_sub2api_window_maintenance_url(usage_url: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse(usage_url.trim())
+        .map_err(|err| format!("SEC_INVALID_INPUT: invalid sub2api usage URL: {err}"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.has_host()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("SEC_INVALID_INPUT: invalid sub2api usage URL origin".to_string());
+    }
+    let expected_origin = url.origin();
+    let mut segments: Vec<String> = url
+        .path_segments()
+        .map(|segments| {
+            segments
+                .filter(|segment| !segment.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if segments.last().map(String::as_str) != Some("usage") {
+        return Err("SEC_INVALID_INPUT: invalid sub2api usage URL path".to_string());
+    }
+    segments.pop();
+    segments.extend(["chat".to_string(), "completions".to_string()]);
+    url.set_path(&segments.join("/"));
+    url.set_query(None);
+    url.set_fragment(None);
+    if url.origin() != expected_origin {
+        return Err("SEC_INVALID_INPUT: sub2api maintenance endpoint origin mismatch".to_string());
+    }
+    Ok(url.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NewapiBillingUrls {
     pub status: reqwest::Url,
@@ -1812,6 +1860,55 @@ fn parse_sub2api_response(
     result.monthly_total = monthly_total;
     result.expires_at = expires_at;
     result
+}
+
+/// Returns whether a Sub2API usage payload proves that a subscription window
+/// is exhausted and may need the authenticated maintenance preflight.
+///
+/// The predicate intentionally reads the original JSON instead of the display
+/// DTO.  Every required field is exact and malformed/negative/non-finite
+/// numeric input fails closed.
+pub(crate) fn sub2api_usage_requires_window_maintenance(body: &Value) -> bool {
+    if body.get("mode").and_then(Value::as_str) != Some("unrestricted")
+        || body.get("isValid").and_then(Value::as_bool) != Some(true)
+    {
+        return false;
+    }
+
+    let Some(subscription) = body.get("subscription").filter(|value| value.is_object()) else {
+        return false;
+    };
+    let Some(remaining) = number_at(body, &["remaining"]) else {
+        return false;
+    };
+    if remaining > 0.0 {
+        return false;
+    }
+
+    [
+        (
+            ["daily_limit_usd", "dailyLimitUsd"],
+            ["daily_usage_usd", "dailyUsageUsd"],
+        ),
+        (
+            ["weekly_limit_usd", "weeklyLimitUsd"],
+            ["weekly_usage_usd", "weeklyUsageUsd"],
+        ),
+        (
+            ["monthly_limit_usd", "monthlyLimitUsd"],
+            ["monthly_usage_usd", "monthlyUsageUsd"],
+        ),
+    ]
+    .into_iter()
+    .any(|(limit_keys, used_keys)| {
+        let Some(limit) = number_at(subscription, &limit_keys).filter(|value| *value > 0.0) else {
+            return false;
+        };
+        let Some(used) = number_at(subscription, &used_keys).filter(|value| *value >= 0.0) else {
+            return false;
+        };
+        used >= limit
+    })
 }
 
 fn parse_sub2api_daily_rate_limit(body: &Value) -> Result<Option<(f64, f64)>, &'static str> {
@@ -2635,6 +2732,149 @@ mod tests {
 
         assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
         assert!(result.message.as_deref().unwrap_or("").contains("sub2api"));
+    }
+
+    #[test]
+    fn sub2api_window_maintenance_predicate_requires_strict_subscription_exhaustion() {
+        let base = json!({
+            "mode": "unrestricted",
+            "isValid": true,
+            "remaining": "0",
+            "subscription": {
+                "daily_limit_usd": "10",
+                "daily_usage_usd": "10"
+            }
+        });
+        assert!(sub2api_usage_requires_window_maintenance(&base));
+
+        let cases = [
+            ("wrong mode", json!({"mode": "quota_limited"})),
+            ("missing validity", json!({"isValid": null})),
+            ("missing remaining", json!({"remaining": null})),
+            (
+                "invalid validity",
+                json!({"mode": "unrestricted", "isValid": "true"}),
+            ),
+            (
+                "subscription array",
+                json!({
+                    "mode": "unrestricted",
+                    "isValid": true,
+                    "remaining": 0,
+                    "subscription": []
+                }),
+            ),
+            (
+                "positive remaining",
+                json!({
+                    "mode": "unrestricted",
+                    "isValid": true,
+                    "remaining": 1,
+                    "subscription": {"daily_limit_usd": 10, "daily_usage_usd": 10}
+                }),
+            ),
+            (
+                "zero limit",
+                json!({
+                    "mode": "unrestricted",
+                    "isValid": true,
+                    "remaining": 0,
+                    "subscription": {"daily_limit_usd": 0, "daily_usage_usd": 0}
+                }),
+            ),
+            (
+                "negative limit",
+                json!({
+                    "mode": "unrestricted",
+                    "isValid": true,
+                    "remaining": 0,
+                    "subscription": {"daily_limit_usd": -1, "daily_usage_usd": 2}
+                }),
+            ),
+            (
+                "negative usage",
+                json!({
+                    "mode": "unrestricted",
+                    "isValid": true,
+                    "remaining": 0,
+                    "subscription": {"daily_limit_usd": 10, "daily_usage_usd": -1}
+                }),
+            ),
+            (
+                "under limit",
+                json!({
+                    "mode": "unrestricted",
+                    "isValid": true,
+                    "remaining": 0,
+                    "subscription": {"daily_limit_usd": 10, "daily_usage_usd": 9.99}
+                }),
+            ),
+            (
+                "non finite",
+                json!({
+                    "mode": "unrestricted",
+                    "isValid": true,
+                    "remaining": 0,
+                    "subscription": {"daily_limit_usd": "NaN", "daily_usage_usd": 10}
+                }),
+            ),
+        ];
+        for (label, overrides) in cases {
+            let mut body = base.clone();
+            if let Some(object) = overrides.as_object() {
+                for (key, value) in object {
+                    body[key] = value.clone();
+                }
+            }
+            assert!(
+                !sub2api_usage_requires_window_maintenance(&body),
+                "predicate unexpectedly accepted {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn sub2api_window_maintenance_predicate_accepts_each_positive_period_alias() {
+        for (limit_key, used_key) in [
+            ("dailyLimitUsd", "dailyUsageUsd"),
+            ("weekly_limit_usd", "weekly_usage_usd"),
+            ("monthlyLimitUsd", "monthlyUsageUsd"),
+        ] {
+            let body = json!({
+                "mode": "unrestricted",
+                "isValid": true,
+                "remaining": -0.01,
+                "subscription": {
+                    (limit_key): "10.00",
+                    (used_key): "10"
+                }
+            });
+            assert!(
+                sub2api_usage_requires_window_maintenance(&body),
+                "predicate rejected {limit_key}/{used_key}"
+            );
+        }
+    }
+
+    #[test]
+    fn sub2api_window_maintenance_url_preserves_origin_and_prefix() {
+        assert_eq!(
+            build_sub2api_window_maintenance_url(
+                "https://usage.example.test/prefix/v1/usage?cache=1#fragment"
+            )
+            .expect("derive maintenance URL"),
+            "https://usage.example.test/prefix/v1/chat/completions"
+        );
+        assert!(
+            build_sub2api_window_maintenance_url("https://usage.example.test/v1/status").is_err()
+        );
+        assert!(build_sub2api_window_maintenance_url(
+            "https://user:secret@usage.example.test/v1/usage"
+        )
+        .is_err());
+        assert!(
+            build_sub2api_window_maintenance_url("file:///usage.example.test/v1/usage").is_err()
+        );
     }
 
     fn valid_newapi_billing() -> (Value, Value, Value) {
