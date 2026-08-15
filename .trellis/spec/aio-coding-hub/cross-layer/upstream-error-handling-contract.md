@@ -39,6 +39,17 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   `upstream_retry_policy` and `stream_internal_error_guard_ms` in one save;
   rewrite edits persist only `upstream_error_response_rules`. A rule never
   combines retry and rewrite actions.
+- The General tab owns the HTTP/transport retry and final HTTP rewrite entry
+  points; it does not render the Codex stream-internal fields. The Codex tab
+  owns the native Codex stream firewall fields and observation window. Both
+  global retry save buttons use the same complete page-level retry-policy and
+  guard draft, so moving the entry point does not change save ownership or
+  allow an older hidden value to overwrite a newer edit.
+- A complete Provider retry override still contains every retry field. Only a
+  Codex Provider editor exposes the stream-internal slice; non-Codex Provider
+  editors hide it and preserve any existing/imported hidden values on ordinary
+  edits and saves. Provider overrides do not expose the global observation
+  window.
 - Resolve the effective retry policy, including a complete Provider override,
   before reserving attempts. HTTP, transport, and retryable pre-commit Codex
   stream classifications share that policy's `max_retries`, `backoff_ms`,

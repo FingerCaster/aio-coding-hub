@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { toast } from "sonner";
 import {
   cliManagerCodexConfigTomlValidate,
   type CodexConfigPatch,
@@ -20,8 +21,17 @@ import {
   type CodexConfigTomlValidationResult,
   type SimpleCliInfo,
 } from "../../../services/cli/cliManager";
-import type { AppSettings, CodexHomeMode } from "../../../services/settings/settings";
+import type {
+  AppSettings,
+  CodexHomeMode,
+  UpstreamRetryPolicy,
+} from "../../../services/settings/settings";
 import { activeRequestLogsSnapshot } from "../../../services/gateway/activeRequests";
+import {
+  cloneUpstreamRetryPolicy,
+  validateUpstreamRetryPolicy,
+} from "../../../services/gateway/upstreamRetryPolicy";
+import { MAX_STREAM_INTERNAL_ERROR_GUARD_MS } from "../../../services/settings/settingsValidation";
 import { useDocumentVisibility } from "../../../hooks/useDocumentVisibility";
 import { normalizeCustomCodexHome, buildConfigTomlPath } from "../../../utils/codexPaths";
 import { isWindowsRuntime } from "../../../utils/platform";
@@ -35,6 +45,7 @@ import { Input } from "../../../ui/Input";
 import { RadioGroup } from "../../../ui/RadioGroup";
 import { Select } from "../../../ui/Select";
 import { Switch } from "../../../ui/Switch";
+import { CodexStreamInternalErrorFields } from "../../gateway/CodexStreamInternalErrorFields";
 import {
   Dialog as DialogRoot,
   DialogContent,
@@ -320,6 +331,10 @@ export type CliManagerCodexTabProps = {
   codexModelCatalog?: CodexModelCatalogState | null;
   appSettings?: AppSettings | null;
   commonSettingsSaving?: boolean;
+  upstreamRetryPolicy?: UpstreamRetryPolicy;
+  setUpstreamRetryPolicy?: (value: UpstreamRetryPolicy) => void;
+  streamInternalErrorGuardMs?: number;
+  setStreamInternalErrorGuardMs?: (value: number) => void;
   codexHomeSettingsSaving?: boolean;
   refreshCodex: () => Promise<void> | void;
   openCodexConfigDir: () => Promise<void> | void;
@@ -551,6 +566,49 @@ function CodexRetryGatewayRecommendation() {
         >
           <ExternalLink className="h-4 w-4" aria-hidden="true" />
           查看仓库
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+function CodexStreamInternalErrorSettingsCard({
+  policy,
+  streamInternalErrorGuardMs,
+  disabled,
+  onPolicyChange,
+  onStreamInternalErrorGuardMsChange,
+  onSave,
+}: {
+  policy: UpstreamRetryPolicy;
+  streamInternalErrorGuardMs: number;
+  disabled: boolean;
+  onPolicyChange: (policy: UpstreamRetryPolicy) => void;
+  onStreamInternalErrorGuardMsChange: (value: number) => void;
+  onSave: () => Promise<void>;
+}) {
+  return (
+    <Card className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Codex 流终态错误设置</h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          作用于最终规范化为 Codex Responses wire 的 SSE，包括已规范化的 bridge；非 Codex
+          请求和未规范化的 bridge 不受影响。
+        </p>
+      </div>
+      <CodexStreamInternalErrorFields
+        policy={policy.stream_internal_errors}
+        disabled={disabled}
+        onChange={(streamPolicy) =>
+          onPolicyChange({ ...policy, stream_internal_errors: streamPolicy })
+        }
+        streamInternalErrorGuardMs={streamInternalErrorGuardMs}
+        maxStreamInternalErrorGuardMs={MAX_STREAM_INTERNAL_ERROR_GUARD_MS}
+        onStreamInternalErrorGuardMsChange={onStreamInternalErrorGuardMsChange}
+      />
+      <div className="flex justify-end">
+        <Button type="button" variant="secondary" size="sm" disabled={disabled} onClick={onSave}>
+          保存 Codex 流错误设置
         </Button>
       </div>
     </Card>
@@ -1845,6 +1903,10 @@ function useCodexTabController({
   codexModelCatalog = null,
   appSettings,
   commonSettingsSaving = false,
+  upstreamRetryPolicy,
+  setUpstreamRetryPolicy,
+  streamInternalErrorGuardMs,
+  setStreamInternalErrorGuardMs,
   codexHomeSettingsSaving = false,
   refreshCodex,
   persistCodexConfig,
@@ -2014,6 +2076,15 @@ function useCodexTabController({
     commonSettingsSaving || !appSettings || !persistCommonSettings;
   const proxyModeControlsDisabled =
     commonSettingsControlsDisabled || commonSettingsSaving || !persistCodexOauthCompatibleProxyMode;
+  const streamInternalErrorControlsDisabled =
+    commonSettingsSaving ||
+    codexHomeSettingsSaving ||
+    !appSettings ||
+    !persistCommonSettings ||
+    !upstreamRetryPolicy ||
+    streamInternalErrorGuardMs == null ||
+    !setUpstreamRetryPolicy ||
+    !setStreamInternalErrorGuardMs;
 
   async function refreshCodexStatus() {
     if (saving) return;
@@ -2034,6 +2105,42 @@ function useCodexTabController({
       setProviderTestModelText(saved);
     } catch {
       setProviderTestModelText(appSettings.codex_provider_test_model || normalized);
+    }
+  }
+
+  async function saveStreamInternalErrorSettings() {
+    if (
+      streamInternalErrorControlsDisabled ||
+      !persistCommonSettings ||
+      !upstreamRetryPolicy ||
+      streamInternalErrorGuardMs == null ||
+      !setUpstreamRetryPolicy ||
+      !setStreamInternalErrorGuardMs
+    ) {
+      return;
+    }
+
+    const validationMessage = validateUpstreamRetryPolicy(upstreamRetryPolicy);
+    if (validationMessage) {
+      toast(validationMessage);
+      return;
+    }
+    if (
+      !Number.isSafeInteger(streamInternalErrorGuardMs) ||
+      streamInternalErrorGuardMs < 0 ||
+      streamInternalErrorGuardMs > MAX_STREAM_INTERNAL_ERROR_GUARD_MS
+    ) {
+      toast(`流内部错误观察窗口必须为 0-${MAX_STREAM_INTERNAL_ERROR_GUARD_MS} 毫秒`);
+      return;
+    }
+
+    const updated = await persistCommonSettings({
+      upstream_retry_policy: upstreamRetryPolicy,
+      stream_internal_error_guard_ms: streamInternalErrorGuardMs,
+    });
+    if (updated) {
+      setUpstreamRetryPolicy(cloneUpstreamRetryPolicy(updated.upstream_retry_policy));
+      setStreamInternalErrorGuardMs(updated.stream_internal_error_guard_ms);
     }
   }
 
@@ -2293,6 +2400,7 @@ function useCodexTabController({
     tomlBusy,
     providerSyncControlsDisabled,
     providerTestModelControlsDisabled,
+    streamInternalErrorControlsDisabled,
     configLocationControlsDisabled,
     proxyModeControlsDisabled,
     proxyModeSaving: commonSettingsSaving,
@@ -2321,6 +2429,7 @@ function useCodexTabController({
     validateToml,
     saveTomlDraft,
     saveProviderTestModel,
+    saveStreamInternalErrorSettings,
     persistConfigLocation,
     restoreSavedConfigLocationState,
     handleConfigLocationModeChange,
@@ -2341,6 +2450,10 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
     codexConfig,
     codexConfigToml,
     appSettings,
+    upstreamRetryPolicy,
+    setUpstreamRetryPolicy,
+    streamInternalErrorGuardMs,
+    setStreamInternalErrorGuardMs,
     openCodexConfigDir,
     persistCodexConfig,
     syncCodexProvider,
@@ -2382,6 +2495,21 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
           appSettings={appSettings}
           commonSettingsSaving={props.commonSettingsSaving ?? false}
           persistCommonSettings={props.persistCommonSettings}
+        />
+      ) : null}
+
+      {appSettings &&
+      upstreamRetryPolicy &&
+      streamInternalErrorGuardMs != null &&
+      setUpstreamRetryPolicy &&
+      setStreamInternalErrorGuardMs ? (
+        <CodexStreamInternalErrorSettingsCard
+          policy={upstreamRetryPolicy}
+          streamInternalErrorGuardMs={streamInternalErrorGuardMs}
+          disabled={controller.streamInternalErrorControlsDisabled}
+          onPolicyChange={setUpstreamRetryPolicy}
+          onStreamInternalErrorGuardMsChange={setStreamInternalErrorGuardMs}
+          onSave={controller.saveStreamInternalErrorSettings}
         />
       ) : null}
 

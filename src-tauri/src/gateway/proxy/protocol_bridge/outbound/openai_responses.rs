@@ -399,16 +399,17 @@ fn parse_usage(usage: Option<&Value>) -> IRUsage {
         _ => return IRUsage::default(),
     };
 
-    let input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+    let provider_input_tokens = u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
     let output_tokens = u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
 
-    let cache_read_input_tokens = u
+    let detail_cache_read_input_tokens = u
         .pointer("/input_tokens_details/cached_tokens")
         .and_then(|v| v.as_u64())
         .or_else(|| {
             u.pointer("/prompt_tokens_details/cached_tokens")
                 .and_then(|v| v.as_u64())
-        })
+        });
+    let cache_read_input_tokens = detail_cache_read_input_tokens
         .or_else(|| u.get("cache_read_input_tokens").and_then(|v| v.as_u64()));
 
     let cache_creation_5m_input_tokens = u
@@ -435,6 +436,9 @@ fn parse_usage(usage: Option<&Value>) -> IRUsage {
                 .and_then(|v| v.as_u64())
         });
 
+    let detail_cache_creation_input_tokens =
+        crate::usage::extract_openai_detail_cache_creation_input_tokens(u)
+            .and_then(|tokens| u64::try_from(tokens).ok());
     let cache_creation_input_tokens = crate::usage::extract_openai_cache_creation_input_tokens(u)
         .and_then(|tokens| u64::try_from(tokens).ok())
         .or_else(|| {
@@ -448,6 +452,9 @@ fn parse_usage(usage: Option<&Value>) -> IRUsage {
                 (None, None) => None,
             }
         });
+    let input_tokens = provider_input_tokens
+        .saturating_sub(detail_cache_read_input_tokens.unwrap_or(0))
+        .saturating_sub(detail_cache_creation_input_tokens.unwrap_or(0));
 
     IRUsage {
         input_tokens,
@@ -1745,6 +1752,7 @@ mod tests {
         });
 
         let ir = response_to_ir(body, &default_settings()).unwrap();
+        assert_eq!(ir.usage.input_tokens, 20);
         assert_eq!(ir.usage.cache_read_input_tokens, Some(80));
     }
 
@@ -1766,7 +1774,33 @@ mod tests {
         });
 
         let ir = response_to_ir(body, &default_settings()).unwrap();
+        assert_eq!(ir.usage.input_tokens, 100);
         assert_eq!(ir.usage.cache_creation_input_tokens, Some(25));
+    }
+
+    #[test]
+    fn response_to_ir_cache_creation_detail_subtracts_aggregate_once() {
+        let body = json!({
+            "id": "resp_cache_write_breakdown",
+            "status": "completed",
+            "model": "gpt-5.6-sol",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "input_tokens_details": {"cache_write_tokens": 30},
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 20,
+                    "ephemeral_1h_input_tokens": 10
+                }
+            }
+        });
+
+        let ir = response_to_ir(body, &default_settings()).unwrap();
+        assert_eq!(ir.usage.input_tokens, 70);
+        assert_eq!(ir.usage.cache_creation_input_tokens, Some(30));
+        assert_eq!(ir.usage.cache_creation_5m_input_tokens, Some(20));
+        assert_eq!(ir.usage.cache_creation_1h_input_tokens, Some(10));
     }
 
     #[test]
@@ -1788,8 +1822,93 @@ mod tests {
             });
 
             let ir = response_to_ir(body, &default_settings()).unwrap();
+            assert_eq!(
+                ir.usage.input_tokens,
+                1_000_u64.saturating_sub(100).saturating_sub(expected)
+            );
             assert_eq!(ir.usage.cache_read_input_tokens, Some(100));
             assert_eq!(ir.usage.cache_creation_input_tokens, Some(expected));
+        }
+    }
+
+    #[test]
+    fn response_to_ir_cache_normalization_saturates_and_leaves_plain_input_unchanged() {
+        let saturated = json!({
+            "id": "resp_cache_saturated",
+            "status": "completed",
+            "model": "gpt-5.6-sol",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "prompt_tokens_details": {
+                    "cached_tokens": 20,
+                    "cache_creation_tokens": 30
+                }
+            }
+        });
+        let saturated_ir = response_to_ir(saturated, &default_settings()).unwrap();
+        assert_eq!(saturated_ir.usage.input_tokens, 0);
+        assert_eq!(saturated_ir.usage.cache_read_input_tokens, Some(20));
+        assert_eq!(saturated_ir.usage.cache_creation_input_tokens, Some(30));
+
+        let plain = json!({
+            "id": "resp_no_cache",
+            "status": "completed",
+            "model": "gpt-5.6-sol",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+            "usage": {"input_tokens": 42, "output_tokens": 1}
+        });
+        let plain_ir = response_to_ir(plain, &default_settings()).unwrap();
+        assert_eq!(plain_ir.usage.input_tokens, 42);
+        assert_eq!(plain_ir.usage.cache_read_input_tokens, None);
+        assert_eq!(plain_ir.usage.cache_creation_input_tokens, None);
+    }
+
+    #[test]
+    fn response_to_ir_top_level_anthropic_cache_fields_do_not_trigger_subtraction() {
+        let body = json!({
+            "id": "resp_anthropic_cache_usage",
+            "status": "completed",
+            "model": "gpt-5.6-sol",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+            "usage": {
+                "input_tokens": 40,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 80,
+                "cache_creation_input_tokens": 30,
+                "cache_creation_5m_input_tokens": 20,
+                "cache_creation_1h_input_tokens": 10
+            }
+        });
+
+        let ir = response_to_ir(body, &default_settings()).unwrap();
+        assert_eq!(ir.usage.input_tokens, 40);
+        assert_eq!(ir.usage.cache_read_input_tokens, Some(80));
+        assert_eq!(ir.usage.cache_creation_input_tokens, Some(30));
+        assert_eq!(ir.usage.cache_creation_5m_input_tokens, Some(20));
+        assert_eq!(ir.usage.cache_creation_1h_input_tokens, Some(10));
+    }
+
+    #[test]
+    fn response_to_ir_uses_nested_cache_creation_only_for_subtraction() {
+        for (detail_tokens, top_level_tokens, expected_input) in [(0, 30, 100), (30, 25, 70)] {
+            let body = json!({
+                "id": format!("resp_mixed_cache_creation_{detail_tokens}"),
+                "status": "completed",
+                "model": "gpt-5.6-sol",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 1,
+                    "cache_creation_input_tokens": top_level_tokens,
+                    "input_tokens_details": {"cache_write_tokens": detail_tokens}
+                }
+            });
+
+            let ir = response_to_ir(body, &default_settings()).unwrap();
+            assert_eq!(ir.usage.input_tokens, expected_input);
+            assert_eq!(ir.usage.cache_creation_input_tokens, Some(top_level_tokens));
         }
     }
 

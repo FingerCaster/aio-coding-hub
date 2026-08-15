@@ -879,6 +879,7 @@ impl RequestLogEnqueueArgs {
         last_activity_ms: Option<i64>,
         activity_details_json: Option<String>,
         created_at: i64,
+        usage_metrics: Option<crate::usage::UsageMetrics>,
         usage: Option<crate::usage::UsageExtract>,
     ) -> (Self, Vec<FailoverAttempt>) {
         build_request_end_payload(RequestEndPayloadParts {
@@ -903,7 +904,7 @@ impl RequestLogEnqueueArgs {
             last_activity_ms,
             activity_details_json,
             created_at,
-            usage_metrics: None,
+            usage_metrics,
             usage,
             provider_chain_json: None,
             error_details_json: None,
@@ -1389,6 +1390,7 @@ mod tests {
             None,
             200,
             None,
+            None,
         );
 
         for log in [proxy_log, stream_log] {
@@ -1742,6 +1744,7 @@ mod tests {
             None,
             None,
             400,
+            None,
             None,
         );
 

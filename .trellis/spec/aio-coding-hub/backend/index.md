@@ -5,8 +5,9 @@ Rules for the root application's Rust backend and local gateway runtime.
 ## Topics
 
 - [Gateway attempt budget contract](./gateway-attempt-budget-contract.md):
-  per-request provider attempts, reserved internal retries, strict model
-  discovery, and cross-request circuit-breaker accounting.
+  per-request provider attempts, reserved internal retries, typed nested
+  first-byte ownership, strict model discovery, and cross-request circuit-
+  breaker accounting.
 - [Codex request content-encoding contract](./codex-request-content-encoding-contract.md):
   bounded decoding at the gateway boundary, supported HTTP encodings, identity
   forwarding, and local failure classification.
@@ -26,6 +27,8 @@ When changing gateway retry or circuit behavior:
 2. Identify whether each counter is request-scoped or persisted across requests.
 3. Trace the effective provider retry policy, including provider overrides.
 4. Keep strict helper routes explicit instead of relying on shared retry math.
+5. Derive response-header and SSE first-chunk budgets from the same confirmed
+   attempt target; local reentry must not disable other timeout families.
 
 When changing managed Codex alias routing or model-route detection:
 
@@ -53,6 +56,9 @@ When changing upstream error retry or terminal response behavior:
 
 - Unit-test the attempt-budget calculation at its boundary values.
 - Run route-level tests that exercise real provider retries and failover.
+- For local Gateway reentry, verify both first-byte projections are delegated
+  only after typed intent plus `SelfLoop` confirmation; ordinary targets retain
+  their configured budgets.
 - Verify circuit failure counts across multiple requests.
 - Run the full Rust suite after changing shared failover-loop inputs.
 - Route-test managed and ordinary Codex requests together after changing

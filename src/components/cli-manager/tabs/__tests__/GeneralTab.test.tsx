@@ -390,10 +390,12 @@ describe("cli-manager/GeneralTab", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
-    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
-    const guardInput = screen.getByRole("spinbutton", { name: "流内部错误观察窗口" });
-    fireEvent.change(guardInput, { target: { value: "750" } });
-    expect(setStreamInternalErrorGuardMs).toHaveBeenCalledWith(750);
+    expect(screen.getByText("HTTP / 网络 / 流内部共享")).toBeInTheDocument();
+    expect(screen.queryByText("Codex 流终态防火墙")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("spinbutton", { name: "流内部错误观察窗口" })
+    ).not.toBeInTheDocument();
+    expect(setStreamInternalErrorGuardMs).not.toHaveBeenCalled();
 
     const streamIdleInput = screen.getByRole("spinbutton", { name: "流式空闲超时" });
     fireEvent.change(streamIdleInput, { target: { value: "-1" } });

@@ -1,7 +1,6 @@
 //! Usage: Handle successful event-stream upstream responses inside `failover_loop::run`.
 
-use super::attempt_executor::RetryLoopState;
-use super::provider_iterator::PreparedProvider;
+use super::attempt_executor::{AttemptTiming, RetryLoopState};
 use super::upstream_retry_policy::{
     configured_retry_backoff_delay, should_record_circuit_failure, transient_failure_decision,
     RetryPolicyMatch,
@@ -117,6 +116,36 @@ async fn next_event_stream_chunk(
     std::future::poll_fn(|cx| stream.as_mut().poll_next(cx))
         .await
         .transpose()
+}
+
+enum FirstChunkProbe {
+    Skipped,
+    Ok(Option<Bytes>, Option<u128>),
+    ReadError(reqwest::Error),
+    Timeout,
+}
+
+async fn probe_first_event_stream_chunk(
+    upstream: &mut DecodedEventStream,
+    attempt_started: std::time::Instant,
+    first_byte_timeout: Option<Duration>,
+) -> FirstChunkProbe {
+    let Some(total) = first_byte_timeout else {
+        return FirstChunkProbe::Skipped;
+    };
+    let elapsed = attempt_started.elapsed();
+    if elapsed >= total {
+        return FirstChunkProbe::Timeout;
+    }
+
+    match tokio::time::timeout(total - elapsed, next_event_stream_chunk(upstream)).await {
+        Ok(Ok(Some(chunk))) => {
+            FirstChunkProbe::Ok(Some(chunk), Some(attempt_started.elapsed().as_millis()))
+        }
+        Ok(Ok(None)) => FirstChunkProbe::Ok(None, None),
+        Ok(Err(err)) => FirstChunkProbe::ReadError(err),
+        Err(_) => FirstChunkProbe::Timeout,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1227,6 +1256,25 @@ fn buffered_provider_failure_reason(error_code: &str, quota_exhausted: bool) -> 
     }
 }
 
+fn finalize_provider_usage(
+    provider_usage_cli_key: Option<&str>,
+    tracker: &Arc<Mutex<usage::SseUsageTracker>>,
+) -> Option<usage::UsageExtract> {
+    provider_usage_cli_key?;
+    let mut tracker = match tracker.lock() {
+        Ok(tracker) => tracker,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    tracker.finalize()
+}
+
+fn accounting_usage<'a>(
+    provider_usage: Option<&'a usage::UsageExtract>,
+    client_usage: Option<&'a usage::UsageExtract>,
+) -> Option<&'a usage::UsageExtract> {
+    provider_usage.or(client_usage)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_infinite_buffered_event_stream<R>(
     ctx: CommonCtx<'_, R>,
@@ -1283,6 +1331,21 @@ where
         should_gunzip && !decode_gzip_before_guard,
     );
     let upstream = gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+    let provider_usage_cli_key = protocol_bridge::provider_usage_cli_key(active_bridge_type);
+    let upstream_usage_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new(
+        provider_usage_cli_key.unwrap_or(common.cli_key.as_str()),
+    )));
+    let upstream: DecodedEventStream = if provider_usage_cli_key.is_some() {
+        Box::pin(UpstreamModelObserverStream::new(
+            upstream,
+            Arc::clone(&upstream_usage_tracker),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+        ))
+    } else {
+        Box::pin(upstream)
+    };
     let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
         upstream,
         active_bridge_type,
@@ -1387,8 +1450,16 @@ where
         }
     };
 
-    let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &final_bytes);
-    observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, usage.as_ref(), None);
+    let client_usage =
+        usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &final_bytes);
+    let provider_usage = finalize_provider_usage(provider_usage_cli_key, &upstream_usage_tracker);
+    observe_infinite_attempt_usage(
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        accounting_usage(provider_usage.as_ref(), client_usage.as_ref()),
+        None,
+    );
 
     if let Err(reason) = crate::gateway::streams::validate_complete_codex_sse(
         final_bytes.as_ref(),
@@ -1490,7 +1561,8 @@ where
         &common.special_settings,
     );
 
-    let usage_metrics = usage.as_ref().map(|value| value.metrics.clone());
+    let usage_metrics = accounting_usage(provider_usage.as_ref(), client_usage.as_ref())
+        .map(|value| value.metrics.clone());
     let requested_model_for_log = resolve_requested_model_for_log(
         requested_model_for_audit(
             &common.special_settings,
@@ -1575,7 +1647,7 @@ where
                 Some(duration_ms),
                 usage_metrics,
                 infinite_terminal.log_usage_metrics,
-                usage,
+                client_usage,
             )
             .with_log_cost_usd_femto(infinite_terminal.log_cost_usd_femto)
             .with_log_activity_details_json(infinite_terminal.activity_details_json),
@@ -1592,7 +1664,7 @@ pub(super) async fn handle_success_event_stream<R>(
     _input: &RequestContext<R>,
     provider_ctx: ProviderCtx<'_>,
     attempt_ctx: AttemptCtx<'_>,
-    _prepared: PreparedProvider,
+    attempt_timing: &AttemptTiming,
     loop_state: LoopState<'_, R>,
     retry_state: &mut RetryLoopState,
     resp: reqwest::Response,
@@ -1607,7 +1679,8 @@ where
     let provider_ctx_owned = ProviderCtxOwned::from(provider_ctx);
 
     let upstream_first_byte_timeout_secs = common.upstream_first_byte_timeout_secs;
-    let upstream_first_byte_timeout = common.upstream_first_byte_timeout;
+    let upstream_first_byte_timeout =
+        attempt_timing.sse_first_chunk_timeout(common.upstream_first_byte_timeout);
     let effective_stream_idle_timeout = resolve_effective_stream_idle_timeout(
         provider_ctx_owned.stream_idle_timeout_seconds,
         common.upstream_stream_idle_timeout,
@@ -1708,35 +1781,12 @@ where
             decode_event_stream(raw_upstream, decode_gzip_before_guard)
         };
 
-        enum FirstChunkProbe {
-            Skipped,
-            Ok(Option<Bytes>, Option<u128>),
-            ReadError(reqwest::Error),
-            Timeout,
-        }
-
-        let probe = match upstream_first_byte_timeout {
-            Some(total) => {
-                let elapsed = attempt_started.elapsed();
-                if elapsed >= total {
-                    FirstChunkProbe::Timeout
-                } else {
-                    let remaining = total - elapsed;
-                    match tokio::time::timeout(remaining, next_event_stream_chunk(&mut upstream))
-                        .await
-                    {
-                        Ok(Ok(Some(chunk))) => FirstChunkProbe::Ok(
-                            Some(chunk),
-                            Some(attempt_started.elapsed().as_millis()),
-                        ),
-                        Ok(Ok(None)) => FirstChunkProbe::Ok(None, None),
-                        Ok(Err(err)) => FirstChunkProbe::ReadError(err),
-                        Err(_) => FirstChunkProbe::Timeout,
-                    }
-                }
-            }
-            None => FirstChunkProbe::Skipped,
-        };
+        let probe = probe_first_event_stream_chunk(
+            &mut upstream,
+            attempt_started,
+            upstream_first_byte_timeout,
+        )
+        .await;
         let probe_is_empty_event_stream = matches!(probe, FirstChunkProbe::Ok(None, None));
 
         let mut first_chunk: Option<Bytes> = None;
@@ -2262,6 +2312,7 @@ where
                 common.cli_key.as_str(),
                 common.forwarded_path.as_str(),
             ),
+            active_bridge_type,
         );
 
         let enable_response_fixer_for_this_response =
@@ -2410,24 +2461,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_bounded_final_wire, effective_terminal_failure_status,
-        inspect_buffered_event_stream_prefix, is_codex_responses_event_stream_path,
-        is_native_codex_responses_event_stream_path, mark_last_stream_attempt_terminal_failure,
-        resolve_effective_stream_idle_timeout, resolve_requested_model_for_log,
-        BufferedFinalWireError, BufferedStreamPrefixConfig, BufferedStreamPrefixDecision,
-        BufferedStreamPrefixState, DecodedEventStream, INFINITE_FINAL_WIRE_WALL_CLOCK_CAP,
-        MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES, MIN_SUPPORTED_PATH_TTFB,
+        accounting_usage, collect_bounded_final_wire, effective_terminal_failure_status,
+        finalize_provider_usage, inspect_buffered_event_stream_prefix,
+        is_codex_responses_event_stream_path, is_native_codex_responses_event_stream_path,
+        mark_last_stream_attempt_terminal_failure, next_event_stream_chunk,
+        probe_first_event_stream_chunk, resolve_effective_stream_idle_timeout,
+        resolve_requested_model_for_log, BufferedFinalWireError, BufferedStreamPrefixConfig,
+        BufferedStreamPrefixDecision, BufferedStreamPrefixState, DecodedEventStream,
+        FirstChunkProbe, INFINITE_FINAL_WIRE_WALL_CLOCK_CAP, MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
+        MIN_SUPPORTED_PATH_TTFB,
     };
     use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
     use crate::gateway::events::FailoverAttempt;
-    use crate::gateway::infinite_retry::CODEX_RESPONSES_PATH_CONTRACTS;
+    use crate::gateway::infinite_retry::{
+        AttemptKey, FailureCategory, InfiniteRetryLedger, UsageSample,
+        CODEX_RESPONSES_PATH_CONTRACTS,
+    };
     use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
     use axum::body::Bytes;
     use axum::http::StatusCode;
     use futures_core::Stream;
     use std::collections::HashMap;
     use std::pin::Pin;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
     use std::time::Duration;
 
@@ -2452,6 +2508,84 @@ mod tests {
                 Poll::Pending => Poll::Pending,
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delegated_sse_first_event_budget_skips_outer_deadline() {
+        let delay = Duration::from_millis(100);
+        let configured_timeout = Duration::from_millis(25);
+
+        let mut delegated: DecodedEventStream = Box::pin(SlowDripStream::new(delay));
+        let delegated_probe =
+            probe_first_event_stream_chunk(&mut delegated, std::time::Instant::now(), None).await;
+        assert!(matches!(delegated_probe, FirstChunkProbe::Skipped));
+        assert_eq!(
+            next_event_stream_chunk(&mut delegated)
+                .await
+                .expect("delegated first event read"),
+            Some(Bytes::from_static(b"x"))
+        );
+
+        let mut ordinary: DecodedEventStream = Box::pin(SlowDripStream::new(delay));
+        let ordinary_probe = probe_first_event_stream_chunk(
+            &mut ordinary,
+            std::time::Instant::now(),
+            Some(configured_timeout),
+        )
+        .await;
+        assert!(matches!(ordinary_probe, FirstChunkProbe::Timeout));
+    }
+
+    #[test]
+    fn infinite_buffered_cx2cc_ledger_uses_raw_provider_usage() {
+        let raw_tracker = Arc::new(Mutex::new(crate::usage::SseUsageTracker::new("codex")));
+        raw_tracker
+            .lock()
+            .expect("raw tracker lock")
+            .ingest_chunk(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":10,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\n",
+            );
+        let provider_usage =
+            finalize_provider_usage(Some("codex"), &raw_tracker).expect("raw provider usage");
+
+        let client_usage = crate::usage::parse_usage_from_json_or_sse_bytes(
+            "claude",
+            b"event: message_start\n\
+              data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\
+              event: message_delta\n\
+              data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10,\"cache_read_input_tokens\":80}}\n\n\
+              event: message_stop\n\
+              data: {\"type\":\"message_stop\"}\n\n",
+        )
+        .expect("client usage");
+        assert_eq!(client_usage.metrics.input_tokens, Some(20));
+        assert_eq!(client_usage.metrics.cache_read_input_tokens, Some(80));
+
+        let selected =
+            accounting_usage(Some(&provider_usage), Some(&client_usage)).expect("accounting usage");
+        let mut ledger = InfiniteRetryLedger::default();
+        ledger.start_round(false);
+        let key = AttemptKey::new(7, 0, 1);
+        ledger.observe_attempt_usage(
+            key,
+            Some(UsageSample::from_metrics(&selected.metrics)),
+            None,
+        );
+        assert!(ledger.record_attempt_once(
+            key,
+            "provider",
+            Some(200),
+            "success",
+            FailureCategory::Success,
+            1,
+        ));
+
+        let metrics = ledger.usage_metrics().expect("ledger usage metrics");
+        assert_eq!(metrics.input_tokens, Some(100));
+        assert_eq!(metrics.output_tokens, Some(10));
+        assert_eq!(metrics.total_tokens, Some(110));
+        assert_eq!(metrics.cache_read_input_tokens, Some(80));
     }
 
     fn native_prefix_config(

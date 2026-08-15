@@ -164,7 +164,11 @@ mod tests {
                         "role": "assistant",
                         "content": [{"type": "output_text", "text": "Hello!"}]
                     }],
-                    "usage": {"input_tokens": 8, "output_tokens": 2}
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 2,
+                        "input_tokens_details": {"cached_tokens": 80}
+                    }
                 }),
                 &ctx,
             )
@@ -174,38 +178,90 @@ mod tests {
         assert_eq!(translated_response["model"], "claude-sonnet-4-20250514");
         assert_eq!(translated_response["stop_reason"], "end_turn");
         assert_eq!(translated_response["content"][0]["text"], "Hello!");
-        assert_eq!(translated_response["usage"]["input_tokens"], 8);
+        assert_eq!(translated_response["usage"]["input_tokens"], 20);
         assert_eq!(translated_response["usage"]["output_tokens"], 2);
+        assert_eq!(translated_response["usage"]["cache_read_input_tokens"], 80);
     }
 
     #[test]
-    fn cx2cc_sse_round_trip_preserves_cache_usage() {
+    fn cx2cc_synthesized_sse_normalizes_cache_usage_without_repeating_it() {
         let bridge = get_bridge("cx2cc").unwrap();
+        let provider_body = json!({
+            "id": "resp_cache_sse",
+            "model": "gpt-5.4",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "cached response"}]
+            }],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "total_tokens": 110,
+                "input_tokens_details": {"cached_tokens": 80}
+            }
+        });
+        let provider_bytes = serde_json::to_vec(&provider_body).expect("serialize provider body");
+        let provider_usage =
+            crate::usage::parse_usage_from_json_or_sse_bytes("codex", &provider_bytes)
+                .expect("extract raw provider usage");
         let sse_bytes = bridge
-            .translate_response_to_sse(
-                json!({
-                    "id": "resp_cache_sse",
-                    "model": "gpt-5.4",
-                    "status": "completed",
-                    "output": [{
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "cached response"}]
-                    }],
-                    "usage": {
-                        "input_tokens": 100,
-                        "output_tokens": 10,
-                        "input_tokens_details": {"cached_tokens": 80}
-                    }
-                }),
-                &cx2cc_ctx(),
-            )
+            .translate_response_to_sse(provider_body, &cx2cc_ctx())
             .expect("translate response to SSE");
-        let usage = crate::usage::parse_usage_from_json_or_sse_bytes("claude", &sse_bytes)
+        let client_usage = crate::usage::parse_usage_from_json_or_sse_bytes("claude", &sse_bytes)
             .expect("extract translated SSE usage");
 
-        assert_eq!(usage.metrics.input_tokens, Some(100));
-        assert_eq!(usage.metrics.output_tokens, Some(10));
-        assert_eq!(usage.metrics.cache_read_input_tokens, Some(80));
+        assert_eq!(provider_usage.metrics.input_tokens, Some(100));
+        assert_eq!(provider_usage.metrics.cache_read_input_tokens, Some(80));
+        assert_eq!(client_usage.metrics.input_tokens, Some(20));
+        assert_eq!(client_usage.metrics.output_tokens, Some(10));
+        assert_eq!(client_usage.metrics.cache_read_input_tokens, Some(80));
+
+        let text = std::str::from_utf8(&sse_bytes).expect("utf-8 SSE");
+        let frames = text
+            .split("\n\n")
+            .filter_map(crate::gateway::proxy::sse::parse_sse_frame)
+            .collect::<Vec<_>>();
+        let message_start = frames
+            .iter()
+            .find(|(event, _)| event == "message_start")
+            .map(|(_, data)| data)
+            .expect("message_start frame");
+        let message_delta = frames
+            .iter()
+            .find(|(event, _)| event == "message_delta")
+            .map(|(_, data)| data)
+            .expect("message_delta frame");
+
+        assert_eq!(message_start["message"]["usage"]["input_tokens"], 20);
+        assert_eq!(
+            message_start["message"]["usage"]["cache_read_input_tokens"],
+            80
+        );
+        assert_eq!(message_delta["usage"]["output_tokens"], 10);
+        assert!(message_delta["usage"].get("input_tokens").is_none());
+        assert!(message_delta["usage"]
+            .get("cache_read_input_tokens")
+            .is_none());
+
+        let usage_frames = frames
+            .iter()
+            .filter_map(|(_, data)| data.pointer("/message/usage").or_else(|| data.get("usage")))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            usage_frames
+                .iter()
+                .filter(|usage| usage.get("input_tokens").is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            usage_frames
+                .iter()
+                .filter(|usage| usage.get("cache_read_input_tokens").is_some())
+                .count(),
+            1
+        );
     }
 }

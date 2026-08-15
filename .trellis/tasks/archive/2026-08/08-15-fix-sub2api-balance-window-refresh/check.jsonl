@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/archive/2026-08/08-15-fix-sub2api-balance-window-refresh/prd.md", "reason": "本轮严格触发、失败关闭、副作用隔离和完整验收标准"}
+{"file": ".trellis/tasks/archive/2026-08/08-15-fix-sub2api-balance-window-refresh/design.md", "reason": "实现边界、请求序列、兼容性和回滚约束"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"共享查询、runtime force、远端请求与路由投影质量合同"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"跨层强刷必须枚举所有缓存与上游服务状态边界"}

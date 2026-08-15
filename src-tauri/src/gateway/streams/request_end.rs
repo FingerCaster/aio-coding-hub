@@ -319,6 +319,7 @@ pub(super) fn emit_request_event_and_spawn_request_log<R: tauri::Runtime>(
         last_activity_ms,
         activity_details_json,
         ctx.created_at,
+        completion.usage_metrics.clone(),
         completion.usage,
     );
 
@@ -429,6 +430,7 @@ mod tests {
             provider_name: "test-provider".to_string(),
             base_url: "https://upstream.example".to_string(),
             auth_mode: "api_key".to_string(),
+            use_upstream_usage_metrics: false,
             upstream_route_tracker: Arc::new(Mutex::new(crate::usage::SseUsageTracker::new(
                 "codex",
             ))),

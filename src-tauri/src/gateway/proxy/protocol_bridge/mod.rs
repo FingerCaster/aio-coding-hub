@@ -41,3 +41,10 @@ mod e2e_tests;
 // Re-export the most commonly used types.
 pub(crate) use registry::get_bridge;
 pub(crate) use traits::BridgeContext;
+
+pub(crate) fn provider_usage_cli_key(bridge_type: Option<&str>) -> Option<&'static str> {
+    match bridge_type {
+        Some(crate::domain::providers::CX2CC_BRIDGE_TYPE) => Some("codex"),
+        _ => None,
+    }
+}

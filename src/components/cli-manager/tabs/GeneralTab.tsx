@@ -837,9 +837,7 @@ export function CliManagerGeneralTab({
                       onChange={(next) => {
                         setUpstreamRetryPolicy(next);
                       }}
-                      streamInternalErrorGuardMs={streamInternalErrorGuardMs}
-                      maxStreamInternalErrorGuardMs={MAX_STREAM_INTERNAL_ERROR_GUARD_MS}
-                      onStreamInternalErrorGuardMsChange={setStreamInternalErrorGuardMs}
+                      sharesBudgetWithCodexStreamErrors
                     />
                     <div className="mt-3 flex justify-end">
                       <Button

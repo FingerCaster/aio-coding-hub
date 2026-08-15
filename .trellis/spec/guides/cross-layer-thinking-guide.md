@@ -51,6 +51,30 @@ For each boundary:
 
 ---
 
+## Usage Projection Ownership Checklist
+
+Use this when one upstream usage payload feeds both a translated client
+protocol and provider accounting.
+
+- [ ] Name two separate products before transforming anything: raw provider
+      metrics for quota/cost/logs/ledger, and client-protocol usage for the
+      response projection.
+- [ ] Preserve provider-inclusive input totals in the raw metrics channel. Do
+      not overwrite them with a client-normalized value before persistence or
+      cost calculation.
+- [ ] Normalize only at the client protocol boundary. For OpenAI-shaped usage,
+      subtract only nested cache detail buckets that are defined as subsets of
+      `input_tokens`, using saturating arithmetic.
+- [ ] Treat top-level Anthropic cache fields as already separate buckets. Pass
+      them through; never subtract them from top-level `input_tokens` again.
+- [ ] In synthesized SSE, emit input/cache buckets once and output buckets once;
+      do not repeat the same input/cache usage in both start and delta events.
+- [ ] Test non-stream, real upstream SSE, synthesized SSE, no-cache input, and
+      already-Anthropic usage. Assert the client projection and persisted raw
+      accounting independently.
+
+---
+
 ## Long-Lived Binding Concurrency Checklist
 
 Use this when a request selects a route in one layer, crosses async transport or
@@ -403,3 +427,30 @@ state correctly, but several commands still re-parsed event payload fields with
 local casts. The fix was to make the core event layer own `ThreadChannelEvent`
 and `isThreadEvent`, make `reduceChannelMetadata` the only channel metadata
 projection, and make `reduceThreads` the only thread replay reducer.
+
+### Cross-Layer Refresh: Upstream State Maintenance Checklist
+
+When a user-visible refresh still returns an old value after a new network
+request, enumerate every state boundary before changing cache policy:
+
+- [ ] UI/query cache, process snapshot, in-flight request ordering, and HTTP
+      proxy/CDN cache are all bypassed or ordered as intended.
+- [ ] The upstream read endpoint is checked for `skipBilling`, lazy window
+      rollover, eventual consistency, or another condition that can return a
+      stale projection even on a fresh GET.
+- [ ] If an explicit maintenance request is needed, classify it as a typed
+      manual intent; automatic/timed/background paths must not inherit it.
+- [ ] Trigger only from strict raw response evidence. Do not use a display DTO
+      status as a second interpretation of the upstream mode or billing state.
+- [ ] Define the exact method, path, credentials, body, accepted status, and
+      bounded response behavior. Fail closed on network/non-expected statuses.
+- [ ] Prove the maintenance request has no model cost and no provider-health,
+      circuit, availability, route, order, session, or cache side effects.
+- [ ] Add a captured request-sequence regression and a live/sanitized upstream
+      timing observation; a mock fetcher returning a new value is insufficient.
+
+**Real-world example**: Sub2API Plus `/v1/usage` skipped subscription window
+maintenance while the ordinary model route performed it. A fresh GET and
+cache-busting headers therefore kept returning zero until a model request ran.
+The durable fix was a manual-only, raw-predicate-gated `GET -> POST {} 400 -> GET`
+adapter flow, with no availability test or real model body.

@@ -113,7 +113,7 @@ where
                 input,
                 provider_ctx,
                 attempt_ctx,
-                prepared.clone(),
+                &timing,
                 loop_state.reborrow(),
                 retry_state,
                 resp,

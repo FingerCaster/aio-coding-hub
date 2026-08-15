@@ -48,6 +48,9 @@ vi.mock("../../components/cli-manager/tabs/GeneralTab", () => ({
     onPersistCodexSessionIdCompletion,
     onPersistCacheAnomalyMonitor,
     onPersistCommonSettings,
+    upstreamRetryPolicy,
+    setUpstreamRetryPolicy,
+    streamInternalErrorGuardMs,
     blurOnEnter,
   }: any) => (
     <div>
@@ -79,6 +82,25 @@ vi.mock("../../components/cli-manager/tabs/GeneralTab", () => ({
       >
         persist-common
       </button>
+      <button
+        type="button"
+        onClick={() => setUpstreamRetryPolicy({ ...upstreamRetryPolicy, max_retries: 7 })}
+      >
+        edit-general-retry
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onPersistCommonSettings({
+            upstream_retry_policy: upstreamRetryPolicy,
+            stream_internal_error_guard_ms: streamInternalErrorGuardMs,
+          })
+        }
+      >
+        save-general-retry
+      </button>
+      <output aria-label="general-retry-policy">{JSON.stringify(upstreamRetryPolicy)}</output>
+      <output aria-label="general-stream-guard">{streamInternalErrorGuardMs}</output>
     </div>
   ),
 }));
@@ -110,6 +132,11 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     persistCodexOauthCompatibleProxyMode,
     pickCodexHomeDirectory,
     syncCodexProvider,
+    persistCommonSettings,
+    upstreamRetryPolicy,
+    setUpstreamRetryPolicy,
+    streamInternalErrorGuardMs,
+    setStreamInternalErrorGuardMs,
   }: any) => {
     const [oauthResult, setOauthResult] = useState<boolean | null>(null);
     return (
@@ -152,6 +179,36 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
         <output aria-label="codex-oauth-result">
           {oauthResult == null ? "pending" : String(oauthResult)}
         </output>
+        <button
+          type="button"
+          onClick={() =>
+            setUpstreamRetryPolicy({
+              ...upstreamRetryPolicy,
+              stream_internal_errors: {
+                ...upstreamRetryPolicy.stream_internal_errors,
+                passthrough_keywords: ["codex-edited"],
+              },
+            })
+          }
+        >
+          edit-codex-stream
+        </button>
+        <button type="button" onClick={() => setStreamInternalErrorGuardMs(5000)}>
+          edit-codex-guard
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            persistCommonSettings({
+              upstream_retry_policy: upstreamRetryPolicy,
+              stream_internal_error_guard_ms: streamInternalErrorGuardMs,
+            })
+          }
+        >
+          save-codex-stream
+        </button>
+        <output aria-label="codex-retry-policy">{JSON.stringify(upstreamRetryPolicy)}</output>
+        <output aria-label="codex-stream-guard">{streamInternalErrorGuardMs}</output>
       </div>
     );
   },
@@ -382,6 +439,82 @@ describe("pages/CliManagerPage", () => {
     for (const tab of screen.getAllByRole("tab")) {
       expect(tab).toHaveClass("shrink-0", "whitespace-nowrap");
     }
+  });
+
+  it("在 General/Codex 间共享最新重试草稿并按当前草稿保存", async () => {
+    const initialSettings = createAppSettings({
+      upstream_retry_policy: {
+        ...createTestAppSettings().upstream_retry_policy,
+        max_retries: 1,
+        stream_internal_errors: {
+          enabled: true,
+          passthrough_keywords: ["initial"],
+          legacy_retry_keywords: [],
+        },
+      },
+      stream_internal_error_guard_ms: 500,
+    });
+    let canonicalSettings = initialSettings;
+    vi.mocked(useSettingsQuery).mockReturnValue({
+      data: initialSettings,
+      isLoading: false,
+    } as any);
+    const commonMutation = {
+      isPending: false,
+      mutateAsync: vi.fn(async (patch: Partial<AppSettings>) => {
+        const { upstream_proxy_password: _password, ...settingsPatch } =
+          patch as Partial<AppSettings> & { upstream_proxy_password?: unknown };
+        canonicalSettings = { ...canonicalSettings, ...settingsPatch };
+        return createSettingsMutationResult(canonicalSettings);
+      }),
+    };
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(commonMutation as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("button", { name: "edit-general-retry" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+
+    expect(await screen.findByLabelText("codex-retry-policy")).toHaveTextContent('"max_retries":7');
+    fireEvent.click(screen.getByRole("button", { name: "edit-codex-stream" }));
+    fireEvent.click(screen.getByRole("button", { name: "edit-codex-guard" }));
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-stream" }));
+
+    await waitFor(() =>
+      expect(commonMutation.mutateAsync).toHaveBeenNthCalledWith(1, {
+        upstream_retry_policy: expect.objectContaining({
+          max_retries: 7,
+          stream_internal_errors: {
+            enabled: true,
+            passthrough_keywords: ["codex-edited"],
+            legacy_retry_keywords: [],
+          },
+        }),
+        stream_internal_error_guard_ms: 5000,
+        upstream_proxy_password: { mode: "preserve" },
+      })
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "通用" }));
+    expect(await screen.findByLabelText("general-retry-policy")).toHaveTextContent(
+      '"passthrough_keywords":["codex-edited"]'
+    );
+    expect(screen.getByLabelText("general-stream-guard")).toHaveTextContent("5000");
+    fireEvent.click(screen.getByRole("button", { name: "save-general-retry" }));
+
+    await waitFor(() =>
+      expect(commonMutation.mutateAsync).toHaveBeenNthCalledWith(2, {
+        upstream_retry_policy: expect.objectContaining({
+          max_retries: 7,
+          stream_internal_errors: {
+            enabled: true,
+            passthrough_keywords: ["codex-edited"],
+            legacy_retry_keywords: [],
+          },
+        }),
+        stream_internal_error_guard_ms: 5000,
+        upstream_proxy_password: { mode: "preserve" },
+      })
+    );
   });
 
   it("drives general tab persistence and handles tauri unavailable/errors", async () => {

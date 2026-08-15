@@ -19,7 +19,8 @@ TypeScript bindings, frontend adapters, and React UI.
   protocol rewrites, pre-send failover, and provider-scoped audit/cost basis.
 - [CX2CC routing contract](./cx2cc-routing-contract.md): single-owner model
   mapping, reasoning presence, provider-scoped context projection, shared
-  defaults, and authenticated direct one-hop local gateway reentry.
+  defaults, raw-versus-client usage ownership, and authenticated direct one-hop
+  local gateway reentry.
 - [Reasoning effort observability contract](./reasoning-effort-observability-contract.md):
   final outbound explicit fields, per-attempt send evidence, coherent
   realtime/history projection, legacy compatibility, and one shared UI badge.
@@ -124,8 +125,8 @@ When changing configured model routing:
 5. Recheck settings 57, SQLite 45, Provider share v5, config bundle v4, and
    generated TypeScript bindings together.
 
-When changing CX2CC routing, reasoning, model presets, context projection, or
-local gateway reentry:
+When changing CX2CC routing, reasoning, model presets, context projection,
+usage translation/accounting, or local gateway reentry:
 
 1. Read [CX2CC routing contract](./cx2cc-routing-contract.md).
 2. Trace the original model through the four-slot mapper, first-hop route
@@ -137,6 +138,9 @@ local gateway reentry:
    unknown context behavior, and terminal environment omission together.
 5. Verify nonce issue/consume order, header stripping, fingerprint order,
    direct/no-proxy/no-redirect transport, and ordinary self-loop rejection.
+6. Trace raw provider usage and client-protocol usage as separate values through
+   non-stream, real SSE, synthesized SSE, logs, costs, realtime events, and the
+   provider ledger. Only nested OpenAI detail buckets may reduce client input.
 
 When changing reasoning-effort transformation, attempt evidence, request-log
 projection, or display:
@@ -323,7 +327,9 @@ When changing usage folders, development-time estimates, or provider metrics tre
 - When changing CX2CC, verify the four-slot mapper remains the only model owner,
   reasoning presence is preserved without legacy fallback, context is trusted
   only from discovered provider-scoped rows, authenticated local reentry skips
-  second-hop mapping, and the private nonce cannot traverse a proxy or redirect.
+  second-hop mapping, the private nonce cannot traverse a proxy or redirect,
+  client usage is mutually exclusive, and raw provider accounting remains
+  inclusive across stream and non-stream paths.
 - When changing reasoning-effort observability, verify final-wire explicit-field
   extraction, truthful per-attempt send evidence, last-success/last-sent
   selection, old JSON/event defaults, realtime/history parity, future string

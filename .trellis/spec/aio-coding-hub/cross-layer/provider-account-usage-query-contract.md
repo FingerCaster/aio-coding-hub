@@ -880,3 +880,123 @@ result.daily_used = Some(validated_used);
 
 Window semantics stay in their matching DTO fields; field-name similarity does
 not create a wallet-balance contract.
+
+## Scenario: Sub2API Subscription Window Maintenance Before Manual Refresh
+
+### 1. Scope / Trigger
+
+Use this scenario when a Sub2API Plus/订阅供应商跨日、周或月后，手动账户用量刷新仍
+显示零额度。它只改变 Sub2API 的显式手动适配器请求；NewAPI、Custom、自动/定时/
+Gateway 查询和 Provider 可用性测试保持原协议。
+
+### 2. Signatures
+
+```rust
+enum ProviderAccountUsageFetchIntent {
+    Background,
+    Manual,
+}
+
+fn sub2api_usage_requires_window_maintenance(body: &serde_json::Value) -> bool;
+fn build_sub2api_window_maintenance_url(usage_url: &str) -> Result<String, String>;
+```
+
+`ProviderAccountUsageRuntimeState` maps ordinary scheduling to `Background` and a
+force epoch (including an immediate tail) to `Manual`. The intent is internal and
+is not serialized through IPC.
+
+### 3. Contracts
+
+- The first request is always the existing bounded, cache-busting `GET /v1/usage`.
+- A preflight is permitted only for `Manual` when the **raw first JSON** has exact
+  `mode == "unrestricted"`, `isValid == true`, an object `subscription`, finite
+  `remaining <= 0`, and at least one positive daily/weekly/monthly limit whose
+  matching usage is finite, non-negative, and `used >= limit`. Numeric strings use
+  the existing finite numeric parser; missing, malformed, negative-limit, and
+  non-finite values fail closed.
+- The preflight derives a same-origin `/v1/chat/completions` URL from the validated
+  usage URL, preserving any path prefix and removing query/fragment. It sends the
+  same Bearer credential, cache-bypass headers, `Content-Type: application/json`,
+  and the exact body `{}` with no `model` field.
+- Only HTTP 400 means the upstream maintenance path ran and the request reached
+  model-parameter validation. Only then is a second bounded `GET /v1/usage` sent;
+  its complete result is authoritative. Network errors and every other preflight
+  status retain the first result and do not issue a second GET. A second GET error
+  is returned as the normal query failure.
+- The raw JSON predicate is the sole trigger source; a `QueryFailed`/other display
+  DTO status caused by an unrelated field must not suppress a proven subscription
+  maintenance attempt. Preflight responses are not read or logged.
+- Background, timed, Gateway, wallet-zero, `quota_limited` API-key, invalid,
+  incomplete, or authentication responses never send the preflight. No request
+  mutates circuit, availability, Provider order, Session, route state, or cache
+  ownership.
+
+### 4. Validation & Error Matrix
+
+| Input / condition | Required result |
+| --- | --- |
+| Manual + strict exhausted subscription JSON | `GET -> POST {} -> GET` |
+| Manual + positive remaining or no complete positive period | One GET |
+| Background/timed/Gateway intent | One GET |
+| Wallet response without object subscription | One GET |
+| `mode == quota_limited` or invalid/incomplete JSON | One GET |
+| Preflight network failure or non-400 status | First result; no second GET |
+| Preflight HTTP 400 | Second GET result, including normal query failure mapping |
+| URL has credentials or invalid origin/path | No preflight; first result |
+| URL has query/fragment | Strip them while deriving the same-origin maintenance URL |
+| Any preflight or usage response contains secrets/body/PII | Nothing copied to logs or DTO diagnostics |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a strict exhausted raw subscription response followed by `POST {}` 400 and
+  a positive second usage response returns the second positive snapshot.
+- Good: a malformed unrelated `rate_limits` field still permits the raw subscription
+  maintenance predicate; the display parser does not become a second trigger owner.
+- Base: a normal positive Sub2API response performs exactly one GET.
+- Bad: treat a new GET, cache-busting header, or successful Provider test as proof that
+  the upstream usage window was maintained.
+- Bad: send a model, real prompt, or non-empty body; accept non-400 as recovery; or
+  unconditionally preflight automatic refreshes.
+
+### 6. Tests Required
+
+- Domain table tests cover every predicate field, all three periods, aliases, finite
+  numeric strings, malformed/negative values, and same-origin URL derivation.
+- HTTP sequence tests capture exact method/path, Bearer and cache headers, `{}` body,
+  absent `model`, prefix preservation, 400-only second GET, non-400 fail-closed,
+  second-GET failure, raw-predicate-only triggering, and no-trigger payloads.
+- Runtime tests assert `Background` for ordinary scheduling and `Manual` for force,
+  including an automatic in-flight request followed by one coalesced manual tail.
+- Keep NewAPI/Custom adapter isolation, route/circuit/availability isolation, query
+  ordering, full Rust, generated binding, frontend typecheck/lint, Clippy, format,
+  and diff checks green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let result = parse_account_usage_response(Sub2api, &body, fetched_at, now);
+if result.status == ProviderAccountUsageStatus::ZeroBalance {
+    // Reuse the display DTO or run an availability test to "refresh" it.
+}
+```
+
+This confuses a local projection with the upstream state transition and can either
+miss a real subscription window or create an unrelated provider side effect.
+
+#### Correct
+
+```rust
+let (first, raw) = fetch_sub2api_account_usage_once(...).await;
+if intent == Manual && raw.is_some_and(sub2api_usage_requires_window_maintenance) {
+    let status = post_empty_chat_completions(...).await?;
+    if status == HTTP_400 {
+        return fetch_sub2api_account_usage_once(...).await.result;
+    }
+}
+return first;
+```
+
+The adapter owns the explicitly bounded upstream maintenance handshake, while the
+query/runtime layers remain cache owners without Provider-health side effects.

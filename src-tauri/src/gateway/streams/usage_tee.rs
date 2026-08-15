@@ -77,14 +77,14 @@ fn finalize_upstream_route_observation(
     observed_model: &Arc<Mutex<Option<String>>>,
     observed_conflicting_model: &Arc<Mutex<Option<String>>>,
     observed_reasoning_effort: &Arc<Mutex<Option<String>>>,
-) -> usage::ModelRouteEvidence {
-    let evidence = {
+) -> (usage::ModelRouteEvidence, Option<usage::UsageExtract>) {
+    let (evidence, usage) = {
         let mut tracker = match tracker.lock() {
             Ok(tracker) => tracker,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let _ = tracker.finalize();
-        tracker.best_effort_route_evidence()
+        let usage = tracker.finalize();
+        (tracker.best_effort_route_evidence(), usage)
     };
 
     if let Some(model) = evidence.first_model.as_ref() {
@@ -102,7 +102,7 @@ fn finalize_upstream_route_observation(
             *observed = Some(effort.clone());
         }
     }
-    evidence
+    (evidence, usage)
 }
 
 impl<S, B> Stream for UpstreamModelObserverStream<S, B>
@@ -567,13 +567,18 @@ where
         } else {
             error_code
         };
-        let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-        let route_evidence = finalize_upstream_route_observation(
+        let (route_evidence, upstream_usage) = finalize_upstream_route_observation(
             &self.ctx.upstream_route_tracker,
             &self.ctx.observed_upstream_model,
             &self.ctx.observed_upstream_conflicting_model,
             &self.ctx.observed_upstream_reasoning_effort,
         );
+        let usage_metrics = if self.ctx.use_upstream_usage_metrics {
+            upstream_usage.as_ref().or(usage.as_ref())
+        } else {
+            usage.as_ref()
+        }
+        .map(|usage| usage.metrics.clone());
         if let Some(setting) = model_route_mapping::build_model_route_mapping_setting_from_shared(
             model_route_mapping::SharedModelRouteSettingInput {
                 cli_key: &self.ctx.cli_key,
@@ -1534,6 +1539,7 @@ mod tests {
             provider_name: "test-provider".to_string(),
             base_url: "https://upstream.example".to_string(),
             auth_mode: "api_key".to_string(),
+            use_upstream_usage_metrics: false,
             upstream_route_tracker: Arc::new(Mutex::new(usage::SseUsageTracker::new("codex"))),
             observed_upstream_model: Arc::new(Mutex::new(None)),
             observed_upstream_conflicting_model: Arc::new(Mutex::new(None)),
@@ -2254,6 +2260,85 @@ mod tests {
             .special_settings_json
             .as_deref()
             .is_some_and(|value| value.contains("\"client_abort\"")));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cx2cc_stream_logs_raw_provider_metrics_and_client_usage_json() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-cx2cc.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(
+            app.handle().clone(),
+            db,
+            log_tx,
+            Arc::clone(&active_requests),
+        );
+        ctx.cli_key = "claude".to_string();
+        ctx.path = "/v1/messages".to_string();
+        ctx.detect_stream_internal_errors = false;
+        ctx.use_upstream_usage_metrics = true;
+        ctx.upstream_route_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new("codex")));
+        let raw_usage_tracker = Arc::clone(&ctx.upstream_route_tracker);
+
+        let raw_sse = Bytes::from_static(
+            b"event: response.created\n\
+              data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cache\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\",\"output\":[]}}\n\n\
+              event: response.completed\n\
+              data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_cache\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"cached response\"}]}],\"usage\":{\"input_tokens\":100,\"output_tokens\":10,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\n",
+        );
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(2);
+        upstream_tx.send(Ok(raw_sse)).await.expect("send raw SSE");
+        drop(upstream_tx);
+
+        let observer = UpstreamModelObserverStream::new(
+            RelayBodyStream::new(upstream_rx),
+            Arc::clone(&ctx.upstream_route_tracker),
+            Arc::clone(&ctx.observed_upstream_model),
+            Arc::clone(&ctx.observed_upstream_conflicting_model),
+            Arc::clone(&ctx.observed_upstream_reasoning_effort),
+        );
+        let bridged = crate::gateway::proxy::protocol_bridge::stream::BridgeStream::for_cx2cc(
+            observer,
+            true,
+            Some("claude-sonnet-4-20250514".to_string()),
+            crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
+        );
+        let mut stream = UsageSseTeeStream::new(bridged, ctx, None, None);
+        while let Some(chunk) = next_item(&mut stream).await {
+            chunk.expect("bridged SSE chunk");
+        }
+
+        let raw_usage = match raw_usage_tracker.lock() {
+            Ok(mut tracker) => tracker.finalize(),
+            Err(poisoned) => poisoned.into_inner().finalize(),
+        }
+        .expect("raw provider usage");
+        assert_eq!(raw_usage.metrics.input_tokens, Some(100));
+        assert_eq!(raw_usage.metrics.cache_read_input_tokens, Some(80));
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert_eq!(log.input_tokens, Some(100));
+        assert_eq!(log.output_tokens, Some(10));
+        assert_eq!(log.total_tokens, Some(110));
+        assert_eq!(log.cache_read_input_tokens, Some(80));
+
+        let client_usage: serde_json::Value = serde_json::from_str(
+            log.usage_json
+                .as_deref()
+                .expect("translated client usage_json"),
+        )
+        .expect("valid client usage_json");
+        assert_eq!(client_usage["input_tokens"], 20);
+        assert_eq!(client_usage["output_tokens"], 10);
+        assert_eq!(client_usage["cache_read_input_tokens"], 80);
     }
 
     #[tokio::test(flavor = "current_thread")]

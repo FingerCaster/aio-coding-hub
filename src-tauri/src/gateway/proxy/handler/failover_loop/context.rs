@@ -295,8 +295,11 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
     status: u16,
     attempt_started: Instant,
     detect_stream_internal_errors: bool,
+    active_bridge_type: Option<&str>,
 ) -> StreamFinalizeCtx<R> {
     let attempts_json = serde_json::to_string(attempts).unwrap_or_else(|_| "[]".to_string());
+    let provider_usage_cli_key =
+        crate::gateway::proxy::protocol_bridge::provider_usage_cli_key(active_bridge_type);
     let dispatch_ownership = provider_ctx.dispatch_ownership.clone();
     if let Some(ownership) = dispatch_ownership.as_ref() {
         ownership.defer_probe_terminal_to_stream();
@@ -348,8 +351,9 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         provider_name: provider_ctx.provider_name_base.clone(),
         base_url: provider_ctx.provider_base_url_base.clone(),
         auth_mode: provider_ctx.auth_mode.clone(),
+        use_upstream_usage_metrics: provider_usage_cli_key.is_some(),
         upstream_route_tracker: Arc::new(Mutex::new(crate::usage::SseUsageTracker::new(
-            &ctx.cli_key,
+            provider_usage_cli_key.unwrap_or(ctx.cli_key.as_str()),
         ))),
         observed_upstream_model: Arc::new(Mutex::new(None)),
         observed_upstream_conflicting_model: Arc::new(Mutex::new(None)),

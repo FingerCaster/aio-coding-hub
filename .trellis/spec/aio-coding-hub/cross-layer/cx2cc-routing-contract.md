@@ -1,8 +1,9 @@
 # CX2CC Routing Contract
 
 This contract owns CX2CC model selection, request reasoning presence, terminal
-context projection, and the one-hop reentry into the local Codex gateway. These
-rules apply whenever a provider has `bridge_type = "cx2cc"`.
+context projection, client-visible usage projection, and the one-hop reentry
+into the local Codex gateway. These rules apply whenever a provider has
+`bridge_type = "cx2cc"`.
 
 ## Scenario: CX2CC Is the Single Protocol-Routing Owner
 
@@ -10,7 +11,8 @@ rules apply whenever a provider has `bridge_type = "cx2cc"`.
 
 - Trigger: changing CX2CC provider editing, protocol translation, configured
   model routing, reasoning fields, provider model capabilities, terminal launch
-  settings, gateway self-loop validation, or the shared CX2CC default model.
+  settings, usage parsing/accounting, gateway self-loop validation, or the
+  shared CX2CC default model.
 - The CX2CC mapper is the only component that selects the final Responses model.
   Generic configured-model mapping must not rewrite either the first hop or its
   authenticated local-gateway second hop.
@@ -50,6 +52,16 @@ fn configured_model_route_for_request<T>(
 InternalReentryRegistry::issue(bridge_provider_id, origin_trace_id) -> Option<String>;
 InternalReentryRegistry::consume(nonce, cli_key, method, path, query)
     -> Option<TrustedInternalReentry>;
+
+AttemptTiming::response_header_timeout(configured) -> Option<Duration>;
+AttemptTiming::sse_first_chunk_timeout(configured) -> Option<Duration>;
+
+fn parse_usage(usage: Option<&serde_json::Value>) -> IRUsage;
+
+struct StreamRequestCompletion {
+    usage_metrics: Option<UsageMetrics>, // raw provider accounting
+    usage: Option<UsageExtract>,         // client protocol projection
+}
 ```
 
 The shared new/blank default is exposed by both layers:
@@ -142,6 +154,35 @@ literals.
   remain injected, but neither context-window variable is injected. CX2CC
   terminal launch never injects `ANTHROPIC_MODEL`.
 
+#### Usage ownership and client projection
+
+- OpenAI Responses `input_tokens` is provider-inclusive: nested cache-read and
+  cache-creation detail buckets are subsets of that total. Anthropic client
+  usage requires mutually exclusive input, cache-read, and cache-creation
+  buckets.
+- Normalize only while translating OpenAI Responses usage to Anthropic usage:
+  `client_input = raw_input - nested_cache_read - nested_cache_creation`, using
+  saturating subtraction. Supported read details are
+  `/input_tokens_details/cached_tokens` and
+  `/prompt_tokens_details/cached_tokens`; supported creation details are the
+  nested OpenAI detail fields owned by the shared usage parser.
+- Top-level `cache_read_input_tokens`, `cache_creation_input_tokens`, 5-minute,
+  1-hour, and nested Anthropic `cache_creation.ephemeral_*` fields are already
+  client-compatible buckets. Preserve them but never use them as subtraction
+  operands.
+- Parse raw provider usage before the protocol bridge. Preserve its inclusive
+  `UsageMetrics` for quota, cost, request-log token columns, realtime events,
+  and provider retry/ledger accounting. Keep the post-bridge `UsageExtract`
+  only for the translated response and persisted `usage_json`.
+- A real stream has two independent observers: the raw tracker before
+  `BridgeStream`, and the client tracker after it. Finalization must not consume
+  the raw tracker before the request-log owner reads it.
+- When a JSON response is synthesized as Anthropic SSE, `message_start` owns
+  input and cache buckets, while `message_delta` owns output only. The same
+  input/cache usage must not be emitted twice.
+- Ordinary non-CX2CC Claude and Codex paths retain their existing provider
+  semantics and no-cache behavior.
+
 #### Authenticated local reentry
 
 - Only the typed `source = current AIO Codex gateway` intent may authorize a
@@ -161,9 +202,15 @@ literals.
 - A trusted second hop skips generic configured-model route resolution so the
   mapper-selected model remains unchanged. Ordinary self-loop rejection remains
   enabled for every other request.
-- The authorized local delegation has no outer first-byte timeout. The inner
-  Codex route exclusively owns real-provider timeout, retry, and failover;
-  ordinary provider sends retain the configured first-byte timeout.
+- Only a typed intent match plus the final validator's `SelfLoop` result may
+  mint the private attempt target used after the capability itself is consumed.
+  That one attempt target disables both the outer response-header and SSE
+  first-chunk deadlines. It is never inferred from localhost, `source_id`, or
+  `cx2cc_active`.
+- The inner Codex route exclusively owns real-provider first-byte timeout,
+  retry, and failover. Ordinary Providers and explicit CX2CC sources retain
+  both configured first-byte deadlines; stream-idle and non-stream total
+  timeouts remain enabled for every route.
 
 ### 4. Validation & Error Matrix
 
@@ -190,7 +237,14 @@ literals.
 | Forged, replayed, expired, or wrong-contract nonce | Untrusted request; ordinary recursion guard applies |
 | Authorized local origin returns 3xx | Return the 3xx; never follow it with the private header |
 | Proxy environment variables are set | Authorized reentry connects directly; proxy receives no request |
-| Authorized current-gateway delegation | One outer attempt, no outer first-byte timeout; inner route owns retries |
+| Authorized current-gateway delegation | One outer attempt; header and SSE first-chunk deadlines are both delegated |
+| Ordinary Provider or explicit CX2CC source | Both configured first-byte deadlines remain active |
+| Real inner Provider exceeds its first-byte deadline | Preserve normal retry/failover and 524 classification |
+| OpenAI nested cache read `input=100, cached=80` | Client sees `input=20, cache_read=80`; raw accounting keeps inclusive input `100` |
+| OpenAI nested read/write exceeds input | Client input saturates at `0`; no integer underflow |
+| Top-level Anthropic cache fields accompany `input=20` | Preserve `input=20`; do not subtract top-level cache fields |
+| Stream bridge completes | Raw provider metrics populate accounting columns; client projection populates response and `usage_json` |
+| Synthesized Anthropic SSE completes | Input/cache appear once in `message_start`; delta contains output only |
 | Default changes in one layer only | Cross-layer/default-contract tests fail |
 
 ### 5. Good / Base / Bad Cases
@@ -204,9 +258,14 @@ literals.
   and records a mixed projection.
 - Good: two slots select the same model with different explicit windows; each
   retains its own value and the terminal process uses the smaller window.
+- Good: an OpenAI response reports inclusive input `100` with nested cached
+  input `80`; Claude Code receives `20 + 80`, while cost/log accounting retains
+  the raw inclusive `100` and cached `80`.
 - Base: an ordinary Codex or Claude provider continues to use configured model
   routing, normal proxy behavior, redirects allowed by its own policy, and all
   existing failover gates.
+- Base: an upstream payload already uses top-level Anthropic cache buckets;
+  translation preserves its input and cache values without another subtraction.
 - Bad: mark CX2CC as a managed route to suppress generic routing.
 - Bad: infer context from a model family/version string, copy one slot's
   context to another, or trust a manual model row as discovered capability
@@ -214,6 +273,8 @@ literals.
 - Bad: allow all localhost/self-loop targets, reuse an ordinary proxied client,
   follow redirects, or keep the private nonce header after ingress.
 - Bad: inject a persisted default effort when the caller omitted reasoning.
+- Bad: replace the raw provider usage with the normalized client projection, or
+  emit input/cache usage in both synthesized SSE start and delta events.
 
 ### 6. Tests Required
 
@@ -235,8 +296,16 @@ literals.
   `ANTHROPIC_MODEL`.
 - Reentry tests cover issue/consume once, forgery, replay, expiry, capacity
   eviction, wrong CLI/method/path/query, ingress header removal, typed target
-  matching, one outer current-gateway attempt, delegated first-byte timeout,
-  ordinary timeout preservation, direct proxy bypass, and redirect refusal.
+  matching plus final `SelfLoop` confirmation, both delegated first-byte
+  deadlines, ordinary/explicit-source timeout preservation, a bounded delayed
+  local hop, real Provider timeout classification, direct proxy bypass, and
+  redirect refusal.
+- Usage tests cover nested cache read, nested read plus creation, saturating
+  subtraction, top-level Anthropic passthrough, and no-cache behavior. Exercise
+  non-stream JSON, real upstream SSE, and JSON-to-SSE synthesis. Integration
+  assertions independently verify client `input/cache`, persisted `usage_json`,
+  raw request-log token columns, cost inputs, realtime metrics, and provider
+  ledger values.
 - UI tests cover every GPT-5.6 preset, manual/historical preservation, CX2CC
   generic-route hiding, ordinary-provider visibility, four context controls,
   per-slot/default model clearing, leaving-CX2CC clearing, removal of the fixed
@@ -254,6 +323,11 @@ let route = configured_model_route::resolve(requested_model);
 let model = route.target_model.unwrap_or_else(|| cx2cc_map(requested_model));
 
 let effort = request_effort.or(settings.cx2cc_model_reasoning_effort);
+
+let usage = normalize_for_anthropic(provider_usage);
+persist_usage_metrics(usage.metrics.clone());
+emit_message_start(usage.clone());
+emit_message_delta(usage);
 
 let context = lookup_by_model_name(remote_model_id)
     .or(Some(DEFAULT_CONTEXT_WINDOW));
@@ -274,6 +348,13 @@ let configured_route = configured_model_route_for_request(
 let reasoning = parse_and_map_explicit_reasoning_once(request_body, cx2cc_effort_mappings);
 let responses_body = cx2cc_translate_once(request_body, reasoning);
 
+let raw_usage = parse_provider_usage_before_bridge(upstream_body);
+let client_usage = translate_openai_usage_to_anthropic(upstream_body);
+persist_accounting_metrics(raw_usage.metrics.clone());
+persist_client_usage_json(client_usage.clone());
+emit_message_start(client_usage.input_and_cache());
+emit_message_delta(client_usage.output_only());
+
 let projection = resolve_context_window_projection(
     db,
     &stable_provider_model_candidates,
@@ -281,10 +362,20 @@ let projection = resolve_context_window_projection(
 
 emit_fingerprint_without_private_nonce();
 let nonce = internal_reentry_registry.issue(bridge_provider_id, trace_id)?;
+let target = AttemptTarget::after_validation(typed_intent_match, &target_validation);
+let timing = AttemptTiming {
+    attempt_started_ms,
+    attempt_started: Instant::now(),
+    reasoning_effort,
+    upstream_sent: true,
+    target,
+};
 direct_no_proxy_no_redirect_client
     .post(local_gateway)
     .header(INTERNAL_REENTRY_HEADER, nonce)
-    .first_byte_timeout(None) // inner Codex route owns real-provider timeout
+    .first_byte_timeout(timing.response_header_timeout(configured))
     .send()
     .await?;
+
+let first_chunk_timeout = timing.sse_first_chunk_timeout(configured);
 ```
