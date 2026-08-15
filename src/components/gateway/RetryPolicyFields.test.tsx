@@ -1,43 +1,37 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   cloneUpstreamRetryPolicy,
-  DEFAULT_CYBER_PASSTHROUGH_KEYWORD,
   DEFAULT_UPSTREAM_RETRY_POLICY,
 } from "../../services/gateway/upstreamRetryPolicy";
-import { settingsGet, type UpstreamRetryPolicy } from "../../services/settings/settings";
-import { resetMswState } from "../../test/msw/state";
+import type { UpstreamRetryPolicy } from "../../services/settings/settings";
 import { RetryPolicyFields } from "./RetryPolicyFields";
 
 function Harness({
   initialPolicy = DEFAULT_UPSTREAM_RETRY_POLICY,
+  sharesBudgetWithCodexStreamErrors = false,
 }: {
   initialPolicy?: UpstreamRetryPolicy;
+  sharesBudgetWithCodexStreamErrors?: boolean;
 }) {
   const [policy, setPolicy] = useState<UpstreamRetryPolicy>(() =>
     cloneUpstreamRetryPolicy(initialPolicy)
   );
   return (
     <>
-      <RetryPolicyFields policy={policy} disabled={false} onChange={setPolicy} />
+      <RetryPolicyFields
+        policy={policy}
+        disabled={false}
+        onChange={setPolicy}
+        sharesBudgetWithCodexStreamErrors={sharesBudgetWithCodexStreamErrors}
+      />
       <output data-testid="policy-state">{JSON.stringify(policy)}</output>
     </>
   );
 }
 
-function LegacyKeywordHarness() {
-  const [policy, setPolicy] = useState<UpstreamRetryPolicy>(() => {
-    const initial = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
-    initial.stream_internal_errors.legacy_retry_keywords = ["legacy one", "legacy two"];
-    return initial;
-  });
-  return <RetryPolicyFields policy={policy} disabled={false} onChange={setPolicy} />;
-}
-
 describe("RetryPolicyFields", () => {
-  beforeEach(() => resetMswState());
-
   it("adds, edits, disables, and deletes HTTP rules", () => {
     render(<Harness />);
 
@@ -86,48 +80,45 @@ describe("RetryPolicyFields", () => {
     expect(deleted.http_rules).toHaveLength(1);
   });
 
-  it("renders canonical settings and edits the stream terminal firewall passthrough policy", async () => {
-    const canonical = await settingsGet();
-    const canonicalKeywords =
-      canonical.upstream_retry_policy.stream_internal_errors.passthrough_keywords;
-    expect(canonicalKeywords).toEqual([DEFAULT_CYBER_PASSTHROUGH_KEYWORD]);
-    render(<Harness initialPolicy={canonical.upstream_retry_policy} />);
+  it("hides Codex stream fields and preserves them while editing common fields", () => {
+    const hiddenStreamPolicy = {
+      enabled: false,
+      passthrough_keywords: ["keep-passthrough"],
+      legacy_retry_keywords: ["keep-legacy"],
+    };
+    render(
+      <Harness
+        initialPolicy={{
+          ...DEFAULT_UPSTREAM_RETRY_POLICY,
+          stream_internal_errors: hiddenStreamPolicy,
+        }}
+      />
+    );
 
     expect(screen.getByText("网络与传输失败")).toBeInTheDocument();
-    expect(screen.getByText("无法与供应商建立连接。")).toBeInTheDocument();
-    expect(screen.getByText("每个供应商最多重试次数")).toBeInTheDocument();
-    expect(screen.queryByLabelText("终态帧透传例外（每行一项）")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
-    expect(screen.getByText(/502 \/ GW_FAKE_200/)).toBeInTheDocument();
-    const passthroughKeywords = screen.getByLabelText("终态帧透传例外（每行一项）");
-    expect(passthroughKeywords).toHaveValue(canonicalKeywords.join("\n"));
-    fireEvent.change(passthroughKeywords, { target: { value: "ticket-123\nvendor oddity" } });
+    expect(screen.getByText("HTTP / 网络共享")).toBeInTheDocument();
+    expect(screen.queryByText("Codex 流终态防火墙")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "启用 Codex 流终态防火墙" })
+    ).not.toBeInTheDocument();
 
-    let edited = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as {
-      stream_internal_errors: {
-        enabled: boolean;
-        passthrough_keywords: string[];
-        legacy_retry_keywords: string[];
-      };
-    };
-    expect(edited.stream_internal_errors).toEqual({
-      enabled: true,
-      passthrough_keywords: ["ticket-123", "vendor oddity"],
-      legacy_retry_keywords: [],
+    const retrySwitches = screen.getAllByRole("switch", { name: "启用瞬时错误重试" });
+    fireEvent.click(retrySwitches[retrySwitches.length - 1] as HTMLElement);
+    const maxRetriesInputs = screen.getAllByLabelText("每个供应商最多重试次数");
+    fireEvent.change(maxRetriesInputs[maxRetriesInputs.length - 1] as HTMLElement, {
+      target: { value: "3" },
     });
 
-    fireEvent.click(screen.getByRole("switch", { name: "启用 Codex 流终态防火墙" }));
-    edited = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as typeof edited;
-    expect(edited.stream_internal_errors.enabled).toBe(false);
-    expect(passthroughKeywords).toBeDisabled();
+    const policyStates = screen.getAllByTestId("policy-state");
+    const edited = JSON.parse(policyStates[policyStates.length - 1]?.textContent ?? "{}") as {
+      stream_internal_errors: typeof hiddenStreamPolicy;
+    };
+    expect(edited.stream_internal_errors).toEqual(hiddenStreamPolicy);
   });
 
-  it("shows migrated retry keywords as a read-only compatibility notice", () => {
-    render(<LegacyKeywordHarness />);
-
-    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
-    expect(screen.getByText(/已迁移 2 条旧版重试词/)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/旧版兼容重试词/)).not.toBeInTheDocument();
+  it("describes the Codex stream budget only when the caller opts in", () => {
+    render(<Harness sharesBudgetWithCodexStreamErrors />);
+    expect(screen.getByText("HTTP / 网络 / 流内部共享")).toBeInTheDocument();
   });
 
   it("allows the backend character limit for astral descriptions", () => {

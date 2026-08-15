@@ -1,12 +1,18 @@
 import type { ComponentProps } from "react";
+import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
 import { cliManagerCodexConfigTomlValidate } from "../../../../services/cli/cliManager";
 import { openDesktopUrl } from "../../../../services/desktop/opener";
 import { activeRequestLogsSnapshot } from "../../../../services/gateway/activeRequests";
+import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../../services/gateway/upstreamRetryPolicy";
+import type { UpstreamRetryPolicy } from "../../../../services/settings/settings";
 import { CliManagerCodexTab } from "../CodexTab";
 import { createTestAppSettings } from "../../../../test/fixtures/settings";
+
+vi.mock("sonner", () => ({ toast: vi.fn() }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   confirm: vi.fn(),
@@ -157,6 +163,58 @@ function renderTab(overrides: Partial<ComponentProps<typeof CliManagerCodexTab>>
   );
 }
 
+function RetrySettingsHarness({
+  initialPolicy,
+  initialGuardMs,
+  persistCommonSettings,
+  codexConfig = null,
+}: {
+  initialPolicy: UpstreamRetryPolicy;
+  initialGuardMs: number;
+  persistCommonSettings: NonNullable<
+    ComponentProps<typeof CliManagerCodexTab>["persistCommonSettings"]
+  >;
+  codexConfig?: ReturnType<typeof createCodexConfig> | null;
+}) {
+  const [policy, setPolicy] = useState(initialPolicy);
+  const [guardMs, setGuardMs] = useState(initialGuardMs);
+
+  return (
+    <>
+      <CliManagerCodexTab
+        codexAvailable={codexConfig ? "available" : "unavailable"}
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={
+          codexConfig
+            ? createCodexInfo()
+            : createCodexInfo({ found: false, executable_path: null, version: null })
+        }
+        codexConfig={codexConfig}
+        codexConfigToml={null}
+        appSettings={createAppSettings({
+          upstream_retry_policy: initialPolicy,
+          stream_internal_error_guard_ms: initialGuardMs,
+        })}
+        upstreamRetryPolicy={policy}
+        setUpstreamRetryPolicy={setPolicy}
+        streamInternalErrorGuardMs={guardMs}
+        setStreamInternalErrorGuardMs={setGuardMs}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCommonSettings={persistCommonSettings}
+      />
+      <output data-testid="retry-policy-state">{JSON.stringify(policy)}</output>
+      <output data-testid="stream-guard-state">{guardMs}</output>
+    </>
+  );
+}
+
 function renderApprovalReviewerSettings({
   reviewer = null,
   policy = "on-request",
@@ -187,6 +245,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     vi.mocked(openDesktopUrl).mockResolvedValue(true);
     vi.mocked(activeRequestLogsSnapshot).mockReset();
     vi.mocked(activeRequestLogsSnapshot).mockResolvedValue([]);
+    vi.mocked(toast).mockReset();
     vi.mocked(cliManagerCodexConfigTomlValidate).mockResolvedValue({
       ok: true,
       error: null,
@@ -736,6 +795,116 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(openDesktopUrl).toHaveBeenCalledWith(
       "https://github.com/nonononull/codex-retry-gateway"
     );
+  });
+
+  it("edits and saves Codex stream settings even when the CLI config is unavailable", async () => {
+    const initialPolicy: UpstreamRetryPolicy = {
+      ...DEFAULT_UPSTREAM_RETRY_POLICY,
+      max_retries: 3,
+      backoff_ms: 250,
+      stream_internal_errors: {
+        ...DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors,
+        passthrough_keywords: ["initial"],
+        legacy_retry_keywords: ["legacy"],
+      },
+    };
+    const canonicalPolicy: UpstreamRetryPolicy = {
+      ...initialPolicy,
+      max_retries: 4,
+      stream_internal_errors: {
+        ...initialPolicy.stream_internal_errors,
+        passthrough_keywords: ["canonical"],
+      },
+    };
+    const persistCommonSettings = vi.fn().mockResolvedValue(
+      createAppSettings({
+        upstream_retry_policy: canonicalPolicy,
+        stream_internal_error_guard_ms: 5000,
+      })
+    );
+
+    render(
+      <RetrySettingsHarness
+        initialPolicy={initialPolicy}
+        initialGuardMs={500}
+        persistCommonSettings={persistCommonSettings}
+      />
+    );
+
+    expect(screen.getByText("数据不可用")).toBeInTheDocument();
+    expect(screen.getByText("Codex 流终态错误设置")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "作用于最终规范化为 Codex Responses wire 的 SSE，包括已规范化的 bridge；非 Codex 请求和未规范化的 bridge 不受影响。"
+      )
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
+    fireEvent.change(screen.getByLabelText("终态帧透传例外（每行一项）"), {
+      target: { value: "updated\noverloaded" },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "流内部错误观察窗口" }), {
+      target: { value: "0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存 Codex 流错误设置" }));
+
+    await waitFor(() =>
+      expect(persistCommonSettings).toHaveBeenCalledWith({
+        upstream_retry_policy: {
+          ...initialPolicy,
+          stream_internal_errors: {
+            ...initialPolicy.stream_internal_errors,
+            passthrough_keywords: ["updated", "overloaded"],
+          },
+        },
+        stream_internal_error_guard_ms: 0,
+      })
+    );
+    await waitFor(() => {
+      expect(screen.getByTestId("retry-policy-state")).toHaveTextContent(
+        JSON.stringify(canonicalPolicy)
+      );
+      expect(screen.getByTestId("stream-guard-state")).toHaveTextContent("5000");
+    });
+  });
+
+  it.each([0, 5000])("accepts the %i ms Codex observation-window boundary", async (guardMs) => {
+    const persistCommonSettings = vi.fn().mockResolvedValue(
+      createAppSettings({
+        upstream_retry_policy: DEFAULT_UPSTREAM_RETRY_POLICY,
+        stream_internal_error_guard_ms: guardMs,
+      })
+    );
+
+    render(
+      <RetrySettingsHarness
+        initialPolicy={DEFAULT_UPSTREAM_RETRY_POLICY}
+        initialGuardMs={guardMs}
+        persistCommonSettings={persistCommonSettings}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "保存 Codex 流错误设置" }));
+
+    await waitFor(() =>
+      expect(persistCommonSettings).toHaveBeenCalledWith({
+        upstream_retry_policy: DEFAULT_UPSTREAM_RETRY_POLICY,
+        stream_internal_error_guard_ms: guardMs,
+      })
+    );
+  });
+
+  it("rejects an out-of-range Codex observation window", () => {
+    const persistCommonSettings = vi.fn();
+    render(
+      <RetrySettingsHarness
+        initialPolicy={DEFAULT_UPSTREAM_RETRY_POLICY}
+        initialGuardMs={5001}
+        persistCommonSettings={persistCommonSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "保存 Codex 流错误设置" }));
+    expect(toast).toHaveBeenCalledWith("流内部错误观察窗口必须为 0-5000 毫秒");
+    expect(persistCommonSettings).not.toHaveBeenCalled();
   });
 
   it("renders unavailable state and keeps a loaded config editable when CLI is unavailable", () => {

@@ -801,6 +801,126 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
   });
 
+  it("shows stream firewall fields only for Codex Provider overrides", async () => {
+    const override: UpstreamRetryPolicy = {
+      ...DEFAULT_UPSTREAM_RETRY_POLICY,
+      stream_internal_errors: {
+        ...DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors,
+        passthrough_keywords: ["initial"],
+      },
+    };
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({
+        id: 5,
+        cli_key: "codex",
+        name: "Codex Retry Provider",
+        upstream_retry_policy_override: override,
+      })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          id: 5,
+          cli_key: "codex",
+          name: "Codex Retry Provider",
+          api_key_configured: true,
+          upstream_retry_policy_override: override,
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("HTTP / 网络 / 流内部共享")).toBeInTheDocument();
+    expect(dialog.getByText("Codex 流终态防火墙")).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
+    fireEvent.change(dialog.getByLabelText("终态帧透传例外（每行一项）"), {
+      target: { value: "capacity\noverloaded" },
+    });
+    expect(
+      dialog.queryByRole("spinbutton", { name: "流内部错误观察窗口" })
+    ).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          upstreamRetryPolicyOverride: expect.objectContaining({
+            stream_internal_errors: {
+              ...override.stream_internal_errors,
+              passthrough_keywords: ["capacity", "overloaded"],
+            },
+          }),
+        })
+      )
+    );
+  });
+
+  it("hides stream firewall fields and preserves hidden data for non-Codex overrides", async () => {
+    const hiddenStreamPolicy = {
+      enabled: false,
+      passthrough_keywords: ["historical-passthrough"],
+      legacy_retry_keywords: ["historical-legacy"],
+    };
+    const existingOverride: UpstreamRetryPolicy = {
+      ...DEFAULT_UPSTREAM_RETRY_POLICY,
+      max_retries: 1,
+      stream_internal_errors: hiddenStreamPolicy,
+    };
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({
+        id: 6,
+        cli_key: "gemini",
+        name: "Gemini Retry Provider",
+        upstream_retry_policy_override: { ...existingOverride, max_retries: 2 },
+      })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          id: 6,
+          cli_key: "gemini",
+          name: "Gemini Retry Provider",
+          api_key_configured: true,
+          upstream_retry_policy_override: existingOverride,
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("HTTP / 网络共享")).toBeInTheDocument();
+    expect(dialog.queryByText("Codex 流终态防火墙")).not.toBeInTheDocument();
+    expect(
+      dialog.queryByRole("switch", { name: "启用 Codex 流终态防火墙" })
+    ).not.toBeInTheDocument();
+    fireEvent.change(dialog.getByLabelText("每个供应商最多重试次数"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 6,
+          upstreamRetryPolicyOverride: {
+            ...existingOverride,
+            max_retries: 2,
+            stream_internal_errors: hiddenStreamPolicy,
+          },
+        })
+      )
+    );
+  });
+
   it("clears an existing retry policy override when the override section is disabled", async () => {
     vi.mocked(providerUpsert).mockResolvedValue(
       makeProvider({

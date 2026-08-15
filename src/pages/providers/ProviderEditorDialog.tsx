@@ -20,6 +20,7 @@ import { ProviderAccountUsageSection } from "./ProviderAccountUsageSection";
 import { LimitsSection } from "./LimitsSection";
 import { ClaudeModelSection } from "./ClaudeModelSection";
 import { RetryPolicyFields } from "../../components/gateway/RetryPolicyFields";
+import { CodexStreamInternalErrorFields } from "../../components/gateway/CodexStreamInternalErrorFields";
 import { ModelRoutingPolicyFields } from "../../components/gateway/ModelRoutingPolicyFields";
 import { cn } from "../../utils/cn";
 import { ContributionSlot } from "../../plugins/contributions/ContributionSlot";
@@ -259,7 +260,21 @@ function ProviderRetryPolicySection({ form }: { form: ReturnType<typeof useProvi
       </div>
       {enabled ? (
         <div className="space-y-4 border-t border-border px-4 py-4">
-          <RetryPolicyFields policy={policy} disabled={form.saving} onChange={updatePolicy} />
+          <RetryPolicyFields
+            policy={policy}
+            disabled={form.saving}
+            onChange={updatePolicy}
+            sharesBudgetWithCodexStreamErrors={form.cliKey === "codex"}
+          />
+          {form.cliKey === "codex" ? (
+            <CodexStreamInternalErrorFields
+              policy={policy.stream_internal_errors}
+              disabled={form.saving}
+              onChange={(streamPolicy) =>
+                updatePolicy({ ...policy, stream_internal_errors: streamPolicy })
+              }
+            />
+          ) : null}
         </div>
       ) : null}
     </div>
