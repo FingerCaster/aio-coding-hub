@@ -1,0 +1,46 @@
+{
+  "id": "cx2cc-client-usage-normalization",
+  "name": "cx2cc-client-usage-normalization",
+  "title": "Normalize CX2CC client-visible usage",
+  "description": "Normalize OpenAI Responses inclusive cached input tokens into mutually exclusive Anthropic client-visible usage while preserving raw provider usage.",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "src-tauri CX2CC Responses usage translation, raw/client accounting, and task-local records",
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "Codex",
+  "assignee": "Codex",
+  "createdAt": "2026-08-15",
+  "completedAt": "2026-08-15",
+  "branch": "FingerCaster/beta8-cx2cc-usage-normalization",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src-tauri/src/domain/usage.rs",
+    "src-tauri/src/gateway/proxy/protocol_bridge/outbound/openai_responses.rs",
+    "src-tauri/src/gateway/proxy/protocol_bridge/bridge.rs",
+    "src-tauri/src/gateway/proxy/handler/failover_loop/response/success_non_stream.rs",
+    "src-tauri/src/gateway/proxy/handler/failover_loop/response/success_event_stream.rs",
+    "src-tauri/src/gateway/streams/usage_tee.rs",
+    "src-tauri/src/gateway/streams/request_end.rs"
+  ],
+  "notes": "Shared .trellis/spec updates are owned by the parent integration worktree and were intentionally not duplicated here. No DB migration, upstream operation, push, continuation-repair change, or workspace journal write.",
+  "meta": {
+    "validation": [
+      "cargo test --manifest-path src-tauri/Cargo.toml --lib protocol_bridge",
+      "cargo test --manifest-path src-tauri/Cargo.toml --lib domain::usage",
+      "cargo test --manifest-path src-tauri/Cargo.toml --lib usage_tee",
+      "cargo test --manifest-path src-tauri/Cargo.toml --lib success_non_stream",
+      "cargo test --manifest-path src-tauri/Cargo.toml --lib success_event_stream",
+      "cargo test --manifest-path src-tauri/Cargo.toml --lib request_end",
+      "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+      "cargo clippy --manifest-path src-tauri/Cargo.toml --lib --tests -- -D warnings",
+      "git diff --check"
+    ]
+  }
+}

@@ -195,6 +195,7 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) provider_name: String,
     pub(in crate::gateway) base_url: String,
     pub(in crate::gateway) auth_mode: String,
+    pub(in crate::gateway) use_upstream_usage_metrics: bool,
     pub(in crate::gateway) upstream_route_tracker: Arc<Mutex<crate::usage::SseUsageTracker>>,
     pub(in crate::gateway) observed_upstream_model: Arc<Mutex<Option<String>>>,
     pub(in crate::gateway) observed_upstream_conflicting_model: Arc<Mutex<Option<String>>>,

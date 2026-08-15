@@ -139,11 +139,18 @@ impl Bridge {
             }
         }
 
+        // Synthesized SSE reports input/cache once in message_start. Real
+        // upstream streams retain their provider-defined event placement.
+        let output_usage = IRUsage {
+            output_tokens: ir.usage.output_tokens,
+            ..IRUsage::default()
+        };
+
         // message_delta + message_stop
         for b in self.inbound.ir_chunk_to_sse(
             &IRStreamChunk::MessageDelta {
                 stop_reason: ir.stop_reason,
-                usage: ir.usage,
+                usage: output_usage,
             },
             ctx,
         )? {

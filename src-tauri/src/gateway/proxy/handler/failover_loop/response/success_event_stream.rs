@@ -1256,6 +1256,25 @@ fn buffered_provider_failure_reason(error_code: &str, quota_exhausted: bool) -> 
     }
 }
 
+fn finalize_provider_usage(
+    provider_usage_cli_key: Option<&str>,
+    tracker: &Arc<Mutex<usage::SseUsageTracker>>,
+) -> Option<usage::UsageExtract> {
+    provider_usage_cli_key?;
+    let mut tracker = match tracker.lock() {
+        Ok(tracker) => tracker,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    tracker.finalize()
+}
+
+fn accounting_usage<'a>(
+    provider_usage: Option<&'a usage::UsageExtract>,
+    client_usage: Option<&'a usage::UsageExtract>,
+) -> Option<&'a usage::UsageExtract> {
+    provider_usage.or(client_usage)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_infinite_buffered_event_stream<R>(
     ctx: CommonCtx<'_, R>,
@@ -1312,6 +1331,21 @@ where
         should_gunzip && !decode_gzip_before_guard,
     );
     let upstream = gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+    let provider_usage_cli_key = protocol_bridge::provider_usage_cli_key(active_bridge_type);
+    let upstream_usage_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new(
+        provider_usage_cli_key.unwrap_or(common.cli_key.as_str()),
+    )));
+    let upstream: DecodedEventStream = if provider_usage_cli_key.is_some() {
+        Box::pin(UpstreamModelObserverStream::new(
+            upstream,
+            Arc::clone(&upstream_usage_tracker),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
+        ))
+    } else {
+        Box::pin(upstream)
+    };
     let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
         upstream,
         active_bridge_type,
@@ -1416,8 +1450,16 @@ where
         }
     };
 
-    let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &final_bytes);
-    observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, usage.as_ref(), None);
+    let client_usage =
+        usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &final_bytes);
+    let provider_usage = finalize_provider_usage(provider_usage_cli_key, &upstream_usage_tracker);
+    observe_infinite_attempt_usage(
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        accounting_usage(provider_usage.as_ref(), client_usage.as_ref()),
+        None,
+    );
 
     if let Err(reason) = crate::gateway::streams::validate_complete_codex_sse(
         final_bytes.as_ref(),
@@ -1519,7 +1561,8 @@ where
         &common.special_settings,
     );
 
-    let usage_metrics = usage.as_ref().map(|value| value.metrics.clone());
+    let usage_metrics = accounting_usage(provider_usage.as_ref(), client_usage.as_ref())
+        .map(|value| value.metrics.clone());
     let requested_model_for_log = resolve_requested_model_for_log(
         requested_model_for_audit(
             &common.special_settings,
@@ -1604,7 +1647,7 @@ where
                 Some(duration_ms),
                 usage_metrics,
                 infinite_terminal.log_usage_metrics,
-                usage,
+                client_usage,
             )
             .with_log_cost_usd_femto(infinite_terminal.log_cost_usd_femto)
             .with_log_activity_details_json(infinite_terminal.activity_details_json),
@@ -2269,6 +2312,7 @@ where
                 common.cli_key.as_str(),
                 common.forwarded_path.as_str(),
             ),
+            active_bridge_type,
         );
 
         let enable_response_fixer_for_this_response =
@@ -2417,26 +2461,29 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_bounded_final_wire, effective_terminal_failure_status,
-        inspect_buffered_event_stream_prefix, is_codex_responses_event_stream_path,
-        is_native_codex_responses_event_stream_path, mark_last_stream_attempt_terminal_failure,
-        next_event_stream_chunk, probe_first_event_stream_chunk,
-        resolve_effective_stream_idle_timeout, resolve_requested_model_for_log,
-        BufferedFinalWireError, BufferedStreamPrefixConfig, BufferedStreamPrefixDecision,
-        BufferedStreamPrefixState, DecodedEventStream, FirstChunkProbe,
-        INFINITE_FINAL_WIRE_WALL_CLOCK_CAP, MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
+        accounting_usage, collect_bounded_final_wire, effective_terminal_failure_status,
+        finalize_provider_usage, inspect_buffered_event_stream_prefix,
+        is_codex_responses_event_stream_path, is_native_codex_responses_event_stream_path,
+        mark_last_stream_attempt_terminal_failure, next_event_stream_chunk,
+        probe_first_event_stream_chunk, resolve_effective_stream_idle_timeout,
+        resolve_requested_model_for_log, BufferedFinalWireError, BufferedStreamPrefixConfig,
+        BufferedStreamPrefixDecision, BufferedStreamPrefixState, DecodedEventStream,
+        FirstChunkProbe, INFINITE_FINAL_WIRE_WALL_CLOCK_CAP, MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
         MIN_SUPPORTED_PATH_TTFB,
     };
     use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
     use crate::gateway::events::FailoverAttempt;
-    use crate::gateway::infinite_retry::CODEX_RESPONSES_PATH_CONTRACTS;
+    use crate::gateway::infinite_retry::{
+        AttemptKey, FailureCategory, InfiniteRetryLedger, UsageSample,
+        CODEX_RESPONSES_PATH_CONTRACTS,
+    };
     use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
     use axum::body::Bytes;
     use axum::http::StatusCode;
     use futures_core::Stream;
     use std::collections::HashMap;
     use std::pin::Pin;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
     use std::time::Duration;
 
@@ -2487,6 +2534,58 @@ mod tests {
         )
         .await;
         assert!(matches!(ordinary_probe, FirstChunkProbe::Timeout));
+    }
+
+    #[test]
+    fn infinite_buffered_cx2cc_ledger_uses_raw_provider_usage() {
+        let raw_tracker = Arc::new(Mutex::new(crate::usage::SseUsageTracker::new("codex")));
+        raw_tracker
+            .lock()
+            .expect("raw tracker lock")
+            .ingest_chunk(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":100,\"output_tokens\":10,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":80}}}}\n\n",
+            );
+        let provider_usage =
+            finalize_provider_usage(Some("codex"), &raw_tracker).expect("raw provider usage");
+
+        let client_usage = crate::usage::parse_usage_from_json_or_sse_bytes(
+            "claude",
+            b"event: message_start\n\
+              data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n\
+              event: message_delta\n\
+              data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10,\"cache_read_input_tokens\":80}}\n\n\
+              event: message_stop\n\
+              data: {\"type\":\"message_stop\"}\n\n",
+        )
+        .expect("client usage");
+        assert_eq!(client_usage.metrics.input_tokens, Some(20));
+        assert_eq!(client_usage.metrics.cache_read_input_tokens, Some(80));
+
+        let selected =
+            accounting_usage(Some(&provider_usage), Some(&client_usage)).expect("accounting usage");
+        let mut ledger = InfiniteRetryLedger::default();
+        ledger.start_round(false);
+        let key = AttemptKey::new(7, 0, 1);
+        ledger.observe_attempt_usage(
+            key,
+            Some(UsageSample::from_metrics(&selected.metrics)),
+            None,
+        );
+        assert!(ledger.record_attempt_once(
+            key,
+            "provider",
+            Some(200),
+            "success",
+            FailureCategory::Success,
+            1,
+        ));
+
+        let metrics = ledger.usage_metrics().expect("ledger usage metrics");
+        assert_eq!(metrics.input_tokens, Some(100));
+        assert_eq!(metrics.output_tokens, Some(10));
+        assert_eq!(metrics.total_tokens, Some(110));
+        assert_eq!(metrics.cache_read_input_tokens, Some(80));
     }
 
     fn native_prefix_config(

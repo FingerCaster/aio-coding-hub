@@ -409,11 +409,14 @@ impl UsageSemantics {
     }
 }
 
-const OPENAI_CACHE_CREATION_ALIASES: [&str; 8] = [
+const OPENAI_CACHE_CREATION_TOP_LEVEL_ALIASES: [&str; 4] = [
     "/cache_creation_input_tokens",
     "/cache_write_input_tokens",
     "/cache_creation_tokens",
     "/cache_write_tokens",
+];
+
+const OPENAI_CACHE_CREATION_DETAIL_ALIASES: [&str; 4] = [
     "/input_tokens_details/cache_creation_tokens",
     "/input_tokens_details/cache_write_tokens",
     "/prompt_tokens_details/cache_creation_tokens",
@@ -463,10 +466,13 @@ fn nested_object_i64(
     })
 }
 
-pub(crate) fn extract_openai_cache_creation_input_tokens(value: &Value) -> Option<i64> {
+fn extract_openai_cache_creation_input_tokens_from_aliases<'a>(
+    value: &Value,
+    aliases: impl IntoIterator<Item = &'a &'static str>,
+) -> Option<i64> {
     let mut saw_zero = false;
 
-    for pointer in OPENAI_CACHE_CREATION_ALIASES {
+    for pointer in aliases {
         let Some(tokens) = as_i64(value.pointer(pointer)).filter(|tokens| *tokens >= 0) else {
             continue;
         };
@@ -477,6 +483,22 @@ pub(crate) fn extract_openai_cache_creation_input_tokens(value: &Value) -> Optio
     }
 
     saw_zero.then_some(0)
+}
+
+pub(crate) fn extract_openai_cache_creation_input_tokens(value: &Value) -> Option<i64> {
+    extract_openai_cache_creation_input_tokens_from_aliases(
+        value,
+        OPENAI_CACHE_CREATION_TOP_LEVEL_ALIASES
+            .iter()
+            .chain(OPENAI_CACHE_CREATION_DETAIL_ALIASES.iter()),
+    )
+}
+
+pub(crate) fn extract_openai_detail_cache_creation_input_tokens(value: &Value) -> Option<i64> {
+    extract_openai_cache_creation_input_tokens_from_aliases(
+        value,
+        OPENAI_CACHE_CREATION_DETAIL_ALIASES.iter(),
+    )
 }
 
 fn has_any_metric(metrics: &UsageMetrics) -> bool {

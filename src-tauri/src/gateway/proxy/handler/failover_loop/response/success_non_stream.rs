@@ -749,6 +749,7 @@ where
                     status.as_u16(),
                     attempt_started,
                     false,
+                    active_bridge_type,
                 );
 
                 if should_gunzip {
@@ -849,6 +850,7 @@ where
                     status.as_u16(),
                     attempt_started,
                     false,
+                    active_bridge_type,
                 );
 
                 if should_gunzip {
@@ -1340,13 +1342,16 @@ where
         .active_requested_model
         .clone()
         .or_else(|| common.requested_model.clone());
-    let pre_bridge_usage = common
-        .provider_health_mode
-        .bypasses_circuit()
-        .then(|| {
-            usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), body_bytes.as_ref())
-        })
-        .flatten();
+    let provider_usage_cli_key = protocol_bridge::provider_usage_cli_key(active_bridge_type);
+    let provider_usage = (provider_usage_cli_key.is_some()
+        || common.provider_health_mode.bypasses_circuit())
+    .then(|| {
+        usage::parse_usage_from_json_or_sse_bytes(
+            provider_usage_cli_key.unwrap_or(common.cli_key.as_str()),
+            body_bytes.as_ref(),
+        )
+    })
+    .flatten();
     match translate_bridge_non_stream_body(
         active_bridge_type,
         anthropic_stream_requested,
@@ -1397,7 +1402,7 @@ where
                     ctx,
                     provider_ctx,
                     attempt_ctx,
-                    pre_bridge_usage.as_ref(),
+                    provider_usage.as_ref(),
                     None,
                 );
                 return record_infinite_transform_failure(
@@ -1766,9 +1771,16 @@ where
         }
     }
 
-    let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+    let client_usage =
+        usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     if defer_success_commit {
-        observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, usage.as_ref(), None);
+        observe_infinite_attempt_usage(
+            ctx,
+            provider_ctx,
+            attempt_ctx,
+            provider_usage.as_ref().or(client_usage.as_ref()),
+            None,
+        );
         let validation_error = if body_bytes.len() > MAX_NON_SSE_BODY_BYTES {
             Some((
                 GatewayErrorCode::UpstreamBodyReadError.as_str(),
@@ -1858,7 +1870,10 @@ where
         );
     }
 
-    let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
+    let usage_metrics = provider_usage
+        .as_ref()
+        .or(client_usage.as_ref())
+        .map(|usage| usage.metrics.clone());
     let requested_model_for_log = if common.managed_model_route.is_some()
         || response_fixer::has_configured_model_route(&common.special_settings)
     {
@@ -1998,7 +2013,7 @@ where
             Some(duration_ms),
             usage_metrics,
             infinite_terminal.log_usage_metrics,
-            usage,
+            client_usage,
         )
         .with_log_cost_usd_femto(infinite_terminal.log_cost_usd_femto)
         .with_log_activity_details_json(infinite_terminal.activity_details_json)
@@ -2572,10 +2587,15 @@ mod tests {
                 }
             ],
             "usage": {
-                "input_tokens": 11,
-                "output_tokens": 7
+                "input_tokens": 100,
+                "output_tokens": 7,
+                "total_tokens": 107,
+                "input_tokens_details": {"cached_tokens": 80}
             }
         });
+        let provider_bytes = serde_json::to_vec(&openai_body).unwrap();
+        let provider_usage = usage::parse_usage_from_json_or_sse_bytes("codex", &provider_bytes)
+            .expect("raw provider usage should remain available for accounting");
         let mut headers = HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
@@ -2597,8 +2617,11 @@ mod tests {
         let model = usage::parse_model_from_json_or_sse_bytes("claude", body.as_ref())
             .expect("translated SSE should retain model for request logging");
 
-        assert_eq!(usage.metrics.input_tokens, Some(11));
+        assert_eq!(provider_usage.metrics.input_tokens, Some(100));
+        assert_eq!(provider_usage.metrics.cache_read_input_tokens, Some(80));
+        assert_eq!(usage.metrics.input_tokens, Some(20));
         assert_eq!(usage.metrics.output_tokens, Some(7));
+        assert_eq!(usage.metrics.cache_read_input_tokens, Some(80));
         assert_eq!(model, "claude-opus-4-6");
     }
 }
