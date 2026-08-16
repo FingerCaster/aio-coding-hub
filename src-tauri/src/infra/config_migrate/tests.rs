@@ -395,17 +395,307 @@ fn config_export_always_serializes_stable_update_channel() {
     let app = test_app.handle();
     let mut beta = settings::read(&app).expect("settings");
     beta.update_channel = settings::UpdateChannel::Beta;
+    beta.codex_gpt56_372k_context_enabled = true;
     settings::write(&app, &beta).expect("seed beta settings");
 
     let bundle = config_export(&app, &test_app.db).expect("config export");
     let exported: settings::AppSettings =
         serde_json::from_str(&bundle.settings).expect("exported settings");
     assert_eq!(exported.update_channel, settings::UpdateChannel::Stable);
+    assert!(!exported.codex_gpt56_372k_context_enabled);
+    assert!(
+        settings::read(&app)
+            .expect("canonical settings after export")
+            .codex_gpt56_372k_context_enabled
+    );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&bundle.settings).expect("exported json")
             ["update_channel"],
         serde_json::json!("stable")
     );
+}
+
+#[test]
+fn config_import_does_not_own_codex_372k_policy() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous settings");
+    assert!(!previous.codex_gpt56_372k_context_enabled);
+
+    let mut imported = previous.clone();
+    imported.codex_gpt56_372k_context_enabled = true;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(1);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+
+    config_import(&app, &test_app.db, bundle).expect("import ordinary settings");
+
+    let canonical = settings::read(&app).expect("canonical after import");
+    assert!(!canonical.codex_gpt56_372k_context_enabled);
+    assert_eq!(canonical.log_retention_days, imported.log_retention_days);
+}
+
+#[test]
+fn config_import_rejects_codex_home_change_while_372k_policy_is_enabled() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let old_codex_home = test_app.home.path().join("codex-372k-old");
+    let new_codex_home = test_app.home.path().join("codex-372k-new");
+
+    let mut previous = settings::read(&app).expect("previous settings");
+    previous.codex_home_mode = settings::CodexHomeMode::Custom;
+    previous.codex_home_override = old_codex_home.to_string_lossy().into_owned();
+    previous.codex_gpt56_372k_context_enabled = true;
+    settings::write(&app, &previous).expect("seed active 372K policy");
+    let workspace_before = {
+        let conn = test_app
+            .db
+            .open_connection()
+            .expect("open db before import");
+        query_workspace(&conn, "codex")
+    };
+    assert!(!new_codex_home.exists());
+
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut imported = previous.clone();
+    imported.codex_gpt56_372k_context_enabled = false;
+    imported.codex_home_mode = settings::CodexHomeMode::Custom;
+    imported.codex_home_override = new_codex_home.to_string_lossy().into_owned();
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("active 372K policy must block imported Codex home changes");
+
+    assert_eq!(error.code(), "CODEX_GPT56_372K_CONTEXT_HOME_CHANGE_BLOCKED");
+    let canonical = settings::read(&app).expect("canonical after rejected import");
+    assert_eq!(
+        serde_json::to_value(canonical).expect("canonical settings json"),
+        serde_json::to_value(previous).expect("previous settings json")
+    );
+    let workspace_after = {
+        let conn = test_app.db.open_connection().expect("open db after import");
+        query_workspace(&conn, "codex")
+    };
+    assert_eq!(workspace_after, workspace_before);
+    assert!(!new_codex_home.exists());
+}
+
+fn write_codex_home_files(home: &Path, config: &str, auth: &str) {
+    std::fs::create_dir_all(home).expect("create Codex home");
+    std::fs::write(home.join("config.toml"), config).expect("write Codex config");
+    std::fs::write(home.join("auth.json"), auth).expect("write Codex auth");
+}
+
+#[test]
+fn config_import_rebinds_enabled_codex_proxy_when_inactive_policy_changes_home() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let old_codex_home = test_app.home.path().join("codex-proxy-old");
+    let new_codex_home = test_app.home.path().join("codex-proxy-new");
+    let old_config = "model = \"old-direct\"\n[old]\nmarker = true\n";
+    let old_auth = "{\"profile\":\"old\",\"tokens\":{\"access\":\"old\"}}\n";
+    let new_config = "model = \"new-direct\"\n[new]\nmarker = true\n";
+    let new_auth = "{\"profile\":\"new\",\"tokens\":{\"access\":\"new\"}}\n";
+
+    let mut previous = settings::read(&app).expect("previous settings");
+    previous.codex_home_mode = settings::CodexHomeMode::Custom;
+    previous.codex_home_override = old_codex_home.to_string_lossy().into_owned();
+    previous.codex_gpt56_372k_context_enabled = false;
+    settings::write(&app, &previous).expect("set old Codex home");
+    write_codex_home_files(&old_codex_home, old_config, old_auth);
+    let base_origin = crate::gateway::planned_base_url(&previous).expect("planned base origin");
+    let enabled = crate::cli_proxy::set_enabled(&app, "codex", true, &base_origin)
+        .expect("enable Codex proxy");
+    assert!(enabled.ok, "{enabled:?}");
+    let old_proxy_config =
+        std::fs::read(old_codex_home.join("config.toml")).expect("read old proxy projection");
+    let old_proxy_auth =
+        std::fs::read(old_codex_home.join("auth.json")).expect("read old proxy auth");
+
+    write_codex_home_files(&new_codex_home, new_config, new_auth);
+    let mut imported = previous.clone();
+    imported.codex_home_override = new_codex_home.to_string_lossy().into_owned();
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+
+    crate::codex_managed_profiles::reset_profile_lifecycle_lock_attempts_for_test();
+    config_import(&app, &test_app.db, bundle).expect("import with enabled Codex proxy");
+
+    assert_eq!(
+        crate::codex_managed_profiles::profile_lifecycle_lock_attempts_for_test(),
+        1,
+        "config import must not re-enter the Profile lifecycle lock"
+    );
+    let canonical = settings::read(&app).expect("canonical settings");
+    assert_eq!(
+        crate::codex_paths::codex_home_dir_for_settings(&app, &canonical)
+            .expect("canonical Codex home"),
+        new_codex_home
+    );
+    assert!(!canonical.codex_gpt56_372k_context_enabled);
+
+    let baseline = crate::cli_proxy::codex_enabled_proxy_baseline(&app)
+        .expect("read rebound baseline")
+        .expect("enabled Codex baseline");
+    assert_eq!(baseline.config_path, new_codex_home.join("config.toml"));
+    assert_eq!(
+        baseline.config_bytes.as_deref(),
+        Some(new_config.as_bytes())
+    );
+    let rebound_config =
+        std::fs::read_to_string(new_codex_home.join("config.toml")).expect("read rebound config");
+    assert!(rebound_config.contains("[new]"), "{rebound_config}");
+    assert!(
+        !rebound_config.contains("model_catalog_json"),
+        "{rebound_config}"
+    );
+    assert!(
+        !rebound_config.contains("model_provider = \"aio\""),
+        "{rebound_config}"
+    );
+    assert_eq!(
+        std::fs::read(new_codex_home.join("auth.json")).expect("new auth"),
+        new_auth.as_bytes()
+    );
+    let restored_old_config = std::fs::read_to_string(old_codex_home.join("config.toml"))
+        .expect("read restored old config");
+    assert_eq!(
+        restored_old_config.trim_end(),
+        String::from_utf8(old_proxy_config)
+            .expect("old proxy config UTF-8")
+            .trim_end()
+    );
+    assert_eq!(
+        std::fs::read(old_codex_home.join("auth.json")).expect("old auth"),
+        old_proxy_auth
+    );
+}
+
+#[test]
+fn config_import_runtime_failure_rolls_back_codex_home_rebind() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let old_codex_home = test_app.home.path().join("codex-rollback-old");
+    let new_codex_home = test_app.home.path().join("codex-rollback-new");
+    let old_config = "model = \"old-direct\"\n[old]\nmarker = true\n";
+    let old_auth = "{\"profile\":\"old\",\"tokens\":{\"access\":\"old\"}}\n";
+    let new_config = "model = \"new-direct\"\n[new]\nmarker = true\n";
+    let new_auth = "{\"profile\":\"new\",\"tokens\":{\"access\":\"new\"}}\n";
+
+    let mut previous = settings::read(&app).expect("previous settings");
+    previous.codex_home_mode = settings::CodexHomeMode::Custom;
+    previous.codex_home_override = old_codex_home.to_string_lossy().into_owned();
+    settings::write(&app, &previous).expect("set old Codex home");
+    write_codex_home_files(&old_codex_home, old_config, old_auth);
+    let base_origin = crate::gateway::planned_base_url(&previous).expect("planned base origin");
+    let enabled = crate::cli_proxy::set_enabled(&app, "codex", true, &base_origin)
+        .expect("enable Codex proxy");
+    assert!(enabled.ok, "{enabled:?}");
+    let old_proxy_config =
+        std::fs::read(old_codex_home.join("config.toml")).expect("read old proxy projection");
+    let old_proxy_auth =
+        std::fs::read(old_codex_home.join("auth.json")).expect("read old proxy auth");
+    let old_baseline = crate::cli_proxy::codex_enabled_proxy_baseline(&app)
+        .expect("read old baseline")
+        .expect("old enabled baseline");
+
+    write_codex_home_files(&new_codex_home, new_config, new_auth);
+    let mut imported = previous.clone();
+    imported.codex_home_override = new_codex_home.to_string_lossy().into_owned();
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+    let mut runtime_sync_calls = 0usize;
+    set_config_import_cli_runtime_sync_test_hook(Box::new(move || {
+        runtime_sync_calls += 1;
+        (runtime_sync_calls == 1)
+            .then(|| "forced runtime failure after Codex home rebind".to_string())
+    }));
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("runtime failure must roll back Codex home rebind");
+    clear_config_import_cli_runtime_sync_test_hook();
+    assert_eq!(error.code(), "INTERNAL_ERROR");
+    assert!(
+        error
+            .to_string()
+            .contains("forced runtime failure after Codex home rebind"),
+        "unexpected import error: {error}"
+    );
+    let canonical = settings::read(&app).expect("rolled-back settings");
+    assert_eq!(canonical.codex_home_override, previous.codex_home_override);
+    let baseline = crate::cli_proxy::codex_enabled_proxy_baseline(&app)
+        .expect("read restored baseline")
+        .expect("restored enabled baseline");
+    assert_eq!(baseline.config_path, old_baseline.config_path);
+    assert_eq!(baseline.config_bytes, old_baseline.config_bytes);
+    let restored_old_config = std::fs::read_to_string(old_codex_home.join("config.toml"))
+        .expect("read restored old config");
+    assert_eq!(
+        restored_old_config.trim_end(),
+        String::from_utf8(old_proxy_config)
+            .expect("old proxy config UTF-8")
+            .trim_end()
+    );
+    assert_eq!(
+        std::fs::read(old_codex_home.join("auth.json")).expect("old auth"),
+        old_proxy_auth
+    );
+    assert_eq!(
+        std::fs::read(new_codex_home.join("config.toml")).expect("new config"),
+        new_config.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(new_codex_home.join("auth.json")).expect("new auth"),
+        new_auth.as_bytes()
+    );
+}
+
+#[test]
+fn config_import_failure_promotes_compensation_error_codes() {
+    let import_recovery = config_import_failure(
+        AppError::new("DB_ERROR", "primary failure"),
+        None,
+        None,
+        Some(AppError::new(
+            "CONFIG_IMPORT_RECOVERY_REQUIRED",
+            "settings rollback failed",
+        )),
+    );
+    assert_eq!(import_recovery.code(), "CONFIG_IMPORT_RECOVERY_REQUIRED");
+    assert!(import_recovery
+        .to_string()
+        .contains("DB_ERROR: primary failure"));
+    assert!(import_recovery
+        .to_string()
+        .contains("settings rollback failed"));
+
+    let catalog_recovery = config_import_failure(
+        AppError::new("INTERNAL_ERROR", "runtime sync failed"),
+        Some(AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "catalog rollback failed",
+        )),
+        None,
+        None,
+    );
+    assert_eq!(
+        catalog_recovery.code(),
+        "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED"
+    );
+    assert!(catalog_recovery
+        .to_string()
+        .contains("catalog rollback failed"));
+
+    let proxy_recovery = config_import_failure(
+        AppError::new(
+            "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+            "proxy rebind rollback failed",
+        ),
+        None,
+        None,
+        None,
+    );
+    assert_eq!(proxy_recovery.code(), "CLI_PROXY_REBIND_RECOVERY_REQUIRED");
 }
 
 #[test]
@@ -2210,6 +2500,7 @@ fn rollback_aggregates_settings_autostart_runtime_and_live_root_failures() {
     clear_config_import_cli_runtime_sync_test_hook();
 
     let message = error.to_string();
+    assert_eq!(error.code(), "CONFIG_IMPORT_RECOVERY_REQUIRED");
     assert!(
         message.contains("CONFIG_IMPORT_RECOVERY_REQUIRED"),
         "{message}"

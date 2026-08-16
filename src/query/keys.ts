@@ -310,6 +310,7 @@ export const cliManagerKeys = {
   codexInfo: () => [...cliManagerAllKey, "codex", "info"] as const,
   codexConfig: () => [...cliManagerAllKey, "codex", "config"] as const,
   codexConfigToml: () => [...cliManagerAllKey, "codex", "configToml"] as const,
+  codexModelCatalogAll: () => codexModelCatalogAllKey,
   codexModelCatalog: (snapshot?: {
     configPath?: string | null;
     executablePath?: string | null;

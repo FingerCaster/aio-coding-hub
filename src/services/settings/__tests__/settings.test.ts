@@ -142,6 +142,7 @@ describe("services/settings/settings", () => {
     expect(Object.keys(input).filter((key) => key.includes("ReasoningGuard"))).toEqual([]);
     expect(input).not.toHaveProperty("cx2ccFallbackModelMain");
     expect(input).not.toHaveProperty("codex_oauth_compatible_proxy_mode");
+    expect(input).not.toHaveProperty("codexGpt56372kContextEnabled");
     expect(input).not.toHaveProperty("updateChannel");
   });
 
@@ -266,6 +267,21 @@ describe("services/settings/settings", () => {
     const sentPatch = calls[calls.length - 1]?.[1]?.patch as Record<string, unknown>;
     expect(sentPatch).not.toHaveProperty("updateChannel");
     expect(sentPatch).not.toHaveProperty("update_channel");
+    expect(Object.values(sentPatch).every((value) => value === null)).toBe(true);
+  });
+
+  it("never forwards the Codex 372K policy through the ordinary settings writer", async () => {
+    setTauriRuntime();
+    vi.resetModules();
+    vi.mocked(tauriInvoke).mockResolvedValue({ schema_version: 64 } as any);
+
+    const { settingsPatch } = await import("../settings");
+    await settingsPatch(createTestAppSettings(), { codex_gpt56_372k_context_enabled: true } as any);
+
+    const calls = vi.mocked(tauriInvoke).mock.calls;
+    const sentPatch = calls[calls.length - 1]?.[1]?.patch as Record<string, unknown>;
+    expect(sentPatch).not.toHaveProperty("codexGpt56372kContextEnabled");
+    expect(sentPatch).not.toHaveProperty("codex_gpt56_372k_context_enabled");
     expect(Object.values(sentPatch).every((value) => value === null)).toBe(true);
   });
 

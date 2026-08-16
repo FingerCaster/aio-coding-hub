@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use super::{
     apply_proxy_config, build_manifest_from_captured, build_manifest_with_current_target_paths,
-    capture_current_target_state, read_cli_proxy_file, read_optional_cli_proxy_file,
-    restore_file_snapshots, snapshot_backup_files, snapshot_target_files, write_captured_backups,
-    write_cli_proxy_file_atomic, write_manifest, CliProxyResult, PLACEHOLDER_KEY,
+    capture_current_target_state, codex_manifest_snapshot, expected_codex_manifest_snapshot,
+    read_cli_proxy_file, read_optional_cli_proxy_file, restore_file_snapshot_conditionally,
+    write_captured_backups, write_cli_proxy_file_atomic, write_manifest, AppliedProxyConfig,
+    CliProxyResult, FileSnapshot, PLACEHOLDER_KEY,
 };
 
 pub(super) fn codex_config_path<R: tauri::Runtime>(
@@ -75,10 +76,12 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
     mut manifest: super::CliProxyManifest,
     base_origin: &str,
     apply_live: bool,
+    sync_catalog: bool,
     trace_id: String,
 ) -> AppResult<CliProxyResult> {
     let captured = capture_current_target_state(app, "codex")?;
     let previous_manifest = manifest.clone();
+    let manifest_before = codex_manifest_snapshot(app)?;
     let target_already_proxy_managed = is_proxy_config_applied(app, base_origin)
         || previous_manifest
             .base_origin
@@ -96,56 +99,103 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
     };
 
     if target_already_proxy_managed {
-        let target_snapshots = snapshot_target_files(&captured)?;
         manifest = build_manifest_with_current_target_paths(app, &manifest, base_origin)?;
+        let manifest_committed = expected_codex_manifest_snapshot(app, &manifest)?;
 
         if let Err(err) = write_manifest(app, "codex", &manifest) {
+            let rollback = restore_file_snapshot_conditionally(
+                &manifest_before,
+                &manifest_committed,
+                super::CLI_PROXY_MANIFEST_MAX_BYTES,
+            );
+            let (code, message) = match rollback {
+                Ok(()) => ("CLI_PROXY_REBIND_MANIFEST_WRITE_FAILED", err.to_string()),
+                Err(rollback_error) => (
+                    "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                    format!("{err}; rollback failed: {rollback_error}"),
+                ),
+            };
             return Ok(CliProxyResult::failure(
-                trace_id,
-                "codex",
-                true,
-                "CLI_PROXY_REBIND_MANIFEST_WRITE_FAILED",
-                err.to_string(),
-                origin,
+                trace_id, "codex", true, code, message, origin,
             ));
         }
 
-        if let Err(err) = super::restore_backups_exactly_from_manifest(app, &manifest) {
-            let _ = write_manifest(app, "codex", &previous_manifest);
-            let _ = restore_file_snapshots(&target_snapshots);
-            return Ok(CliProxyResult::failure(
-                trace_id,
-                "codex",
-                true,
-                "CLI_PROXY_REBIND_RESTORE_FAILED",
-                err.to_string(),
-                origin,
-            ));
-        }
-
-        if apply_live {
-            if let Err(err) = apply_proxy_config(app, "codex", base_origin) {
-                let _ = write_manifest(app, "codex", &previous_manifest);
-                let _ = restore_file_snapshots(&target_snapshots);
+        let restored_proxy = match super::restore_backups_exactly_from_manifest(app, &manifest) {
+            Ok(applied) => applied,
+            Err(err) => {
+                let rollback =
+                    rollback_rebind_stages(&manifest_before, &manifest_committed, None, None);
+                let recovery_required =
+                    err.code() == "CLI_PROXY_APPLY_RECOVERY_REQUIRED" || rollback.is_err();
+                let (code, message) = match rollback {
+                    Ok(()) if !recovery_required => {
+                        ("CLI_PROXY_REBIND_RESTORE_FAILED", err.to_string())
+                    }
+                    Ok(()) => ("CLI_PROXY_REBIND_RECOVERY_REQUIRED", err.to_string()),
+                    Err(rollback_error) => (
+                        "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                        format!("{err}; rollback failed: {rollback_error}"),
+                    ),
+                };
                 return Ok(CliProxyResult::failure(
-                    trace_id,
-                    "codex",
-                    true,
-                    "CLI_PROXY_REBIND_APPLY_FAILED",
-                    err.to_string(),
-                    origin,
+                    trace_id, "codex", true, code, message, origin,
                 ));
             }
+        };
+
+        let applied_proxy = if apply_live {
+            match apply_proxy_config(app, "codex", base_origin) {
+                Ok(applied) => Some(applied),
+                Err(err) => {
+                    let rollback = rollback_rebind_stages(
+                        &manifest_before,
+                        &manifest_committed,
+                        Some(&restored_proxy),
+                        None,
+                    );
+                    let recovery_required =
+                        err.code() == "CLI_PROXY_APPLY_RECOVERY_REQUIRED" || rollback.is_err();
+                    let (code, message) = match rollback {
+                        Ok(()) if !recovery_required => {
+                            ("CLI_PROXY_REBIND_APPLY_FAILED", err.to_string())
+                        }
+                        Ok(()) => ("CLI_PROXY_REBIND_RECOVERY_REQUIRED", err.to_string()),
+                        Err(rollback_error) => (
+                            "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                            format!("{err}; rollback failed: {rollback_error}"),
+                        ),
+                    };
+                    return Ok(CliProxyResult::failure(
+                        trace_id, "codex", true, code, message, origin,
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
+        if sync_catalog {
             if let Err(err) = crate::codex_model_catalog::managed::sync_current_locked(app) {
-                let _ = write_manifest(app, "codex", &previous_manifest);
-                let _ = restore_file_snapshots(&target_snapshots);
+                let rollback = rollback_rebind_stages(
+                    &manifest_before,
+                    &manifest_committed,
+                    applied_proxy.as_ref(),
+                    Some(&restored_proxy),
+                );
+                let recovery_required =
+                    super::managed_catalog_error_requires_recovery(&err) || rollback.is_err();
+                let (code, message) = match rollback {
+                    Ok(()) if !recovery_required => {
+                        ("CLI_PROXY_MANAGED_MODEL_SYNC_FAILED", err.to_string())
+                    }
+                    Ok(()) => ("CLI_PROXY_REBIND_RECOVERY_REQUIRED", err.to_string()),
+                    Err(rollback_error) => (
+                        "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                        format!("{err}; rollback failed: {rollback_error}"),
+                    ),
+                };
                 return Ok(CliProxyResult::failure(
-                    trace_id,
-                    "codex",
-                    true,
-                    "CLI_PROXY_MANAGED_MODEL_SYNC_FAILED",
-                    err.to_string(),
-                    origin,
+                    trace_id, "codex", true, code, message, origin,
                 ));
             }
         }
@@ -159,49 +209,97 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
         ));
     }
 
-    let backup_snapshots = snapshot_backup_files(app, "codex", &captured)?;
-    let target_snapshots = snapshot_target_files(&captured)?;
-
-    write_captured_backups(app, "codex", &captured)?;
+    let backup_applied = write_captured_backups(app, "codex", &captured)?;
     manifest = build_manifest_from_captured(&manifest, base_origin, captured);
+    let manifest_committed = match expected_codex_manifest_snapshot(app, &manifest) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let rollback = backup_applied.rollback();
+            let (code, message) = match rollback {
+                Ok(()) => ("CLI_PROXY_REBIND_MANIFEST_WRITE_FAILED", error.to_string()),
+                Err(rollback_error) => (
+                    "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                    format!("{error}; backup rollback failed: {rollback_error}"),
+                ),
+            };
+            return Ok(CliProxyResult::failure(
+                trace_id, "codex", true, code, message, origin,
+            ));
+        }
+    };
 
     if let Err(err) = write_manifest(app, "codex", &manifest) {
-        let _ = restore_file_snapshots(&backup_snapshots);
+        let rollback = rollback_rebind_stages(
+            &manifest_before,
+            &manifest_committed,
+            None,
+            Some(&backup_applied),
+        );
+        let (code, message) = match rollback {
+            Ok(()) => ("CLI_PROXY_REBIND_MANIFEST_WRITE_FAILED", err.to_string()),
+            Err(rollback_error) => (
+                "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                format!("{err}; rollback failed: {rollback_error}"),
+            ),
+        };
         return Ok(CliProxyResult::failure(
-            trace_id,
-            "codex",
-            true,
-            "CLI_PROXY_REBIND_MANIFEST_WRITE_FAILED",
-            err.to_string(),
-            origin,
+            trace_id, "codex", true, code, message, origin,
         ));
     }
 
-    if apply_live {
-        if let Err(err) = apply_proxy_config(app, "codex", base_origin) {
-            let _ = write_manifest(app, "codex", &previous_manifest);
-            let _ = restore_file_snapshots(&backup_snapshots);
-            let _ = restore_file_snapshots(&target_snapshots);
-            return Ok(CliProxyResult::failure(
-                trace_id,
-                "codex",
-                true,
-                "CLI_PROXY_REBIND_APPLY_FAILED",
-                err.to_string(),
-                origin,
-            ));
+    let applied_proxy = if apply_live {
+        match apply_proxy_config(app, "codex", base_origin) {
+            Ok(applied) => Some(applied),
+            Err(err) => {
+                let rollback = rollback_rebind_stages(
+                    &manifest_before,
+                    &manifest_committed,
+                    None,
+                    Some(&backup_applied),
+                );
+                let recovery_required =
+                    err.code() == "CLI_PROXY_APPLY_RECOVERY_REQUIRED" || rollback.is_err();
+                let (code, message) = match rollback {
+                    Ok(()) if !recovery_required => {
+                        ("CLI_PROXY_REBIND_APPLY_FAILED", err.to_string())
+                    }
+                    Ok(()) => ("CLI_PROXY_REBIND_RECOVERY_REQUIRED", err.to_string()),
+                    Err(rollback_error) => (
+                        "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                        format!("{err}; rollback failed: {rollback_error}"),
+                    ),
+                };
+                return Ok(CliProxyResult::failure(
+                    trace_id, "codex", true, code, message, origin,
+                ));
+            }
         }
+    } else {
+        None
+    };
+
+    if sync_catalog {
         if let Err(err) = crate::codex_model_catalog::managed::sync_current_locked(app) {
-            let _ = write_manifest(app, "codex", &previous_manifest);
-            let _ = restore_file_snapshots(&backup_snapshots);
-            let _ = restore_file_snapshots(&target_snapshots);
+            let rollback = rollback_rebind_stages(
+                &manifest_before,
+                &manifest_committed,
+                applied_proxy.as_ref(),
+                Some(&backup_applied),
+            );
+            let recovery_required =
+                super::managed_catalog_error_requires_recovery(&err) || rollback.is_err();
+            let (code, message) = match rollback {
+                Ok(()) if !recovery_required => {
+                    ("CLI_PROXY_MANAGED_MODEL_SYNC_FAILED", err.to_string())
+                }
+                Ok(()) => ("CLI_PROXY_REBIND_RECOVERY_REQUIRED", err.to_string()),
+                Err(rollback_error) => (
+                    "CLI_PROXY_REBIND_RECOVERY_REQUIRED",
+                    format!("{err}; rollback failed: {rollback_error}"),
+                ),
+            };
             return Ok(CliProxyResult::failure(
-                trace_id,
-                "codex",
-                true,
-                "CLI_PROXY_MANAGED_MODEL_SYNC_FAILED",
-                err.to_string(),
-                origin,
+                trace_id, "codex", true, code, message, origin,
             ));
         }
     }
@@ -213,6 +311,41 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
         rebind_msg(apply_live),
         origin,
     ))
+}
+
+fn rollback_rebind_stages(
+    manifest_before: &FileSnapshot,
+    manifest_committed: &FileSnapshot,
+    applied_proxy: Option<&AppliedProxyConfig>,
+    backup_applied: Option<&AppliedProxyConfig>,
+) -> AppResult<()> {
+    let mut errors = Vec::new();
+    if let Some(applied_proxy) = applied_proxy {
+        if let Err(error) = applied_proxy.rollback() {
+            errors.push(error.to_string());
+        }
+    }
+    if let Some(backup_applied) = backup_applied {
+        if let Err(error) = backup_applied.rollback() {
+            errors.push(error.to_string());
+        }
+    }
+    if let Err(error) = restore_file_snapshot_conditionally(
+        manifest_before,
+        manifest_committed,
+        super::CLI_PROXY_MANIFEST_MAX_BYTES,
+    ) {
+        errors.push(error.to_string());
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Codex home rebind rollback could not restore all owned files: {}",
+            errors.join("; ")
+        )
+        .into())
+    }
 }
 
 /// Merge-restore Codex `auth.json`: only revert the proxy-managed keys
@@ -706,6 +839,22 @@ pub(super) fn rebind_codex_home_after_change<R: tauri::Runtime>(
     base_origin: &str,
     apply_live: bool,
 ) -> AppResult<CliProxyResult> {
+    rebind_codex_home_after_change_with_catalog_sync(app, base_origin, apply_live, true)
+}
+
+pub(super) fn rebind_codex_home_for_config_import<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base_origin: &str,
+) -> AppResult<CliProxyResult> {
+    rebind_codex_home_after_change_with_catalog_sync(app, base_origin, false, false)
+}
+
+fn rebind_codex_home_after_change_with_catalog_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base_origin: &str,
+    apply_live: bool,
+    sync_catalog: bool,
+) -> AppResult<CliProxyResult> {
     if !base_origin.starts_with("http://") && !base_origin.starts_with("https://") {
         return Err("SEC_INVALID_INPUT: base_origin must start with http:// or https://".into());
     }
@@ -747,5 +896,12 @@ pub(super) fn rebind_codex_home_after_change<R: tauri::Runtime>(
         ));
     }
 
-    rebind_codex_manifest_after_home_change(app, manifest, base_origin, apply_live, trace_id)
+    rebind_codex_manifest_after_home_change(
+        app,
+        manifest,
+        base_origin,
+        apply_live,
+        sync_catalog,
+        trace_id,
+    )
 }

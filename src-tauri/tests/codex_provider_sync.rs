@@ -37,6 +37,46 @@ fn read_codex_config(handle: &tauri::AppHandle<tauri::test::MockRuntime>) -> Str
     std::fs::read_to_string(path).expect("read codex config")
 }
 
+fn write_gpt56_catalog(path: &Path) {
+    let models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        .into_iter()
+        .map(|slug| {
+            json!({
+                "slug": slug,
+                "context_window": 272000,
+                "max_context_window": 272000
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        path,
+        serde_json::to_vec(&json!({ "models": models })).expect("serialize catalog"),
+    )
+    .expect("write catalog");
+}
+
+fn configure_user_catalog(
+    handle: &tauri::AppHandle<tauri::test::MockRuntime>,
+    catalog_path: &Path,
+) {
+    let mut document = AIO_CONFIG
+        .parse::<toml_edit::DocumentMut>()
+        .expect("parse base Codex config");
+    document["model_catalog_json"] = toml_edit::value(catalog_path.to_string_lossy().to_string());
+    write_codex_config(handle, &document.to_string());
+}
+
+fn configured_catalog_path(config: &str) -> PathBuf {
+    let document = config
+        .parse::<toml_edit::DocumentMut>()
+        .expect("parse Codex config");
+    PathBuf::from(
+        document["model_catalog_json"]
+            .as_str()
+            .expect("model catalog binding"),
+    )
+}
+
 fn write_rollout(path: &Path, provider: &str, thread_id: &str) {
     fs::create_dir_all(path.parent().expect("rollout parent")).expect("create rollout parent");
     let session_meta = json!({
@@ -276,13 +316,19 @@ fn codex_config_set_without_history_succeeds_while_codex_runs_without_reading_ro
 }
 
 #[test]
-fn codex_config_set_with_history_explicitly_migrates_rollouts() {
+fn codex_config_set_with_history_migrates_all_non_target_rollouts_in_one_save() {
     let app = support::TestApp::new();
     let handle = app.handle();
     let home = codex_home(&handle);
     write_codex_config(&handle, AIO_CONFIG);
-    let rollout_path = home.join("sessions/2026/rollout-explicit-history.jsonl");
-    write_rollout(&rollout_path, "aio", "thread-explicit");
+    let aio_rollout_path = home.join("sessions/2026/rollout-aio-history.jsonl");
+    let third_party_rollout_path = home.join("sessions/2026/rollout-third-party-history.jsonl");
+    write_rollout(&aio_rollout_path, "aio", "thread-aio");
+    write_rollout(
+        &third_party_rollout_path,
+        "third-party",
+        "thread-third-party",
+    );
 
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
         false,
@@ -295,9 +341,98 @@ fn codex_config_set_with_history_explicitly_migrates_rollouts() {
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
 
     result.expect("explicit history sync");
-    assert!(fs::read_to_string(rollout_path)
-        .unwrap()
-        .contains("\"model_provider\":\"OpenAI\""));
+    assert_eq!(
+        rollout_session_meta_providers(&aio_rollout_path),
+        vec!["OpenAI".to_string()]
+    );
+    assert_eq!(
+        rollout_session_meta_providers(&third_party_rollout_path),
+        vec!["OpenAI".to_string()]
+    );
+}
+
+#[test]
+fn managed_catalog_and_config_roll_back_when_history_preflight_fails() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let home = codex_home(&handle);
+    fs::create_dir_all(&home).expect("create Codex home");
+    let user_catalog = home.join("user-models.json");
+    write_gpt56_catalog(&user_catalog);
+    configure_user_catalog(&handle, &user_catalog);
+    aio_coding_hub_lib::test_support::settings_codex_gpt56_372k_context_set_json(&handle, true)
+        .expect("enable managed 372K catalog");
+
+    let config_before = read_codex_config(&handle);
+    let generated_path = configured_catalog_path(&config_before);
+    let generated_before = fs::read(&generated_path).expect("read generated catalog");
+    let rollout_path = home.join("sessions/2026/rollout-invalid-history.jsonl");
+    fs::create_dir_all(rollout_path.parent().expect("rollout parent"))
+        .expect("create rollout parent");
+    fs::write(&rollout_path, b"\xff\xfe\xfd").expect("write invalid rollout");
+
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
+        false,
+    ));
+    let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
+        &handle,
+        serde_json::json!({ "features_remote_compaction": true }),
+        true,
+    );
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    let error = result.expect_err("invalid history must fail after catalog preflight");
+    assert!(error.to_string().contains("valid UTF-8"), "{error}");
+    assert_eq!(read_codex_config(&handle), config_before);
+    assert_eq!(
+        fs::read(&generated_path).expect("read restored catalog"),
+        generated_before
+    );
+    assert_eq!(
+        fs::read(&rollout_path).expect("read rollout"),
+        b"\xff\xfe\xfd"
+    );
+}
+
+#[test]
+fn managed_catalog_failure_happens_before_history_migration() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let home = codex_home(&handle);
+    fs::create_dir_all(&home).expect("create Codex home");
+    let user_catalog = home.join("user-models.json");
+    write_gpt56_catalog(&user_catalog);
+    configure_user_catalog(&handle, &user_catalog);
+    aio_coding_hub_lib::test_support::settings_codex_gpt56_372k_context_set_json(&handle, true)
+        .expect("enable managed 372K catalog");
+
+    let config_before = read_codex_config(&handle);
+    let generated_path = configured_catalog_path(&config_before);
+    let generated_before = fs::read(&generated_path).expect("read generated catalog");
+    let rollout_path = home.join("sessions/2026/rollout-catalog-first.jsonl");
+    write_rollout(&rollout_path, "aio", "thread-catalog-first");
+    fs::remove_file(&user_catalog).expect("inject missing base catalog");
+
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
+        false,
+    ));
+    let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
+        &handle,
+        serde_json::json!({ "features_remote_compaction": true }),
+        true,
+    );
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    result.expect_err("missing catalog base must fail before history migration");
+    assert_eq!(read_codex_config(&handle), config_before);
+    assert_eq!(
+        fs::read(&generated_path).expect("read unchanged generated catalog"),
+        generated_before
+    );
+    assert_eq!(
+        rollout_session_meta_providers(&rollout_path),
+        vec!["aio".to_string()]
+    );
 }
 
 #[test]

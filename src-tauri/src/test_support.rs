@@ -553,6 +553,15 @@ pub fn settings_get_json<R: tauri::Runtime>(
     serialize_json(settings)
 }
 
+pub fn settings_codex_gpt56_372k_context_set_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    enabled: bool,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let settings =
+        crate::app::settings_service::settings_codex_gpt56_372k_context_set_sync(app, enabled)?;
+    serialize_json(settings)
+}
+
 /// Update application settings from a JSON Value and return the persisted result.
 ///
 /// Use the real write helper so tests observe the same sanitization and cache updates

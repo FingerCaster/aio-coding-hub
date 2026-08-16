@@ -20,6 +20,7 @@ macro_rules! generated_command_registry {
             settings_get => crate::commands::settings::settings_get,
             settings_set => crate::commands::settings::settings_set,
             settings_patch => crate::commands::settings::settings_patch,
+            settings_codex_gpt56_372k_context_set => crate::commands::settings::settings_codex_gpt56_372k_context_set,
             settings_update_channel_set => crate::commands::settings::settings_update_channel_set,
             settings_gateway_rectifier_set => crate::commands::settings::settings_gateway_rectifier_set,
             settings_circuit_breaker_notice_set => crate::commands::settings::settings_circuit_breaker_notice_set,

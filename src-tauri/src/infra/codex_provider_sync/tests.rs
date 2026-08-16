@@ -33,6 +33,91 @@ fn rollout_rewrite_streams_file_and_preserves_non_session_rows() {
 }
 
 #[test]
+fn history_only_rollout_rewrites_every_non_target_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("rollout-all-non-target.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"aio\"}}\n",
+            "{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"third-party\"}}\n",
+            "{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"OpenAI\"}}\n"
+        ),
+    )
+    .expect("write rollout");
+
+    rewrite_rollout_session_meta_providers(&path, "OpenAI").expect("rewrite every non-target");
+
+    let rewritten = std::fs::read_to_string(&path).expect("read rollout");
+    assert_eq!(
+        rewritten.matches("\"model_provider\":\"OpenAI\"").count(),
+        3
+    );
+    assert!(!rewritten.contains("\"model_provider\":\"aio\""));
+    assert!(!rewritten.contains("\"model_provider\":\"third-party\""));
+}
+
+#[test]
+fn history_only_sqlite_rewrites_every_non_target_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("history.db");
+    let conn = Connection::open(&path).expect("open sqlite");
+    conn.execute_batch(
+        "CREATE TABLE threads (model_provider TEXT, has_user_event INTEGER);\n\
+         INSERT INTO threads VALUES ('aio', 1);\n\
+         INSERT INTO threads VALUES ('third-party', 1);\n\
+         INSERT INTO threads VALUES ('OpenAI', 1);",
+    )
+    .expect("seed sqlite");
+    drop(conn);
+
+    let change = collect_sqlite_change(&path, Some("aio"), "OpenAI")
+        .expect("collect every non-target change");
+    assert_eq!(change.provider_rows_updated, 2);
+    let counts = apply_sqlite_changes(&[change], "OpenAI").expect("apply every non-target change");
+    assert_eq!(counts.provider_rows_updated, 2);
+
+    let conn = Connection::open(&path).expect("reopen sqlite");
+    let providers = conn
+        .prepare("SELECT model_provider FROM threads ORDER BY rowid")
+        .expect("prepare query")
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query providers")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect providers");
+    assert_eq!(providers, vec!["OpenAI", "OpenAI", "OpenAI"]);
+}
+
+#[test]
+fn history_only_global_state_rewrites_any_non_target_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join(".codex-global-state.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({
+            "model_provider": "third-party",
+            "future": {"preserved": true}
+        }))
+        .expect("serialize global state"),
+    )
+    .expect("write global state");
+
+    let change = collect_global_state_change(temp.path(), Some("aio"), "OpenAI")
+        .expect("collect global state change")
+        .expect("non-target global state must change");
+    let next: Value = serde_json::from_slice(
+        change
+            .next_bytes
+            .as_deref()
+            .expect("global state replacement bytes"),
+    )
+    .expect("parse rewritten global state");
+
+    assert_eq!(next["model_provider"], "OpenAI");
+    assert_eq!(next["future"]["preserved"], true);
+}
+
+#[test]
 fn disk_backup_restores_sqlite_bytes_and_removes_new_sidecars() {
     let temp = tempfile::tempdir().expect("tempdir");
     let target_dir = temp.path().join("target");

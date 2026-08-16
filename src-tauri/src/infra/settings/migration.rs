@@ -1624,6 +1624,28 @@ fn migrate_add_cx2cc_reasoning_effort_mappings(
     )
 }
 
+fn migrate_add_codex_gpt56_372k_context(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if schema_version_present
+        && settings.schema_version >= SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT
+    {
+        return false;
+    }
+
+    let mut changed = migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT,
+    );
+    if settings.codex_gpt56_372k_context_enabled {
+        settings.codex_gpt56_372k_context_enabled = false;
+        changed = true;
+    }
+    changed
+}
+
 pub(super) fn sanitize_codex_infinite_retry_test(settings: &mut AppSettings) -> bool {
     if settings.codex_infinite_retry_test_interval_ms <= MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
         return false;
@@ -1679,6 +1701,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_codex_infinite_retry_test,
     migrate_restore_cyber_passthrough,
     migrate_add_cx2cc_reasoning_effort_mappings,
+    migrate_add_codex_gpt56_372k_context,
 ];
 
 pub(crate) fn migrate_to_current_schema(
@@ -2226,7 +2249,10 @@ mod tests {
             &mut settings,
             true
         ));
-        assert_eq!(settings.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_ADD_CX2CC_REASONING_EFFORT_MAPPINGS
+        );
         assert!(settings.cx2cc_reasoning_effort_mappings.is_empty());
         assert!(!migrate_add_cx2cc_reasoning_effort_mappings(
             &mut settings,
@@ -2389,6 +2415,40 @@ mod tests {
     fn app_settings_default_codex_oauth_compatible_proxy_mode_disabled() {
         let s = AppSettings::default();
         assert!(!s.codex_oauth_compatible_proxy_mode);
+    }
+
+    #[test]
+    fn app_settings_default_codex_gpt56_372k_context_disabled() {
+        let s = AppSettings::default();
+        assert!(!s.codex_gpt56_372k_context_enabled);
+    }
+
+    #[test]
+    fn migrate_add_codex_gpt56_372k_context_bumps_schema_version() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CX2CC_REASONING_EFFORT_MAPPINGS,
+            codex_gpt56_372k_context_enabled: true,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_gpt56_372k_context(&mut s, true));
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT
+        );
+        assert!(!s.codex_gpt56_372k_context_enabled);
+    }
+
+    #[test]
+    fn current_schema_preserves_enabled_codex_gpt56_372k_context() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT,
+            codex_gpt56_372k_context_enabled: true,
+            ..Default::default()
+        };
+
+        assert!(!migrate_add_codex_gpt56_372k_context(&mut s, true));
+        assert!(s.codex_gpt56_372k_context_enabled);
     }
 
     #[test]

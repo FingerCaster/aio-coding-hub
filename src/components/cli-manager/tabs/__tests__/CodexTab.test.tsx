@@ -623,6 +623,136 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.getByRole("switch", { name: "切换 Codex OAuth 兼容代理模式" })).toBeEnabled();
   });
 
+  it("renders the exact 372,000 policy and toggles from the confirmed off state", () => {
+    const persistCodexGpt56372kContext = vi.fn().mockResolvedValue(true);
+
+    renderTab({
+      appSettings: createAppSettings({ codex_gpt56_372k_context_enabled: false }),
+      persistCodexGpt56372kContext,
+    });
+
+    expect(screen.getByText(/名义上下文窗口设为 372,000 tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/仅新启动的 Codex 会话生效/)).toBeInTheDocument();
+    expect(screen.queryByText(/380,?928/)).not.toBeInTheDocument();
+
+    const policySwitch = screen.getByRole("switch", {
+      name: "切换 Codex GPT-5.6 372K 上下文",
+    });
+    expect(policySwitch).toHaveAttribute("data-state", "unchecked");
+    fireEvent.click(policySwitch);
+
+    expect(persistCodexGpt56372kContext).toHaveBeenCalledWith(true);
+    expect(policySwitch).toHaveAttribute("data-state", "unchecked");
+  });
+
+  it("keeps the confirmed enabled state and blocks Codex home changes", () => {
+    const persistCodexGpt56372kContext = vi.fn().mockResolvedValue(true);
+
+    renderTab({
+      appSettings: createAppSettings({
+        codex_home_mode: "custom",
+        codex_home_override: "D:\\Work\\CodexHome",
+        codex_gpt56_372k_context_enabled: true,
+      }),
+      persistCodexGpt56372kContext,
+      persistCodexHomeSettings: vi.fn().mockResolvedValue(true),
+    });
+
+    const policySwitch = screen.getByRole("switch", {
+      name: "切换 Codex GPT-5.6 372K 上下文",
+    });
+    expect(policySwitch).toHaveAttribute("data-state", "checked");
+    expect(screen.getByText(/请先关闭该开关，再切换 Codex 目录/)).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "手动指定目录" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复默认" })).toBeDisabled();
+    expect(screen.getByLabelText("自定义 .codex 目录")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择目录" })).toBeDisabled();
+
+    fireEvent.click(policySwitch);
+    expect(persistCodexGpt56372kContext).toHaveBeenCalledWith(false);
+  });
+
+  it.each([
+    ["structured config", { codexConfigSaving: true }],
+    ["raw config", { codexConfigTomlSaving: true }],
+  ] as const)("disables the 372K toggle while %s is saving", (_label, busyProps) => {
+    renderTab({
+      ...busyProps,
+      appSettings: createAppSettings({ codex_gpt56_372k_context_enabled: false }),
+      persistCodexGpt56372kContext: vi.fn().mockResolvedValue(true),
+    });
+
+    expect(screen.getByRole("switch", { name: "切换 Codex GPT-5.6 372K 上下文" })).toBeDisabled();
+  });
+
+  it("disables duplicate policy saves and Codex home controls while pending", () => {
+    const persistCodexGpt56372kContext = vi.fn().mockResolvedValue(true);
+
+    renderTab({
+      appSettings: createAppSettings({
+        codex_home_mode: "custom",
+        codex_home_override: "D:\\Work\\CodexHome",
+        codex_gpt56_372k_context_enabled: false,
+      }),
+      codexGpt56372kContextSaving: true,
+      persistCodexGpt56372kContext,
+      persistCodexHomeSettings: vi.fn().mockResolvedValue(true),
+    });
+
+    expect(screen.getByLabelText("正在更新 Codex GPT-5.6 372K 上下文")).toBeInTheDocument();
+    const policySwitch = screen.getByRole("switch", {
+      name: "切换 Codex GPT-5.6 372K 上下文",
+    });
+    expect(policySwitch).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "手动指定目录" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复默认" })).toBeDisabled();
+    expect(screen.getByLabelText("自定义 .codex 目录")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择目录" })).toBeDisabled();
+
+    fireEvent.click(policySwitch);
+    expect(persistCodexGpt56372kContext).not.toHaveBeenCalled();
+  });
+
+  it("keeps Codex home controls read-only until settings are available", () => {
+    const pickCodexHomeDirectory = vi.fn();
+
+    renderTab({
+      appSettings: null,
+      persistCodexHomeSettings: vi.fn().mockResolvedValue(true),
+      pickCodexHomeDirectory,
+    });
+
+    expect(screen.getByRole("radio", { name: "固定到 Windows 用户目录" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /跟随环境变量 \$CODEX_HOME/ })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "手动指定目录" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复默认" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "手动指定目录" }));
+    expect(screen.getByLabelText("自定义 .codex 目录")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择目录" })).toBeDisabled();
+    expect(pickCodexHomeDirectory).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["structured config", { codexConfigSaving: true }],
+    ["raw config", { codexConfigTomlSaving: true }],
+  ] as const)("disables every Codex home control while %s is saving", (_label, busyProps) => {
+    renderTab({
+      ...busyProps,
+      appSettings: createAppSettings({
+        codex_home_mode: "custom",
+        codex_home_override: "D:\\Work\\CodexHome",
+      }),
+      persistCodexHomeSettings: vi.fn().mockResolvedValue(true),
+      pickCodexHomeDirectory: vi.fn(),
+    });
+
+    expect(screen.getByRole("radio", { name: "手动指定目录" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复默认" })).toBeDisabled();
+    expect(screen.getByLabelText("自定义 .codex 目录")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "选择目录" })).toBeDisabled();
+  });
+
   it("persists the infinite retry test switch and validates the round interval", async () => {
     const persistCommonSettings = vi.fn().mockImplementation(async (patch) =>
       createAppSettings({

@@ -161,6 +161,26 @@ fn set_custom_codex_home<R: tauri::Runtime>(app: &tauri::AppHandle<R>, codex_hom
     settings::write(app, &settings).expect("write settings");
 }
 
+fn set_custom_codex_home_preserving_settings<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    codex_home: &Path,
+) {
+    settings::update(app, |settings| {
+        settings.codex_home_mode = CodexHomeMode::Custom;
+        settings.codex_home_override = codex_home.display().to_string();
+        Ok(())
+    })
+    .expect("update Codex home");
+}
+
+fn set_codex_gpt56_372k_policy<R: tauri::Runtime>(app: &tauri::AppHandle<R>, enabled: bool) {
+    settings::update(app, |settings| {
+        settings.codex_gpt56_372k_context_enabled = enabled;
+        Ok(())
+    })
+    .expect("update GPT-5.6 372K policy");
+}
+
 fn set_codex_oauth_compatible_proxy_mode<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     enabled: bool,
@@ -181,6 +201,101 @@ fn write_codex_direct_files<R: tauri::Runtime>(
         .expect("create config dir");
     std::fs::write(&config_path, config).expect("write direct config");
     std::fs::write(&auth_path, auth).expect("write direct auth");
+}
+
+fn write_gpt56_user_catalog(path: &Path, marker: &str) {
+    std::fs::create_dir_all(path.parent().expect("user catalog parent"))
+        .expect("create user catalog parent");
+    let models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, slug)| {
+            serde_json::json!({
+                "slug": slug,
+                "display_name": slug,
+                "visibility": if index == 0 { "list" } else { "hide" },
+                "context_window": 272_000,
+                "max_context_window": 272_000,
+                "effective_context_window_percent": 95,
+                "auto_compact_token_limit": null,
+                "fixture_marker": marker,
+            })
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({
+            "models": models,
+            "fixture_marker": marker,
+        }))
+        .expect("serialize user catalog"),
+    )
+    .expect("write user catalog");
+}
+
+fn codex_direct_config_with_catalog(catalog_path: &Path, marker: &str) -> String {
+    let mut config = toml_edit::DocumentMut::new();
+    config["model"] = toml_edit::value("gpt-5.6-sol");
+    config["model_provider"] = toml_edit::value("openai");
+    config["model_catalog_json"] = toml_edit::value(catalog_path.to_string_lossy().to_string());
+    config["model_providers"]["openai"]["name"] = toml_edit::value("openai");
+    config["model_providers"]["openai"]["base_url"] = toml_edit::value("https://api.openai.com/v1");
+    config["fixture"]["marker"] = toml_edit::value(marker);
+    config.to_string()
+}
+
+fn model_catalog_binding(config_path: &Path) -> PathBuf {
+    let config = std::fs::read_to_string(config_path)
+        .expect("read Codex config")
+        .parse::<toml_edit::DocumentMut>()
+        .expect("parse Codex config");
+    PathBuf::from(
+        config["model_catalog_json"]
+            .as_str()
+            .expect("model_catalog_json binding"),
+    )
+}
+
+fn assert_gpt56_catalog_uses_372k(path: &Path) {
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("read generated catalog"))
+            .expect("parse generated catalog");
+    for slug in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        let model = catalog["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .find(|model| model["slug"].as_str() == Some(slug))
+            .unwrap_or_else(|| panic!("missing {slug}"));
+        assert_eq!(model["context_window"].as_u64(), Some(372_000));
+        assert_eq!(model["max_context_window"].as_u64(), Some(372_000));
+    }
+}
+
+fn enable_codex_proxy_with_372k_policy<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base_origin: &str,
+    marker: &str,
+) -> (PathBuf, PathBuf, PathBuf) {
+    set_codex_gpt56_372k_policy(app, true);
+    let config_path = codex_config_path(app).expect("Codex config path");
+    let user_catalog_path = config_path
+        .parent()
+        .expect("Codex home")
+        .join(format!("user-models-{marker}.json"));
+    write_gpt56_user_catalog(&user_catalog_path, marker);
+    write_codex_direct_files(
+        app,
+        &codex_direct_config_with_catalog(&user_catalog_path, marker),
+        "{}",
+    );
+
+    let enabled = set_enabled(app, "codex", true, base_origin).expect("enable Codex proxy");
+    assert!(enabled.ok, "{enabled:?}");
+    let generated_path = codex_managed_catalog_path(app).expect("managed catalog path");
+    assert_eq!(model_catalog_binding(&config_path), generated_path);
+    assert_gpt56_catalog_uses_372k(&generated_path);
+    (config_path, user_catalog_path, generated_path)
 }
 
 fn manifest_entry<'a>(manifest: &'a CliProxyManifest, kind: &str) -> &'a BackupFileEntry {
@@ -947,6 +1062,45 @@ fn startup_repair_marks_applied_grok_proxy_manifest_enabled() {
 }
 
 #[test]
+fn startup_repair_reconciles_codex_catalog_under_profile_lifecycle_lock() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(&handle, "model = \"gpt-5\"\n", "{}");
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+
+    let mut manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("Codex manifest");
+    manifest.enabled = false;
+    write_manifest(&handle, "codex", &manifest).expect("simulate interrupted enable");
+    crate::codex_managed_profiles::reset_profile_lifecycle_lock_attempts_for_test();
+    crate::codex_model_catalog::managed::reset_sync_current_invocations_for_test();
+
+    let repairs = startup_repair_incomplete_enable(&handle).expect("startup repair");
+    let codex_repair = repairs
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex repair result");
+    assert!(codex_repair.ok, "{codex_repair:?}");
+    assert_eq!(
+        crate::codex_managed_profiles::profile_lifecycle_lock_attempts_for_test(),
+        1
+    );
+    assert_eq!(
+        crate::codex_model_catalog::managed::sync_current_invocations_for_test(),
+        1
+    );
+    assert!(
+        read_manifest(&handle, "codex")
+            .unwrap()
+            .expect("manifest")
+            .enabled
+    );
+}
+
+#[test]
 fn grok_proxy_reapplies_after_exit_restore_keeps_enabled_state() {
     let test_app = CliProxyTestApp::new();
     let handle = test_app.handle();
@@ -1058,6 +1212,60 @@ fn restore_backups_exactly_rejects_oversized_backup_file() {
         .expect_err("oversized backup should fail");
 
     assert!(err.to_string().contains("too large"));
+}
+
+#[test]
+fn manifest_restore_rolls_back_prior_file_when_a_later_target_cannot_be_snapshotted() {
+    let test_app = CliProxyTestApp::new();
+    let handle = test_app.handle();
+    let target_dir = test_app.home.path().join("restore-targets");
+    std::fs::create_dir_all(&target_dir).expect("create target dir");
+    let first_target = target_dir.join("first");
+    let second_target = target_dir.join("second");
+    std::fs::write(&first_target, b"first-before").expect("write first target");
+    std::fs::write(&second_target, vec![b'x'; CLI_PROXY_FILE_MAX_BYTES + 1])
+        .expect("write oversized second target");
+
+    let root = cli_proxy_root_dir(&handle, "codex").expect("proxy root");
+    let files_dir = cli_proxy_files_dir(&root);
+    std::fs::create_dir_all(&files_dir).expect("create backup dir");
+    std::fs::write(files_dir.join("first.backup"), b"first-restored").expect("write first backup");
+    std::fs::write(files_dir.join("second.backup"), b"second-restored")
+        .expect("write second backup");
+
+    let manifest = CliProxyManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        managed_by: MANAGED_BY.to_string(),
+        cli_key: "codex".to_string(),
+        enabled: true,
+        base_origin: Some("http://127.0.0.1:37123".to_string()),
+        created_at: 1,
+        updated_at: 1,
+        files: vec![
+            BackupFileEntry {
+                kind: "first_unknown".to_string(),
+                path: first_target.to_string_lossy().to_string(),
+                existed: true,
+                backup_rel: Some("first.backup".to_string()),
+            },
+            BackupFileEntry {
+                kind: "second_unknown".to_string(),
+                path: second_target.to_string_lossy().to_string(),
+                existed: true,
+                backup_rel: Some("second.backup".to_string()),
+            },
+        ],
+    };
+
+    let error = restore_from_manifest_with_applied(&handle, &manifest)
+        .expect_err("oversized later target must fail");
+
+    assert!(error.to_string().contains("too large"), "{error}");
+    assert_eq!(std::fs::read(&first_target).unwrap(), b"first-before");
+    assert_eq!(
+        std::fs::metadata(&second_target).unwrap().len(),
+        (CLI_PROXY_FILE_MAX_BYTES + 1) as u64
+    );
 }
 
 #[test]
@@ -2555,6 +2763,315 @@ INSERT INTO codex_managed_profiles(
 }
 
 #[test]
+fn codex_372k_lifecycle_disable_keeps_policy_only_catalog_bound() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let (config_path, _user_catalog_path, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, base_origin, "disable-success");
+
+    let disabled = set_enabled(&handle, "codex", false, base_origin).expect("disable Codex");
+    assert!(disabled.ok, "{disabled:?}");
+    assert!(!disabled.enabled);
+    assert_eq!(model_catalog_binding(&config_path), generated_path);
+    assert_gpt56_catalog_uses_372k(&generated_path);
+    assert!(!codex::is_proxy_config_applied(&handle, base_origin));
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("Codex manifest");
+    assert!(!manifest.enabled);
+}
+
+#[test]
+fn codex_372k_lifecycle_disable_rolls_back_all_files_on_catalog_failure() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let (config_path, user_catalog_path, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, base_origin, "disable-rollback");
+    let auth_path = codex_auth_path(&handle).expect("Codex auth path");
+    let manifest_path =
+        cli_proxy_manifest_path(&cli_proxy_root_dir(&handle, "codex").expect("proxy root"));
+    let config_before = std::fs::read(&config_path).expect("read proxy config");
+    let auth_before = std::fs::read(&auth_path).expect("read proxy auth");
+    let manifest_before = std::fs::read(&manifest_path).expect("read enabled manifest");
+    let generated_before = std::fs::read(&generated_path).expect("read generated catalog");
+
+    let mut invalid: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&user_catalog_path).expect("read user catalog"))
+            .expect("parse user catalog");
+    invalid["models"]
+        .as_array_mut()
+        .expect("models")
+        .retain(|model| model["slug"].as_str() != Some("gpt-5.6-luna"));
+    std::fs::write(
+        &user_catalog_path,
+        serde_json::to_vec(&invalid).expect("serialize invalid catalog"),
+    )
+    .expect("write invalid user catalog");
+
+    let disabled = set_enabled(&handle, "codex", false, base_origin).expect("disable Codex");
+    assert!(!disabled.ok, "disable must fail: {disabled:?}");
+    assert_eq!(
+        disabled.error_code.as_deref(),
+        Some("CLI_PROXY_MANAGED_MODEL_SYNC_FAILED")
+    );
+    assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    assert_eq!(std::fs::read(&auth_path).unwrap(), auth_before);
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(std::fs::read(&generated_path).unwrap(), generated_before);
+    assert!(codex::is_proxy_config_applied(&handle, base_origin));
+    assert!(
+        read_manifest(&handle, "codex")
+            .unwrap()
+            .expect("manifest")
+            .enabled
+    );
+}
+
+#[test]
+fn codex_372k_lifecycle_exit_restore_keeps_catalog_bound_to_direct_config() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let (config_path, _user_catalog_path, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, base_origin, "exit-success");
+
+    let results = restore_enabled_keep_state(&handle).expect("exit restore");
+    let codex_result = results
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex restore result");
+    assert!(codex_result.ok, "{codex_result:?}");
+    assert!(codex_result.enabled);
+    assert_eq!(model_catalog_binding(&config_path), generated_path);
+    assert_gpt56_catalog_uses_372k(&generated_path);
+    assert!(!codex::is_proxy_config_applied(&handle, base_origin));
+    assert!(
+        read_manifest(&handle, "codex")
+            .unwrap()
+            .expect("manifest")
+            .enabled
+    );
+}
+
+#[test]
+fn codex_372k_lifecycle_exit_restore_rolls_back_proxy_state_on_catalog_failure() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let (config_path, user_catalog_path, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, base_origin, "exit-rollback");
+    let auth_path = codex_auth_path(&handle).expect("Codex auth path");
+    let manifest_path =
+        cli_proxy_manifest_path(&cli_proxy_root_dir(&handle, "codex").expect("proxy root"));
+    let config_before = std::fs::read(&config_path).expect("read proxy config");
+    let auth_before = std::fs::read(&auth_path).expect("read proxy auth");
+    let manifest_before = std::fs::read(&manifest_path).expect("read enabled manifest");
+    let generated_before = std::fs::read(&generated_path).expect("read generated catalog");
+    std::fs::write(&user_catalog_path, br#"{"models":[]}"#).expect("invalidate user catalog");
+
+    let results = restore_enabled_keep_state(&handle).expect("exit restore");
+    let codex_result = results
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex restore result");
+    assert!(!codex_result.ok, "restore must fail: {codex_result:?}");
+    assert_eq!(
+        codex_result.error_code.as_deref(),
+        Some("CLI_PROXY_MANAGED_MODEL_SYNC_FAILED")
+    );
+    assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    assert_eq!(std::fs::read(&auth_path).unwrap(), auth_before);
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(std::fs::read(&generated_path).unwrap(), generated_before);
+    assert!(codex::is_proxy_config_applied(&handle, base_origin));
+}
+
+#[test]
+fn codex_372k_lifecycle_offline_sync_refreshes_catalog_in_direct_mode() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let (config_path, user_catalog_path, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, base_origin, "offline-before");
+    let restored = restore_enabled_keep_state(&handle).expect("exit restore");
+    assert!(
+        restored
+            .iter()
+            .find(|result| result.cli_key == "codex")
+            .expect("Codex restore")
+            .ok
+    );
+
+    write_gpt56_user_catalog(&user_catalog_path, "offline-after");
+    crate::codex_model_catalog::managed::reset_sync_current_invocations_for_test();
+    let results = sync_enabled(&handle, base_origin, false).expect("offline sync");
+    let codex_result = results
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex sync result");
+    assert!(codex_result.ok, "{codex_result:?}");
+    assert_eq!(
+        crate::codex_model_catalog::managed::sync_current_invocations_for_test(),
+        1
+    );
+    assert_eq!(model_catalog_binding(&config_path), generated_path);
+    assert_gpt56_catalog_uses_372k(&generated_path);
+    assert!(std::fs::read_to_string(&generated_path)
+        .expect("read refreshed catalog")
+        .contains("offline-after"));
+    assert!(!codex::is_proxy_config_applied(&handle, base_origin));
+}
+
+#[test]
+fn codex_372k_lifecycle_offline_sync_rolls_back_all_files_on_catalog_failure() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let old_origin = "http://127.0.0.1:37123";
+    let next_origin = "http://127.0.0.1:38123";
+    let (config_path, user_catalog_path, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, old_origin, "offline-rollback");
+    let restored = restore_enabled_keep_state(&handle).expect("exit restore");
+    assert!(
+        restored
+            .iter()
+            .find(|result| result.cli_key == "codex")
+            .expect("Codex restore")
+            .ok
+    );
+    let manifest_path =
+        cli_proxy_manifest_path(&cli_proxy_root_dir(&handle, "codex").expect("proxy root"));
+    let config_before = std::fs::read(&config_path).expect("read direct config");
+    let manifest_before = std::fs::read(&manifest_path).expect("read manifest");
+    let generated_before = std::fs::read(&generated_path).expect("read generated catalog");
+    std::fs::write(&user_catalog_path, br#"{"models":[]}"#).expect("invalidate user catalog");
+
+    let results = sync_enabled(&handle, next_origin, false).expect("offline sync");
+    let codex_result = results
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex sync result");
+    assert!(!codex_result.ok, "sync must fail: {codex_result:?}");
+    assert_eq!(
+        codex_result.error_code.as_deref(),
+        Some("CLI_PROXY_MANAGED_MODEL_SYNC_FAILED")
+    );
+    assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(std::fs::read(&generated_path).unwrap(), generated_before);
+    assert_eq!(
+        read_manifest(&handle, "codex")
+            .unwrap()
+            .expect("manifest")
+            .base_origin
+            .as_deref(),
+        Some(old_origin)
+    );
+}
+
+#[test]
+fn codex_372k_lifecycle_offline_home_rebind_reconciles_new_direct_home() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let old_home = app.home.path().join("codex-policy-old");
+    let new_home = app.home.path().join("codex-policy-new");
+    set_custom_codex_home_preserving_settings(&handle, &old_home);
+    let (old_config_path, _old_user_catalog, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, base_origin, "old-home");
+    let old_proxy_config = std::fs::read(&old_config_path).expect("read old proxy config");
+
+    set_custom_codex_home_preserving_settings(&handle, &new_home);
+    let new_config_path = codex_config_path(&handle).expect("new config path");
+    let new_user_catalog = new_home.join("new-user-models.json");
+    std::fs::create_dir_all(&new_home).expect("create new Codex home");
+    write_gpt56_user_catalog(&new_user_catalog, "new-home");
+    write_codex_direct_files(
+        &handle,
+        &codex_direct_config_with_catalog(&new_user_catalog, "new-home"),
+        "{}",
+    );
+
+    crate::codex_model_catalog::managed::reset_sync_current_invocations_for_test();
+    let results = sync_enabled(&handle, base_origin, false).expect("offline home rebind");
+    let codex_result = results
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex sync result");
+    assert!(codex_result.ok, "{codex_result:?}");
+    assert_eq!(
+        crate::codex_model_catalog::managed::sync_current_invocations_for_test(),
+        1
+    );
+    assert_eq!(model_catalog_binding(&new_config_path), generated_path);
+    assert_gpt56_catalog_uses_372k(&generated_path);
+    assert!(std::fs::read_to_string(&generated_path)
+        .expect("read rebound catalog")
+        .contains("new-home"));
+    assert!(!codex::is_proxy_config_applied(&handle, base_origin));
+    assert_eq!(std::fs::read(&old_config_path).unwrap(), old_proxy_config);
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("Codex manifest");
+    assert_eq!(
+        PathBuf::from(&manifest_entry(&manifest, "codex_config_toml").path),
+        new_config_path
+    );
+}
+
+#[test]
+fn codex_372k_raw_save_post_catalog_failure_restores_live_backup_and_generated_bytes() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let (config_path, original_catalog_path, generated_path) =
+        enable_codex_proxy_with_372k_policy(&handle, base_origin, "raw-rollback-before");
+    let backup_path =
+        backup_file_path_for_enabled_manifest(&handle, "codex", "codex_config_toml", "config.toml")
+            .expect("backup lookup")
+            .expect("backup path");
+    let manifest_path =
+        cli_proxy_manifest_path(&cli_proxy_root_dir(&handle, "codex").expect("proxy root"));
+    let live_before = std::fs::read(&config_path).expect("read live config before save");
+    let backup_before = std::fs::read(&backup_path).expect("read proxy backup before save");
+    let manifest_before = std::fs::read(&manifest_path).expect("read manifest before save");
+    let generated_before =
+        std::fs::read(&generated_path).expect("read generated catalog before save");
+
+    write_gpt56_user_catalog(&original_catalog_path, "raw-rollback-after");
+    let mut submitted = String::from_utf8(live_before.clone())
+        .expect("UTF-8 live config")
+        .parse::<toml_edit::DocumentMut>()
+        .expect("parse live config");
+    submitted["fixture"]["post_catalog"] = toml_edit::value("proposed");
+
+    crate::infra::codex_config::fail_next_post_catalog_confirmation_for_test();
+    let error =
+        crate::infra::codex_config::codex_config_toml_set_raw(&handle, submitted.to_string())
+            .expect_err("post-catalog failure must roll back the save");
+    assert_eq!(error.code(), "CODEX_CONFIG_TEST_POST_CATALOG_FAILURE");
+
+    assert_eq!(std::fs::read(&config_path).unwrap(), live_before);
+    assert_eq!(std::fs::read(&backup_path).unwrap(), backup_before);
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_before);
+    assert_eq!(std::fs::read(&generated_path).unwrap(), generated_before);
+    assert_eq!(model_catalog_binding(&config_path), generated_path);
+    let restored_backup = std::fs::read_to_string(&backup_path)
+        .expect("restored backup")
+        .parse::<toml_edit::DocumentMut>()
+        .expect("parse restored backup");
+    assert_eq!(
+        restored_backup["model_catalog_json"].as_str(),
+        original_catalog_path.to_str()
+    );
+    assert!(restored_backup["fixture"].get("post_catalog").is_none());
+    assert!(std::fs::read_to_string(&original_catalog_path)
+        .expect("externally updated user catalog")
+        .contains("raw-rollback-after"));
+}
+
+#[test]
 fn remote_compaction_openai_projection_is_applied_repaired_and_restored() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();
@@ -2965,6 +3482,58 @@ fn oauth_only_sync_reads_manifest_after_lifecycle_lock_and_preserves_disable_win
 }
 
 #[test]
+fn oauth_sync_failure_preserves_external_target_drift_and_restores_other_files() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(
+        &handle,
+        "model = \"gpt-5\"\n",
+        r#"{"tokens":{"access":"direct-token"}}"#,
+    );
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let auth_path = codex_auth_path(&handle).expect("auth path");
+    let auth_before = std::fs::read(&auth_path).expect("proxy auth before OAuth sync");
+    let manifest_before = std::fs::read(cli_proxy_manifest_path(
+        &cli_proxy_root_dir(&handle, "codex").expect("proxy root"),
+    ))
+    .expect("manifest before OAuth sync");
+
+    set_codex_oauth_compatible_proxy_mode(&handle, true);
+    let hook_config_path = config_path.clone();
+    set_codex_oauth_sync_test_hook(Box::new(move || {
+        std::fs::write(&hook_config_path, b"external-winner\n")
+            .expect("write concurrent config winner");
+        Some("injected failure after concurrent write".to_string())
+    }));
+    let result = sync_codex_oauth_enabled(&handle, base_origin, true).expect("OAuth sync result");
+    clear_codex_oauth_sync_test_hook();
+
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("CODEX_OAUTH_PROXY_RECOVERY_REQUIRED")
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("external config winner"),
+        b"external-winner\n"
+    );
+    assert_eq!(
+        std::fs::read(&auth_path).expect("restored proxy auth"),
+        auth_before
+    );
+    assert_eq!(
+        std::fs::read(cli_proxy_manifest_path(
+            &cli_proxy_root_dir(&handle, "codex").expect("proxy root")
+        ))
+        .expect("restored manifest"),
+        manifest_before
+    );
+}
+
+#[test]
 fn oauth_only_sync_with_managed_profile_keeps_catalog_binding_without_catalog_refresh() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();
@@ -3039,4 +3608,94 @@ fn oauth_only_sync_with_managed_profile_keeps_catalog_binding_without_catalog_re
     let auth = std::fs::read_to_string(codex_auth_path(&handle).unwrap()).unwrap();
     assert!(auth.contains("oauth-token"), "{auth}");
     assert!(!auth.contains("OPENAI_API_KEY"), "{auth}");
+}
+
+#[test]
+fn conditional_snapshot_restore_continues_when_snapshot_sets_differ() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    let unexpected = temp.path().join("unexpected");
+    std::fs::write(&first, b"first-committed").expect("write first committed");
+    std::fs::write(&second, b"second-before").expect("write second before");
+    std::fs::write(&unexpected, b"unexpected-committed").expect("write unexpected");
+
+    let before = vec![
+        FileSnapshot {
+            path: first.clone(),
+            existed: true,
+            bytes: Some(b"first-before".to_vec()),
+        },
+        FileSnapshot {
+            path: second.clone(),
+            existed: true,
+            bytes: Some(b"second-before".to_vec()),
+        },
+    ];
+    let committed = vec![
+        FileSnapshot {
+            path: first.clone(),
+            existed: true,
+            bytes: Some(b"first-committed".to_vec()),
+        },
+        FileSnapshot {
+            path: unexpected,
+            existed: true,
+            bytes: Some(b"unexpected-committed".to_vec()),
+        },
+    ];
+
+    let error = restore_file_snapshots_conditionally(&before, &committed, CLI_PROXY_FILE_MAX_BYTES)
+        .expect_err("missing and unexpected paths should be reported");
+    let message = error.to_string();
+    assert!(message.contains("second"), "{message}");
+    assert!(message.contains("unexpected"), "{message}");
+    assert_eq!(std::fs::read(&first).unwrap(), b"first-before");
+    assert_eq!(std::fs::read(&second).unwrap(), b"second-before");
+}
+
+#[test]
+fn applied_proxy_rollback_preserves_drift_and_restores_other_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let drifted = temp.path().join("drifted");
+    let recoverable = temp.path().join("recoverable");
+    std::fs::write(&drifted, b"drifted-committed").expect("write drifted committed");
+    std::fs::write(&recoverable, b"recoverable-committed").expect("write recoverable committed");
+
+    let applied = AppliedProxyConfig {
+        changes: vec![
+            (
+                FileSnapshot {
+                    path: drifted.clone(),
+                    existed: true,
+                    bytes: Some(b"drifted-before".to_vec()),
+                },
+                FileSnapshot {
+                    path: drifted.clone(),
+                    existed: true,
+                    bytes: Some(b"drifted-committed".to_vec()),
+                },
+            ),
+            (
+                FileSnapshot {
+                    path: recoverable.clone(),
+                    existed: true,
+                    bytes: Some(b"recoverable-before".to_vec()),
+                },
+                FileSnapshot {
+                    path: recoverable.clone(),
+                    existed: true,
+                    bytes: Some(b"recoverable-committed".to_vec()),
+                },
+            ),
+        ],
+    };
+
+    // Simulate a concurrent writer after our transaction committed.
+    std::fs::write(&drifted, b"external-winner").expect("write external drift");
+    let error = applied.rollback().expect_err("drift must require recovery");
+
+    assert!(error.to_string().contains("drifted"));
+    assert_eq!(std::fs::read(&drifted).unwrap(), b"external-winner");
+    assert_eq!(std::fs::read(&recoverable).unwrap(), b"recoverable-before");
 }

@@ -30,6 +30,17 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async settingsCodexGpt56372kContextSet(enabled: boolean): Promise<Result<SettingsView, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("settings_codex_gpt56_372k_context_set", { enabled }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async settingsUpdateChannelSet(
     channel: UpdateChannel,
     confirm: RiskyIpcConfirm | null
@@ -4532,6 +4543,7 @@ export type SettingsView = {
   codex_home_mode: CodexHomeMode;
   codex_home_override: string;
   codex_oauth_compatible_proxy_mode: boolean;
+  codex_gpt56_372k_context_enabled: boolean;
   codex_provider_test_model: string;
   codex_infinite_retry_test_enabled: boolean;
   codex_infinite_retry_test_interval_ms: number;

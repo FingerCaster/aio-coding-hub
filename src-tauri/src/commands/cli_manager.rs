@@ -35,6 +35,8 @@ pub(crate) async fn cli_manager_codex_model_catalog_get(
     app: tauri::AppHandle,
 ) -> Result<codex_model_catalog::CodexModelCatalogState, String> {
     blocking::run("cli_manager_codex_model_catalog_get", move || {
+        let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
+        crate::codex_model_catalog::managed::sync_current_locked(&app)?;
         codex_model_catalog::codex_model_catalog_get(&app)
     })
     .await

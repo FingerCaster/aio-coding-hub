@@ -37,6 +37,15 @@ pub(crate) async fn settings_patch(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn settings_codex_gpt56_372k_context_set(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    settings_service::settings_codex_gpt56_372k_context_set(app, enabled).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn settings_update_channel_set(
     app: tauri::AppHandle,
     channel: crate::settings::UpdateChannel,

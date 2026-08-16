@@ -23,6 +23,7 @@ import {
 } from "../../../services/cli/cliManager";
 import type {
   AppSettings,
+  AppSettingsPatch,
   CodexHomeMode,
   UpstreamRetryPolicy,
 } from "../../../services/settings/settings";
@@ -336,6 +337,7 @@ export type CliManagerCodexTabProps = {
   streamInternalErrorGuardMs?: number;
   setStreamInternalErrorGuardMs?: (value: number) => void;
   codexHomeSettingsSaving?: boolean;
+  codexGpt56372kContextSaving?: boolean;
   refreshCodex: () => Promise<void> | void;
   openCodexConfigDir: () => Promise<void> | void;
   persistCodexConfig: (
@@ -345,13 +347,14 @@ export type CliManagerCodexTabProps = {
   persistCodexConfigToml: (toml: string) => Promise<boolean> | boolean;
   syncCodexProvider?: () => Promise<void> | void;
   persistCommonSettings?: (
-    patch: Partial<AppSettings>
+    patch: AppSettingsPatch
   ) => Promise<AppSettings | null> | AppSettings | null;
   persistCodexHomeSettings?: (
     codexHomeMode: CodexHomeMode,
     codexHomeOverride: string
   ) => Promise<boolean> | boolean;
   persistCodexOauthCompatibleProxyMode?: (enabled: boolean) => Promise<boolean> | boolean;
+  persistCodexGpt56372kContext?: (enabled: boolean) => Promise<boolean> | boolean;
   pickCodexHomeDirectory?: (initialPath?: string) => Promise<string | null> | string | null;
 };
 
@@ -623,6 +626,7 @@ function CodexConfigLocationSection({
   configLocationError,
   selectingCodexHomeDir,
   configLocationControlsDisabled,
+  codexGpt56372kContextEnabled,
   activeConfigModeBadgeText,
   activeConfigDirPrimaryText,
   activeConfigDirSummaryText,
@@ -646,6 +650,7 @@ function CodexConfigLocationSection({
   configLocationError: string | null;
   selectingCodexHomeDir: boolean;
   configLocationControlsDisabled: boolean;
+  codexGpt56372kContextEnabled: boolean;
   activeConfigModeBadgeText: string;
   activeConfigDirPrimaryText: string;
   activeConfigDirSummaryText: string;
@@ -675,6 +680,11 @@ function CodexConfigLocationSection({
               仅影响 Windows 本机上的 Codex 用户级 <span className="font-mono">.codex</span>{" "}
               目录，不改写 WSL 内各 distro 的目标路径。
             </div>
+            {codexGpt56372kContextEnabled ? (
+              <div className="mt-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+                GPT-5.6 372K 上下文已开启；请先关闭该开关，再切换 Codex 目录。
+              </div>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-2">
@@ -897,6 +907,45 @@ function CodexOauthProxySection({
   );
 }
 
+function CodexGpt56372kContextSection({
+  enabled,
+  disabled,
+  saving,
+  persistCodexGpt56372kContext,
+}: {
+  enabled: boolean;
+  disabled: boolean;
+  saving: boolean;
+  persistCodexGpt56372kContext?: (enabled: boolean) => Promise<boolean> | boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground">GPT-5.6 372K 上下文</div>
+          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            将 Sol、Terra 与 Luna 的名义上下文窗口设为 372,000 tokens；仅新启动的 Codex 会话生效。
+          </div>
+        </div>
+        <div className="flex h-6 shrink-0 items-center gap-2">
+          {saving ? (
+            <RefreshCw
+              aria-label="正在更新 Codex GPT-5.6 372K 上下文"
+              className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+            />
+          ) : null}
+          <Switch
+            aria-label="切换 Codex GPT-5.6 372K 上下文"
+            checked={enabled}
+            onCheckedChange={(checked) => void persistCodexGpt56372kContext?.(checked)}
+            disabled={disabled}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function useCodexInfiniteRetryActiveCount() {
   const [activeCount, setActiveCount] = useState(0);
   const documentVisible = useDocumentVisibility();
@@ -956,7 +1005,7 @@ function CodexInfiniteRetryTestSection({
     setIntervalError(null);
   }, [savedInterval]);
 
-  async function persistPatch(patch: Partial<AppSettings>) {
+  async function persistPatch(patch: AppSettingsPatch) {
     if (!persistCommonSettings || controlsDisabled) return null;
     setLocalSaving(true);
     try {
@@ -1908,6 +1957,7 @@ function useCodexTabController({
   streamInternalErrorGuardMs,
   setStreamInternalErrorGuardMs,
   codexHomeSettingsSaving = false,
+  codexGpt56372kContextSaving = false,
   refreshCodex,
   persistCodexConfig,
   persistCodexConfigToml,
@@ -1915,6 +1965,7 @@ function useCodexTabController({
   persistCommonSettings,
   persistCodexHomeSettings,
   persistCodexOauthCompatibleProxyMode,
+  persistCodexGpt56372kContext,
   pickCodexHomeDirectory,
 }: CliManagerCodexTabProps) {
   const customHomeInputId = useId();
@@ -2069,13 +2120,23 @@ function useCodexTabController({
   const tomlBusy = codexConfigSaving || codexConfigTomlLoading || codexConfigTomlSaving;
   const providerSyncControlsDisabled =
     codexConfigSaving || codexConfigTomlSaving || codexProviderSyncing || !syncCodexProvider;
-  const configLocationBusy = saving || codexHomeSettingsSaving;
-  const configLocationControlsDisabled = configLocationBusy || selectingCodexHomeDir;
-  const commonSettingsControlsDisabled = codexHomeSettingsSaving || !appSettings;
+  const codexGpt56372kContextEnabled = appSettings?.codex_gpt56_372k_context_enabled ?? false;
+  const configLocationBusy =
+    saving || codexConfigTomlSaving || codexHomeSettingsSaving || codexGpt56372kContextSaving;
+  const configLocationControlsDisabled =
+    !appSettings || configLocationBusy || selectingCodexHomeDir || codexGpt56372kContextEnabled;
+  const commonSettingsControlsDisabled =
+    codexHomeSettingsSaving || codexGpt56372kContextSaving || !appSettings;
   const providerTestModelControlsDisabled =
     commonSettingsSaving || !appSettings || !persistCommonSettings;
   const proxyModeControlsDisabled =
     commonSettingsControlsDisabled || commonSettingsSaving || !persistCodexOauthCompatibleProxyMode;
+  const codexGpt56372kContextControlsDisabled =
+    commonSettingsControlsDisabled ||
+    commonSettingsSaving ||
+    codexConfigSaving ||
+    codexConfigTomlSaving ||
+    !persistCodexGpt56372kContext;
   const streamInternalErrorControlsDisabled =
     commonSettingsSaving ||
     codexHomeSettingsSaving ||
@@ -2402,6 +2463,7 @@ function useCodexTabController({
     providerTestModelControlsDisabled,
     streamInternalErrorControlsDisabled,
     configLocationControlsDisabled,
+    codexGpt56372kContextControlsDisabled,
     proxyModeControlsDisabled,
     proxyModeSaving: commonSettingsSaving,
     effectiveSandboxMode,
@@ -2513,6 +2575,15 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
         />
       ) : null}
 
+      {appSettings ? (
+        <CodexGpt56372kContextSection
+          enabled={appSettings.codex_gpt56_372k_context_enabled}
+          disabled={controller.codexGpt56372kContextControlsDisabled}
+          saving={props.codexGpt56372kContextSaving ?? false}
+          persistCodexGpt56372kContext={props.persistCodexGpt56372kContext}
+        />
+      ) : null}
+
       {codexConfig ? (
         <div className="space-y-4">
           <CodexConfigLocationSection
@@ -2523,6 +2594,7 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
             configLocationError={controller.configLocationError}
             selectingCodexHomeDir={controller.selectingCodexHomeDir}
             configLocationControlsDisabled={controller.configLocationControlsDisabled}
+            codexGpt56372kContextEnabled={appSettings?.codex_gpt56_372k_context_enabled ?? false}
             activeConfigModeBadgeText={controller.activeConfigModeBadgeText}
             activeConfigDirPrimaryText={controller.activeConfigDirPrimaryText}
             activeConfigDirSummaryText={controller.activeConfigDirSummaryText}

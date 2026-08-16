@@ -67,6 +67,11 @@ async fn run(app_handle: tauri::AppHandle) {
     };
 
     crate::app::startup_settings::apply_window_state(&app_handle, &settings);
+    let catalog_result =
+        crate::app::startup_settings::reconcile_codex_model_catalog(&app_handle).await;
+    if !complete_codex_model_catalog_reconciliation(&app_handle, catalog_result) {
+        return;
+    }
 
     set_startup_stage(&app_handle, AppStartupStage::StartingGateway);
     let status = match crate::app::startup_gateway::start(&app_handle, db.clone(), &settings).await
@@ -84,6 +89,20 @@ async fn run(app_handle: tauri::AppHandle) {
     set_startup_stage(&app_handle, AppStartupStage::FinalizingWsl);
     crate::app::startup_wsl::finalize(&app_handle, db, status.port, settings).await;
     finish_startup_run(&app_handle);
+}
+
+fn complete_codex_model_catalog_reconciliation<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    result: Result<(), String>,
+) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(error = %error, "startup Codex model catalog reconciliation failed");
+            fail_startup_run(app_handle, AppStartupStage::ReadingSettings, error);
+            false
+        }
+    }
 }
 
 async fn initialize_db_stage<R, F, Fut>(
@@ -163,5 +182,36 @@ mod tests {
         assert_eq!(resumed.current_stage, AppStartupStage::ReadingSettings);
         assert_eq!(resumed.failed_stage, None);
         assert!(!resumed.can_retry);
+    }
+
+    #[test]
+    fn catalog_reconciliation_failure_stops_startup_with_typed_retryable_state() {
+        let app = tauri::test::mock_app();
+        assert!(app.manage(StartupState::default()));
+        let app_handle = app.handle().clone();
+        assert!(try_begin_startup_run(&app_handle));
+        set_startup_stage(&app_handle, AppStartupStage::ReadingSettings);
+
+        let error =
+            crate::app::startup_settings::format_codex_model_catalog_startup_error(AppError::new(
+                "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+                "forced startup catalog drift",
+            ));
+        assert!(!complete_codex_model_catalog_reconciliation(
+            &app_handle,
+            Err(error)
+        ));
+
+        let failed = startup_status_snapshot(&app_handle);
+        assert!(!failed.running);
+        assert_eq!(failed.current_stage, AppStartupStage::Failed);
+        assert_eq!(failed.failed_stage, Some(AppStartupStage::ReadingSettings));
+        assert!(failed.can_retry);
+        let message = failed.error_message.expect("typed startup failure");
+        assert!(message.starts_with(&format!(
+            "{}:",
+            crate::app::startup_settings::CODEX_MODEL_CATALOG_STARTUP_ERROR_CODE
+        )));
+        assert!(message.contains("CODEX_MANAGED_MODEL_CONFIG_DRIFT"));
     }
 }

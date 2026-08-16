@@ -6,6 +6,7 @@ import {
   normalizeConfigMigrateFilePath,
 } from "../services/app/configMigrate";
 import {
+  cliManagerKeys,
   cliProxyKeys,
   codexManagedProfilesKeys,
   gatewayKeys,
@@ -67,6 +68,9 @@ export function useConfigImportMutation() {
         queryClient.invalidateQueries({ queryKey: skillsKeys.all }),
         queryClient.invalidateQueries({ queryKey: wslKeys.all }),
         queryClient.invalidateQueries({ queryKey: cliProxyKeys.all }),
+        queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() }),
+        queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() }),
+        queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelCatalogAll() }),
       ]);
     },
   });

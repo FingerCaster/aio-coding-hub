@@ -10,6 +10,7 @@ import {
 } from "../../services/settings/settings";
 import { settingsCircuitBreakerNoticeSet } from "../../services/settings/settingsCircuitBreakerNotice";
 import { settingsCodexSessionIdCompletionSet } from "../../services/settings/settingsCodexSessionIdCompletion";
+import { settingsCodexGpt56372kContextSet } from "../../services/settings/settingsCodexGpt56372kContext";
 import { settingsGatewayRectifierSet } from "../../services/settings/settingsGatewayRectifier";
 import { createTestAppSettings } from "../../test/fixtures/settings";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
@@ -19,6 +20,7 @@ import {
   getSettingsReadProtection,
   SETTINGS_READONLY_MESSAGE,
   useSettingsCircuitBreakerNoticeSetMutation,
+  useSettingsCodexGpt56372kContextSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
   useSettingsGatewayRectifierSetMutation,
   useSettingsQuery,
@@ -49,6 +51,12 @@ vi.mock("../../services/settings/settingsCodexSessionIdCompletion", async () => 
     typeof import("../../services/settings/settingsCodexSessionIdCompletion")
   >("../../services/settings/settingsCodexSessionIdCompletion");
   return { ...actual, settingsCodexSessionIdCompletionSet: vi.fn() };
+});
+vi.mock("../../services/settings/settingsCodexGpt56372kContext", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../services/settings/settingsCodexGpt56372kContext")
+  >("../../services/settings/settingsCodexGpt56372kContext");
+  return { ...actual, settingsCodexGpt56372kContextSet: vi.fn() };
 });
 
 function createSettingsMutationResult(settings: AppSettings): SettingsMutationResult {
@@ -591,5 +599,64 @@ describe("query/settings", () => {
 
     expect(client.getQueryData(settingsKeys.get())).toEqual(initial);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: settingsKeys.get() });
+  });
+
+  it("useSettingsCodexGpt56372kContextSetMutation stores confirmation and refreshes Codex state", async () => {
+    setTauriRuntime();
+
+    const updated = createTestAppSettings({ codex_gpt56_372k_context_enabled: true });
+    vi.mocked(settingsCodexGpt56372kContextSet).mockResolvedValue(updated);
+
+    const client = createTestQueryClient();
+    client.setQueryData(settingsKeys.get(), createTestAppSettings());
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const resetSpy = vi.spyOn(client, "resetQueries");
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useSettingsCodexGpt56372kContextSetMutation(), {
+      wrapper,
+    });
+    await act(async () => {
+      await result.current.mutateAsync(true);
+    });
+
+    expect(settingsCodexGpt56372kContextSet).toHaveBeenCalledWith(true);
+    expect(client.getQueryData(settingsKeys.get())).toEqual(updated);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: settingsKeys.get() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(resetSpy).toHaveBeenCalledWith({
+      queryKey: cliManagerKeys.codexModelCatalogAll(),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
+  });
+
+  it("useSettingsCodexGpt56372kContextSetMutation keeps confirmed cache on failure", async () => {
+    setTauriRuntime();
+
+    const initial = createTestAppSettings({ codex_gpt56_372k_context_enabled: false });
+    vi.mocked(settingsCodexGpt56372kContextSet).mockRejectedValue(new Error("catalog drift"));
+
+    const client = createTestQueryClient();
+    client.setQueryData(settingsKeys.get(), initial);
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const resetSpy = vi.spyOn(client, "resetQueries");
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useSettingsCodexGpt56372kContextSetMutation(), {
+      wrapper,
+    });
+    await act(async () => {
+      await expect(result.current.mutateAsync(true)).rejects.toThrow("catalog drift");
+    });
+
+    expect(client.getQueryData(settingsKeys.get())).toEqual(initial);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: settingsKeys.get() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(resetSpy).toHaveBeenCalledWith({
+      queryKey: cliManagerKeys.codexModelCatalogAll(),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
   });
 });

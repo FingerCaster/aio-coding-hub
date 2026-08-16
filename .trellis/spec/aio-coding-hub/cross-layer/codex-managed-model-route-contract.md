@@ -464,3 +464,241 @@ let baseline = prepare_catalog_baseline(proxy_backup, generated_path)?;
 let source = base_catalog_source(baseline.catalog_path.as_deref())?;
 apply_backup_generated_and_live_transaction(baseline, source, profiles)?;
 ```
+
+## Scenario: Dedicated GPT-5.6 372K Catalog Policy
+
+### 1. Scope / Trigger
+
+Use this contract when changing the device-local GPT-5.6 372K switch, settings
+migration/import, Codex-home selection, generated picker catalog, raw or
+structured Codex config saves, CLI proxy lifecycle, or startup reconciliation.
+
+The feature owns a derived-catalog policy. It does not own a root
+`model_context_window`, `model_auto_compact_token_limit`, an installed Codex
+binary, or a user's source catalog.
+
+### 2. Signatures
+
+The backend and generated IPC boundary are:
+
+```rust
+pub(crate) const GPT56_372K_CONTEXT_TOKENS: u64 = 372_000;
+
+pub(crate) struct ManagedCatalogPolicy {
+    pub(crate) gpt56_372k_context_enabled: bool,
+}
+
+settings_codex_gpt56_372k_context_set(enabled: bool) -> SettingsView
+sync_current_locked(app: &AppHandle<R>) -> AppResult<()>
+prepare_for_profiles_with_policy(
+    app: &AppHandle<R>,
+    profiles: &[ManagedCatalogProfile],
+    policy: ManagedCatalogPolicy,
+) -> AppResult<ManagedCatalogPlan>
+
+pub(crate) struct ManagedCatalogPlan { /* prepared snapshots and guards */ }
+pub(crate) struct AppliedManagedCatalog { /* committed file tokens */ }
+
+ManagedCatalogPlan::apply(app) -> AppResult<AppliedManagedCatalog>
+AppliedManagedCatalog::rollback() -> AppResult<()>
+```
+
+`AppSettings.codex_gpt56_372k_context_enabled` is persisted with settings
+schema 64 and defaults to `false`. It is visible in `SettingsView`, but is not
+an owned field of ordinary `SettingsUpdate`, `SettingsPatch`, config export, or
+config import.
+
+### 3. Contracts
+
+- The exact nominal value is decimal `372000`, following the bundled Codex
+  decimal `272000` convention. `380928` is not an enabled value.
+- The only target slugs are `gpt-5.6-sol`, `gpt-5.6-terra`, and
+  `gpt-5.6-luna`. Match exact slugs; never prefix-match aliases or future
+  models.
+- Enabling requires one valid occurrence of every target. Rewrite both
+  `context_window` and `max_context_window` to `372000` in the derived copy.
+  Preserve all other model/root fields, `effective_context_window_percent`,
+  `auto_compact_token_limit`, and every `aio/*` projection.
+- A generated catalog is needed when managed Profiles exist OR the policy is
+  enabled. With neither owner, restore the original `model_catalog_json`
+  binding (or its absence) and remove only the owned generated file.
+- The base is the validated absolute user catalog recorded by the original
+  binding, otherwise `codex debug models --bundled` from the installed Codex.
+  A generated AIO catalog must never become its own base.
+- Owner metadata schema v2 hashes the base/source binding, managed Profiles,
+  policy version, enabled bit, token count, and exact slug list. Unknown,
+  malformed, or externally modified ownership data fails closed.
+- Prepare is side-effect free. Apply rechecks ownership, the base-source guard,
+  live config, generated file, and proxy backup before its first write.
+- Activation writes proxy backup repair (when required), generated catalog,
+  then live config. Deactivation restores live config before removing the
+  generated catalog. Compensation runs in reverse and attempts every committed
+  file independently.
+- Every rollback compares the file with this transaction's committed bytes.
+  Config drift must not suppress an otherwise-owned backup rollback, and
+  backup drift must not suppress an otherwise-owned config rollback.
+- The dedicated settings transaction persists intent under the shared
+  lifecycle/settings locks, applies the prepared catalog, and returns only a
+  canonical reread. Apply failure or post-apply confirmation failure rolls back
+  `AppliedManagedCatalog` and CAS-restores only the still-owned settings bit.
+  A concurrent winner is preserved and the catalog is reconciled to that
+  canonical winner.
+- Structured and raw config saves treat submitted bytes as the proposed base,
+  then prepare backup/generated/live output in that order. While enabled, a
+  user may change the original catalog binding, but the live config remains
+  bound to the current AIO catalog until disable restores the new source.
+- Portable config export serializes the policy as disabled, and config import
+  replaces any incoming policy value with the canonical pre-import bit. An
+  imported bundle can neither enable nor disable this device/home-owned policy.
+- Config import holds `config import -> managed Profile lifecycle` for the
+  whole operation. When the canonical policy is enabled, an imported Codex-home
+  change fails before DB or file mutation. When the policy is disabled but the
+  old home still has an enabled proxy projection, import prepares a compensating
+  home rebind and applies it after the durable settings commit through the
+  `_locked` import path.
+- The `_locked` import rebind restores/moves the proxy projection without
+  applying a live gateway config and without synchronizing the managed catalog.
+  It must not reacquire the public lifecycle lock or call public catalog sync;
+  the outer import transaction independently prepares and applies the catalog
+  from the staged Profiles and preserved canonical policy.
+- Config import stages DB and Skill FS state, commits settings/autostart, applies
+  the prepared home rebind, applies the separately prepared catalog, converges
+  CLI runtime, and commits the DB transaction last. A later failure rolls back
+  catalog and rebind first, independently from their own committed tokens, then
+  aborts/restores DB and restores settings/autostart, Skill FS, and runtime.
+  Every compensation is attempted even if another target drifted or failed.
+- Rebind, catalog, settings, or runtime compensation failure must replace the
+  ordinary primary error with the owning recovery-required result:
+  `CLI_PROXY_REBIND_RECOVERY_REQUIRED`,
+  `CODEX_MANAGED_MODEL_RECOVERY_REQUIRED`, or
+  `CONFIG_IMPORT_RECOVERY_REQUIRED`. Recovery failure must never be hidden by
+  returning only the original import error.
+- Startup, direct/proxy/offline transitions, proxy disable/exit, managed
+  Profile changes, provider capability changes, and Codex CLI fingerprint
+  changes call the same policy-aware reconciliation path.
+- While enabled, changing `codex_home_mode` or `codex_home_override` is
+  forbidden. The user must disable successfully, completing source restoration,
+  before selecting another home.
+- Any ordinary settings mutation that carries Codex-home intent acquires the
+  managed-profile lifecycle lock before `AUTO_START -> SETTINGS`, even when the
+  requested home equals the current value. This serializes the home commit with
+  the entire dedicated enable/disable transaction; the temporary persisted
+  intent inside a compensating catalog update is never authorization to move
+  homes.
+- Existing Codex processes retain their startup snapshot. UI success promises
+  the new catalog only to newly launched Codex sessions.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Policy absent, migrated, imported, or defaulted | Persist/return `false`; no policy-only catalog binding |
+| All three exact targets are valid | Rewrite both window fields to `372000` |
+| Any target is missing or duplicated | `CODEX_GPT56_372K_MODELS_MISSING`; zero committed intent/catalog changes |
+| A target window field is structurally invalid | `CODEX_GPT56_372K_CATALOG_INVALID`; preserve source and live files |
+| User source/owner/config/generated/backup drifts after prepare | Fail closed; never overwrite the drifted bytes |
+| Settings commit succeeds but catalog apply fails | Roll back the owned setting and every committed file |
+| Catalog apply succeeds but confirmation reread fails | Roll back catalog, CAS the setting, then reconcile any concurrent winner |
+| Any compensation target no longer equals its committed token | Preserve the winner; reconcile from canonical settings |
+| Compensation or winner reconciliation fails | `CODEX_GPT56_372K_CONTEXT_RECOVERY_REQUIRED` or `CODEX_MANAGED_MODEL_RECOVERY_REQUIRED` |
+| Codex home changes while enabled | `CODEX_GPT56_372K_CONTEXT_HOME_CHANGE_BLOCKED`; no home/catalog mutation |
+| Config import carries a different 372K bit | Ignore it and preserve the canonical pre-import bit |
+| Disabled policy plus enabled proxy changes home during import | Rebind under the already-held lifecycle lock; apply catalog separately; acquire the lifecycle lock once |
+| Import fails after home rebind or catalog application | Roll back catalog, rebind, DB/settings/Skill FS/runtime from independent committed tokens |
+| Import compensation cannot restore an owned target | Promote to the applicable `CLI_PROXY_REBIND_RECOVERY_REQUIRED`, `CODEX_MANAGED_MODEL_RECOVERY_REQUIRED`, or `CONFIG_IMPORT_RECOVERY_REQUIRED` code |
+| Proxy stops while policy remains enabled | Keep a direct generated binding with `372000` targets |
+| Policy disables while Profiles remain | Keep generated catalog/Profile rows; remove only the GPT-5.6 rewrite |
+| Policy disables with zero Profiles | Restore the original binding/base and remove the owned generated file |
+
+### 5. Good / Base / Bad Cases
+
+- Good: enable against a complete user catalog, preserve its unknown fields,
+  bind an AIO-derived catalog containing three `372000` pairs, then disable and
+  restore the exact user path without modifying the source bytes.
+- Good: leave the policy enabled while the proxy stops; a new direct Codex
+  process still loads the derived catalog. Restart and CLI-update sync remain
+  byte-stable when the base fingerprint has not changed.
+- Good: with the policy disabled and an enabled proxy on the old Codex home,
+  config import changes home under one lifecycle-lock acquisition, restores the
+  old projection, rebinds the proxy baseline to the new home, and lets the outer
+  import transaction apply the catalog exactly once.
+- Base: a default installation with no managed Profiles keeps bundled behavior
+  and no AIO catalog binding; the three bundled entries remain `272000`.
+- Base: a managed `aio/*` Profile keeps its explicit provider-model context and
+  effort capabilities regardless of this policy.
+- Bad: write `model_context_window = 372000`, modify only
+  `max_context_window`, treat `380928` as enabled, prefix-match `gpt-5.6*`, or
+  regenerate asynchronously after reporting settings success.
+- Bad: restore a whole settings snapshot or skip backup compensation because
+  the live config concurrently drifted.
+- Bad: trust the bundle's 372K bit, invoke the public home-rebind path from
+  inside config import, recursively acquire the lifecycle lock, or let rebind
+  call catalog sync before the outer import has prepared the staged catalog.
+
+### 6. Tests Required
+
+- Catalog unit tests assert exact three-slug/two-field rewrite, `380928`
+  negative ownership, missing/duplicate/invalid fields, unknown-field
+  preservation, unchanged `aio/*`, v2 metadata/hash, and stable regeneration.
+- Dedicated settings tests inject failure after settings commit and after
+  catalog apply/confirmation; assert exact settings, config, generated, and
+  backup compensation plus concurrent-winner preservation.
+- Config tests cover structured and raw proposed-source saves, active-binding
+  preservation, changed-source restoration, source drift, and independent
+  committed-token rollback for config and proxy backup.
+- Lifecycle tests cover direct, proxy, restored-direct, offline, startup,
+  proxy disable/exit, zero/nonzero Profiles, capability updates, and Codex
+  executable fingerprint changes.
+- Migration/import tests assert schema 63 -> 64 defaults false, ordinary
+  writers cannot own the bit, export/import do not transfer it, and active
+  policy blocks an imported Codex-home change. With the policy disabled and an
+  enabled old-home proxy projection, assert successful home rebind, exact old
+  and new baseline bytes, exactly one lifecycle-lock attempt, runtime-failure
+  rollback of catalog/rebind/settings/DB state, and typed recovery-code
+  promotion for failed rebind, catalog, or import compensation.
+- Frontend tests assert exact `372,000` copy, canonical success/error rollback,
+  duplicate-save blocking, query invalidation, and disabling every Codex-home
+  control during the active policy or another Codex config write.
+- In an isolated `CODEX_HOME`, run real `codex debug models` without
+  `--bundled` after enable and assert all three pairs are `372000`; after
+  disable assert the source/bundled `272000` values return.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+settings.codex_gpt56_372k_context_enabled = enabled;
+settings::write(app, &settings)?;
+let _ = sync_current_locked(app); // reports success before catalog convergence
+```
+
+#### Correct
+
+```rust
+let policy = ManagedCatalogPolicy {
+    gpt56_372k_context_enabled: enabled,
+};
+let plan = prepare_for_profiles_with_policy(app, &profiles, policy)?;
+let (_, previous_enabled) = settings::update(app, |latest| {
+    let previous = latest.codex_gpt56_372k_context_enabled;
+    latest.codex_gpt56_372k_context_enabled = enabled;
+    Ok(previous)
+})?;
+let applied = match plan.apply(app) {
+    Ok(applied) => applied,
+    Err(error) => return Err(compensate_codex_gpt56_372k_context_failure(
+        app, enabled, previous_enabled, None, error,
+    )),
+};
+let canonical = match read_codex_gpt56_372k_confirmation(app) {
+    Ok(canonical) => canonical,
+    Err(error) => return Err(compensate_codex_gpt56_372k_context_failure(
+        app, enabled, previous_enabled, Some(applied), error,
+    )),
+};
+if canonical.codex_gpt56_372k_context_enabled != enabled {
+    sync_current_locked(app)?;
+}
+Ok(canonical)
+```
