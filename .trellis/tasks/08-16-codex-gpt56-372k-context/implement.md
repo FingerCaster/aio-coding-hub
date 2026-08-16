@@ -41,12 +41,15 @@
 - [x] Scoped Rust tests for settings, Codex config/catalog, profiles and proxy lifecycle.
 - [x] `pnpm check:generated-bindings`
 - [x] `pnpm tauri:build:win:x64`
-- [ ] Record MSI absolute path, byte size and SHA-256; inspect final git diff and commit only task changes.
+- [x] Record MSI absolute path, byte size and SHA-256; inspect final git diff and commit only task changes.
+  - `D:\\OrcaProjects\\aio-coding-hub-fork\\codex-gpt56-372k-context\\src-tauri\\target\\x86_64-pc-windows-msvc\\release\\bundle\\msi\\AIO Coding Hub_0.60.40_x64_en-US.msi`
+  - `17,711,104` bytes; SHA-256 `accce68c570ceb3216f34f0acf59d76a212b9e23391a0caa40f8ac5343c32ea8`.
 
 ## 6. Origin integration and Beta release
 
 - [x] Re-read `origin/main`, inspect branch drift, and preserve non-conflicting origin changes without touching `upstream`.
-- [ ] Commit the task changes with hook-visible `node` and `pnpm`, push the feature branch to `origin`, create a PR against `main`, and wait for required checks on the exact final head.
+- [x] Commit the initial task changes with hook-visible `node` and `pnpm`, push the feature branch to `origin`, and create PR #42 against `main`.
+- [ ] Push the Linux fixture follow-up and wait for required checks on the exact final head.
 - [ ] Review and merge the PR, then record the immutable 40-hex merge SHA and confirm it is reachable from `origin/main`.
 - [ ] Re-read the Beta promotion high-water and confirm the selected tag/Release do not exist; expected candidate is `aio-coding-hub-v0.60.41-beta.9`.
 - [ ] Dispatch `release.yml` from `main` with `release_channel=beta`, the selected tag, and the exact merge SHA; monitor every job to terminal success.

@@ -973,6 +973,7 @@ mod tests {
         home: tempfile::TempDir,
         app: tauri::App<tauri::test::MockRuntime>,
         db: db::Db,
+        codex_catalog: crate::test_support::CodexModelCatalogFixture,
     }
 
     impl ProfileTestApp {
@@ -990,6 +991,9 @@ mod tests {
             let app = tauri::test::mock_app();
             app.manage(crate::resident::ResidentState::default());
             let db = crate::db::init(app.handle()).expect("init db");
+            let codex_home = crate::codex_paths::codex_home_dir(app.handle()).expect("Codex home");
+            let codex_catalog =
+                crate::test_support::install_codex_model_catalog_fixture(&codex_home);
             Self {
                 _lock: lock,
                 previous_home,
@@ -997,6 +1001,7 @@ mod tests {
                 home,
                 app,
                 db,
+                codex_catalog,
             }
         }
 
@@ -1134,6 +1139,46 @@ mod tests {
     }
 
     #[test]
+    fn profile_fixture_uses_an_absolute_user_catalog_instead_of_the_host_cli() {
+        let test_app = ProfileTestApp::new();
+        let app = test_app.handle();
+        let config = std::fs::read_to_string(&test_app.codex_catalog.config_path)
+            .expect("read fixture Codex config")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse fixture Codex config");
+        let configured_catalog = PathBuf::from(
+            config["model_catalog_json"]
+                .as_str()
+                .expect("fixture model_catalog_json"),
+        );
+        assert!(configured_catalog.is_absolute());
+        assert_eq!(configured_catalog, test_app.codex_catalog.catalog_path);
+
+        let model_uuid = test_app.seed_model();
+        let profile = create(&app, &test_app.db, "fixture-source", &model_uuid)
+            .expect("create profile from fixture catalog");
+        let active_config = std::fs::read_to_string(&test_app.codex_catalog.config_path)
+            .expect("read active fixture config")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse active fixture config");
+        let generated_path = PathBuf::from(
+            active_config["model_catalog_json"]
+                .as_str()
+                .expect("generated catalog binding"),
+        );
+        let generated: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&generated_path).expect("read generated fixture catalog"),
+        )
+        .expect("parse generated fixture catalog");
+        assert_eq!(
+            generated["fixture_marker"],
+            serde_json::json!(crate::test_support::CODEX_MODEL_CATALOG_FIXTURE_MARKER)
+        );
+
+        delete(&app, &test_app.db, &profile.profile_uuid).expect("delete fixture profile");
+    }
+
+    #[test]
     fn profile_creation_requires_explicit_model_capabilities() {
         let test_app = ProfileTestApp::new();
         let app = test_app.handle();
@@ -1164,65 +1209,8 @@ WHERE model_uuid = ?1
         let test_app = ProfileTestApp::new();
         let app = test_app.handle();
         let codex_home = crate::codex_paths::codex_home_dir(&app).expect("Codex home");
-        std::fs::create_dir_all(&codex_home).expect("create Codex home");
-        let base_catalog_path = test_app.home.path().join("user-model-catalog.json");
-        let base_catalog: serde_json::Value = serde_json::from_str(
-            r#"{
-            "future_top_level": {"kept": true},
-            "models": [{
-                "slug": "gpt-base",
-                "display_name": "GPT Base",
-                "description": "base",
-                "default_reasoning_level": "high",
-                "supported_reasoning_levels": [{"effort": "high", "description": "deep"}],
-                "shell_type": "shell_command",
-                "visibility": "list",
-                "supported_in_api": true,
-                "priority": 1,
-                "additional_speed_tiers": [],
-                "service_tiers": [],
-                "default_service_tier": null,
-                "availability_nux": null,
-                "upgrade": null,
-                "base_instructions": "base instructions",
-                "model_messages": null,
-                "include_skills_usage_instructions": false,
-                "supports_reasoning_summaries": false,
-                "default_reasoning_summary": "none",
-                "support_verbosity": false,
-                "default_verbosity": null,
-                "apply_patch_tool_type": null,
-                "web_search_tool_type": "text",
-                "truncation_policy": {"mode": "tokens", "limit": 10000},
-                "supports_parallel_tool_calls": false,
-                "supports_image_detail_original": false,
-                "context_window": 128000,
-                "max_context_window": 128000,
-                "auto_compact_token_limit": 100000,
-                "comp_hash": null,
-                "effective_context_window_percent": 95,
-                "experimental_supported_tools": [],
-                "input_modalities": ["text"],
-                "supports_search_tool": false,
-                "use_responses_lite": false,
-                "auto_review_model_override": null,
-                "tool_mode": null,
-                "multi_agent_version": null,
-                "future_required_field": {"kept": true}
-            }]
-        }"#,
-        )
-        .expect("parse base catalog fixture");
-        std::fs::write(
-            &base_catalog_path,
-            serde_json::to_vec_pretty(&base_catalog).expect("serialize base catalog"),
-        )
-        .expect("write base catalog");
-        let config_path = crate::codex_paths::codex_config_toml_path(&app).expect("config path");
-        let mut original_config = toml_edit::DocumentMut::new();
-        original_config["model_catalog_json"] =
-            toml_edit::value(base_catalog_path.to_string_lossy().to_string());
-        std::fs::write(&config_path, original_config.to_string()).expect("write config");
+        let base_catalog_path = test_app.codex_catalog.catalog_path.clone();
+        let config_path = test_app.codex_catalog.config_path.clone();
 
         let enabled = crate::cli_proxy::set_enabled(&app, "codex", true, "http://127.0.0.1:38123")
             .expect("enable proxy");
@@ -1706,6 +1694,11 @@ DROP TABLE provider_model_capability_commit_probe;
         let model_uuid = test_app.seed_model();
         let codex_home = crate::codex_paths::codex_home_dir(&app).expect("Codex home");
         let outside_home = tempfile::tempdir().expect("outside home");
+        std::fs::remove_file(&test_app.codex_catalog.config_path)
+            .expect("remove fixture Codex config");
+        std::fs::remove_file(&test_app.codex_catalog.catalog_path)
+            .expect("remove fixture Codex catalog");
+        std::fs::remove_dir(&codex_home).expect("remove fixture Codex home");
         symlink(outside_home.path(), &codex_home).expect("symlink Codex home");
 
         let error = create(&app, &test_app.db, "unsafe-home", &model_uuid)

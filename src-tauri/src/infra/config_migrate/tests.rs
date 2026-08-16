@@ -55,6 +55,7 @@ struct ConfigMigrateTestApp {
     home: tempfile::TempDir,
     app: tauri::App<tauri::test::MockRuntime>,
     db: crate::db::Db,
+    codex_catalog: crate::test_support::CodexModelCatalogFixture,
 }
 
 impl ConfigMigrateTestApp {
@@ -74,6 +75,8 @@ impl ConfigMigrateTestApp {
         let app = tauri::test::mock_app();
         app.manage(crate::resident::ResidentState::default());
         let db = crate::db::init(app.handle()).expect("init db");
+        let codex_home = crate::codex_paths::codex_home_dir(app.handle()).expect("Codex home");
+        let codex_catalog = crate::test_support::install_codex_model_catalog_fixture(&codex_home);
 
         Self {
             _lock: lock,
@@ -81,12 +84,36 @@ impl ConfigMigrateTestApp {
             home,
             app,
             db,
+            codex_catalog,
         }
     }
 
     fn handle(&self) -> tauri::AppHandle<tauri::test::MockRuntime> {
         self.app.handle().clone()
     }
+}
+
+#[test]
+fn config_migrate_fixture_binds_an_absolute_user_catalog() {
+    let test_app = ConfigMigrateTestApp::new();
+    let config = std::fs::read_to_string(&test_app.codex_catalog.config_path)
+        .expect("read fixture Codex config")
+        .parse::<toml_edit::DocumentMut>()
+        .expect("parse fixture Codex config");
+    let configured_catalog = std::path::PathBuf::from(
+        config["model_catalog_json"]
+            .as_str()
+            .expect("fixture model_catalog_json"),
+    );
+    assert!(configured_catalog.is_absolute());
+    assert_eq!(configured_catalog, test_app.codex_catalog.catalog_path);
+    let catalog: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&configured_catalog).expect("read fixture catalog"))
+            .expect("parse fixture catalog");
+    assert_eq!(
+        catalog["fixture_marker"],
+        serde_json::json!(crate::test_support::CODEX_MODEL_CATALOG_FIXTURE_MARKER)
+    );
 }
 
 fn query_workspace(conn: &Connection, cli_key: &str) -> (i64, String) {
@@ -1532,6 +1559,9 @@ fn config_import_serializes_profile_create_until_runtime_failure_rollback_finish
     previous.codex_home_mode = settings::CodexHomeMode::Custom;
     previous.codex_home_override = old_codex_home.to_string_lossy().into_owned();
     settings::write(&app, &previous).expect("set original Codex home");
+    let old_catalog_fixture =
+        crate::test_support::install_codex_model_catalog_fixture(&old_codex_home);
+    assert!(old_catalog_fixture.catalog_path.is_absolute());
 
     let provider = seed_direct_codex_provider(&test_app, "Concurrent Profile");
     let model_uuid = crate::provider_models::manual_upsert(

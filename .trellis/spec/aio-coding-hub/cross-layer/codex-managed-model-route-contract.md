@@ -218,6 +218,12 @@ codexManagedProfilesKeys.list()
   preserve that document, every existing model, and unknown fields as the base.
   Otherwise run the currently installed Codex executable with
   `debug models --bundled`; never substitute an AIO compile-time snapshot.
+- Tests that create Profiles or otherwise require a generated catalog must
+  write a deterministic complete user catalog and bind its absolute path in
+  the fixture's `config.toml`. Such fixtures must not fall through to the
+  installed-Codex branch: a developer machine with Codex installed can hide a
+  Linux/clean-host failure. This is test setup only; production keeps the
+  installed-Codex fallback and fails closed when neither source exists.
 - If an enabled proxy backup from an older/failed flow points
   `model_catalog_json` exactly (or canonically) at AIO's current generated
   catalog, treat only that binding as provable baseline pollution. Prepare a
@@ -314,6 +320,7 @@ codexManagedProfilesKeys.list()
 | Bundled Codex command cannot spawn or exits non-zero | `CODEX_MANAGED_MODEL_BUNDLED_UNAVAILABLE`; no partial profile/catalog/config commit |
 | Bundled Codex command times out | `CODEX_MANAGED_MODEL_BUNDLED_TIMEOUT`; terminate the process tree and leave state unchanged |
 | Bundled Codex output is empty, invalid, or oversized | `CODEX_MANAGED_MODEL_BUNDLED_INVALID`; no partial state |
+| No user catalog is bound and no Codex CLI is installed | `CODEX_MANAGED_MODEL_CLI_NOT_FOUND`; no partial profile/catalog/config commit |
 | Generated catalog owner/hash or root-config snapshot changed externally | Fail closed; preserve external bytes and roll back this lifecycle action |
 | Enabled backup catalog equals current AIO generated catalog | Remove only that backup binding, use bundled base, and transact backup/generated/live |
 | Enabled backup catalog is any other user path | Preserve it and apply ordinary user-catalog validation; never auto-clean |
@@ -352,6 +359,9 @@ codexManagedProfilesKeys.list()
   audit synchronization.
 - Base: an old `aio/<model_uuid>` profile continues resolving to the same
   provider-scoped model after readable picker aliases are introduced.
+- Base: production with neither an absolute user catalog nor an installed
+  Codex CLI fails closed with `CODEX_MANAGED_MODEL_CLI_NOT_FOUND`; success-path
+  fixtures bind their own user catalog instead of depending on the test host.
 - Bad: derive provider ownership from model prefix, `owned_by`, display name,
   numeric provider ID, or provider ordering.
 - Bad: rewrite `request_logs.requested_model` to the remote ID merely to avoid
@@ -364,6 +374,8 @@ codexManagedProfilesKeys.list()
   database without verifying the generated content hash.
 - Bad: infer effort or context from provider/model names, copy capability values
   into each Profile, or reset them during a later refresh/manual upsert.
+- Bad: let a managed-profile/config-import test fixture inherit the host's
+  Codex installation instead of binding an explicit temporary user catalog.
 
 ### 6. Tests Required
 
@@ -388,6 +400,11 @@ codexManagedProfilesKeys.list()
   Assert configured efforts/default/context, explicit no-reasoning/unknown
   context, Profile-set hash invalidation, drift-before-write failure, and exact
   catalog/config/DB restoration after a forced commit failure.
+- Managed-profile and config-import fixtures that can build a generated
+  catalog bind an absolute temporary user catalog in `config.toml`. Run their
+  profile create/delete cases without an installed Codex CLI (Linux CI is the
+  release gate) and assert they never return
+  `CODEX_MANAGED_MODEL_CLI_NOT_FOUND` merely because of host setup.
 - Catalog recovery tests: a proxy backup bound to the exact AIO generated path
   is sanitized before base selection; a different absolute user path is
   unchanged; forced generated/live write failures restore the original backup,
@@ -463,6 +480,22 @@ command.args(["debug", "models", "--bundled"]);
 let baseline = prepare_catalog_baseline(proxy_backup, generated_path)?;
 let source = base_catalog_source(baseline.catalog_path.as_deref())?;
 apply_backup_generated_and_live_transaction(baseline, source, profiles)?;
+```
+
+Test fixtures follow the same source contract explicitly:
+
+```rust
+// Wrong: success now depends on whether `codex` happens to be installed on
+// the developer or CI host.
+let app = tauri::test::mock_app();
+codex_managed_profiles::create(app.handle(), &db, "fixture-source", &model_uuid)?;
+
+// Correct: bind deterministic source bytes before exercising Profile/catalog
+// lifecycle code. Production behavior is unchanged.
+let codex_home = codex_home_dir(app.handle())?;
+let fixture = test_support::install_codex_model_catalog_fixture(&codex_home);
+assert!(fixture.catalog_path.is_absolute());
+codex_managed_profiles::create(app.handle(), &db, "fixture-source", &model_uuid)?;
 ```
 
 ## Scenario: Dedicated GPT-5.6 372K Catalog Policy
