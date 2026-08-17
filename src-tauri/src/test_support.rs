@@ -653,12 +653,14 @@ pub fn settings_get_json<R: tauri::Runtime>(
     serialize_json(settings)
 }
 
-pub fn settings_codex_gpt56_372k_context_set_json<R: tauri::Runtime>(
+pub fn settings_codex_model_context_rules_set_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    enabled: bool,
+    rules: serde_json::Value,
 ) -> crate::shared::error::AppResult<serde_json::Value> {
+    let rules: Vec<crate::settings::CodexModelContextRule> = serde_json::from_value(rules)
+        .map_err(|e| format!("SEC_INVALID_INPUT: invalid model context rules json: {e}"))?;
     let settings =
-        crate::app::settings_service::settings_codex_gpt56_372k_context_set_sync(app, enabled)?;
+        crate::app::settings_service::settings_codex_model_context_rules_set_sync(app, rules)?;
     serialize_json(settings)
 }
 

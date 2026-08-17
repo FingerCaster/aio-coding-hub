@@ -25,6 +25,8 @@ pub(crate) fn mark_update_channel_transition() {
 }
 
 // Re-export public API (preserves identical surface for all consumers).
+#[allow(unused_imports)]
+pub use defaults::MAX_CODEX_MODEL_CONTEXT_RULES;
 pub use defaults::{
     DEFAULT_CAPACITY_RETRY_KEYWORD, DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
     DEFAULT_CODEX_PROVIDER_TEST_MODEL, DEFAULT_CX2CC_FALLBACK_MODEL, DEFAULT_GATEWAY_PORT,
@@ -40,10 +42,10 @@ pub use defaults::{
     SCHEMA_VERSION,
 };
 pub(crate) use migration::{
-    migrate_to_current_schema, normalize_cx2cc_reasoning_effort_mappings_for_write,
-    normalize_model_routing_policy_for_write, normalize_upstream_error_response_rules_for_write,
-    normalize_upstream_retry_policy_for_write, sanitize_model_routing_policy,
-    sanitize_upstream_retry_policy,
+    migrate_to_current_schema, normalize_codex_model_context_rules_for_write,
+    normalize_cx2cc_reasoning_effort_mappings_for_write, normalize_model_routing_policy_for_write,
+    normalize_upstream_error_response_rules_for_write, normalize_upstream_retry_policy_for_write,
+    sanitize_model_routing_policy, sanitize_upstream_retry_policy,
 };
 pub(crate) use persistence::validate_bounds;
 pub use persistence::{
@@ -54,7 +56,7 @@ pub use persistence::{
 #[allow(unused_imports)]
 pub use types::ModelRoutingRule;
 pub use types::{
-    default_cx2cc_reasoning_effort_mappings, AppSettings, CodexHomeMode,
+    default_cx2cc_reasoning_effort_mappings, AppSettings, CodexHomeMode, CodexModelContextRule,
     Cx2ccReasoningEffortMapping, GatewayListenMode, HomeUsagePeriod, ModelRoutingPolicy,
     ProviderFailbackStrategy, UpdateChannel, UpstreamErrorMessageBehavior,
     UpstreamErrorResponseMatchMode, UpstreamErrorResponseRule, UpstreamErrorStatusBehavior,

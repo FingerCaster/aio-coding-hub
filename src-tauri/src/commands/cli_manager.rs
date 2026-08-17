@@ -45,6 +45,22 @@ pub(crate) async fn cli_manager_codex_model_catalog_get(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn cli_manager_codex_model_context_candidates_get(
+    app: tauri::AppHandle,
+) -> Result<codex_model_catalog::CodexModelContextCandidatesState, String> {
+    blocking::run(
+        "cli_manager_codex_model_context_candidates_get",
+        move || {
+            let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
+            codex_model_catalog::codex_model_context_candidates_get_locked(&app)
+        },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn cli_manager_codex_config_get(
     app: tauri::AppHandle,
 ) -> Result<codex_config::CodexConfigState, String> {

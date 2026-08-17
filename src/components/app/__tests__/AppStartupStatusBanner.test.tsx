@@ -80,6 +80,19 @@ describe("components/app/AppStartupStatusBanner", () => {
     expect(navigate).toHaveBeenCalledWith("/settings");
   });
 
+  it("opens the Codex rule editor for a model-context reconciliation failure", () => {
+    setFailedStatus({
+      failedStage: "reading_settings",
+      errorMessage:
+        "CODEX_STARTUP_MODEL_CATALOG_RECONCILE_FAILED: CODEX_MODEL_CONTEXT_RULE_TARGET_MISSING",
+    });
+
+    render(<AppStartupStatusBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
+
+    expect(navigate).toHaveBeenCalledWith("/cli-manager?tab=codex&focus=model-context-rules");
+  });
+
   it("uses fallback stage labels and disables retry when retry is not allowed", () => {
     setFailedStatus({
       failedStage: null,

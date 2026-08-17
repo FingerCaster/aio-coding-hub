@@ -1,7 +1,7 @@
 // Usage: Data-model hook for CLI manager page orchestration.
 
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   type ClaudeSettingsPatch,
@@ -9,6 +9,11 @@ import {
   type CodexConfigState,
   type GeminiConfigPatch,
 } from "../../services/cli/cliManager";
+import {
+  codexModelContextRulesEqual,
+  normalizeCodexModelContextRules,
+  type CodexModelContextRule,
+} from "../../services/settings/codexModelContextRules";
 import { logToConsole } from "../../services/consoleLog";
 import { openDesktopSinglePath } from "../../services/desktop/dialog";
 import { openDesktopPath } from "../../services/desktop/opener";
@@ -23,7 +28,7 @@ import {
   getSettingsReadProtection,
   SETTINGS_READONLY_MESSAGE,
   useSettingsCircuitBreakerNoticeSetMutation,
-  useSettingsCodexGpt56372kContextSetMutation,
+  useSettingsCodexModelContextRulesSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
   useSettingsGatewayRectifierSetMutation,
   useSettingsPatchMutation,
@@ -49,6 +54,7 @@ import {
   useCliManagerCodexInfoQuery,
   useCliManagerCodexModelCatalogQuery,
   useCliManagerCodexModelCatalogRefresh,
+  useCliManagerCodexModelContextCandidatesQuery,
   useCliManagerCodexProviderSyncMutation,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
@@ -56,6 +62,7 @@ import {
 } from "../../query/cliManager";
 import { formatActionFailureToast } from "../../utils/errors";
 import { useGrokTabDataModel } from "../../components/cli-manager/tabs/useGrokTabDataModel";
+import type { CodexModelContextRulesSaveResult } from "../../components/cli-manager/tabs/CodexModelContextRulesSection";
 
 export type CliManagerTabKey = "general" | "claude" | "codex" | "cx2cc" | "gemini" | "grok";
 
@@ -67,6 +74,10 @@ export const CLI_MANAGER_TABS: Array<{ key: CliManagerTabKey; label: string }> =
   { key: "grok", label: "Grok" },
   { key: "cx2cc", label: "CX2CC" },
 ];
+
+function cliManagerTabFromSearchParam(value: string | null): CliManagerTabKey | null {
+  return CLI_MANAGER_TABS.some((item) => item.key === value) ? (value as CliManagerTabKey) : null;
+}
 
 const DEFAULT_RECTIFIER: GatewayRectifierSettingsPatch = {
   verbose_provider_error: true,
@@ -84,13 +95,15 @@ const DEFAULT_RECTIFIER: GatewayRectifierSettingsPatch = {
 };
 
 export function useCliManagerPageDataModel() {
+  const location = useLocation();
   const [searchParams] = useSearchParams();
-  const [tab, setTab] = useState<CliManagerTabKey>(() => {
-    const requested = searchParams.get("tab");
-    return CLI_MANAGER_TABS.some((item) => item.key === requested)
-      ? (requested as CliManagerTabKey)
-      : "general";
-  });
+  const requestedTab = cliManagerTabFromSearchParam(searchParams.get("tab"));
+  const [tab, setTab] = useState<CliManagerTabKey>(() => requestedTab ?? "general");
+
+  useEffect(() => {
+    if (requestedTab) setTab(requestedTab);
+  }, [requestedTab]);
+
   const grokTabProps = useGrokTabDataModel({ enabled: tab === "grok" });
 
   const settingsQuery = useSettingsQuery();
@@ -107,13 +120,13 @@ export function useCliManagerPageDataModel() {
   const rectifierMutation = useSettingsGatewayRectifierSetMutation();
   const circuitBreakerNoticeMutation = useSettingsCircuitBreakerNoticeSetMutation();
   const codexSessionIdCompletionMutation = useSettingsCodexSessionIdCompletionSetMutation();
-  const codexGpt56372kContextMutation = useSettingsCodexGpt56372kContextSetMutation();
+  const codexModelContextRulesMutation = useSettingsCodexModelContextRulesSetMutation();
   const commonSettingsMutation = useSettingsPatchMutation();
 
   const rectifierSaving = rectifierMutation.isPending;
   const circuitBreakerNoticeSaving = circuitBreakerNoticeMutation.isPending;
   const codexSessionIdCompletionSaving = codexSessionIdCompletionMutation.isPending;
-  const codexGpt56372kContextSaving = codexGpt56372kContextMutation.isPending;
+  const codexModelContextRulesSaving = codexModelContextRulesMutation.isPending;
   const commonSettingsSaving = commonSettingsMutation.isPending;
 
   const [rectifier, setRectifier] = useState<GatewayRectifierSettingsPatch>(DEFAULT_RECTIFIER);
@@ -182,6 +195,14 @@ export function useCliManagerPageDataModel() {
       cliVersion: codexInfoQuery.data?.version,
     },
   });
+  const codexModelContextCandidatesQuery = useCliManagerCodexModelContextCandidatesQuery({
+    enabled: tab === "codex" && codexConfigQuery.data != null,
+    snapshot: {
+      configPath: codexConfigQuery.data?.config_path,
+      executablePath: codexInfoQuery.data?.executable_path,
+      cliVersion: codexInfoQuery.data?.version,
+    },
+  });
 
   const codexInfo = codexInfoQuery.data ?? null;
   const codexConfig = codexConfigQuery.data ?? null;
@@ -189,6 +210,19 @@ export function useCliManagerPageDataModel() {
   const codexModelCatalog = codexModelCatalogQuery.isError
     ? null
     : (codexModelCatalogQuery.data ?? null);
+  const candidateSnapshot = codexModelContextCandidatesQuery.data?.snapshot;
+  const codexModelContextCandidatesCurrent = Boolean(
+    candidateSnapshot &&
+    codexConfigQuery.data &&
+    codexInfoQuery.data &&
+    candidateSnapshot.config_path === codexConfigQuery.data.config_path &&
+    candidateSnapshot.executable_path === codexInfoQuery.data.executable_path &&
+    candidateSnapshot.cli_version === codexInfoQuery.data.version
+  );
+  const codexModelContextCandidates =
+    !codexModelContextCandidatesQuery.isError && codexModelContextCandidatesCurrent
+      ? (codexModelContextCandidatesQuery.data ?? null)
+      : null;
   const codexAvailable: "checking" | "available" | "unavailable" =
     codexInfoQuery.isFetching && !codexInfo
       ? "checking"
@@ -201,10 +235,12 @@ export function useCliManagerPageDataModel() {
   const codexConfigTomlSaving = codexConfigTomlSetMutation.isPending;
   const codexProviderSyncing = codexProviderSyncMutation.isPending;
   const codexConfigWriting =
-    codexConfigSetMutation.isPending || codexConfigTomlSaving || codexGpt56372kContextSaving;
+    codexConfigSetMutation.isPending || codexConfigTomlSaving || codexModelContextRulesSaving;
   const codexConfigSaving = codexConfigWriting;
   const codexModelCatalogLoading = codexModelCatalogQuery.isFetching;
   const codexModelCatalogError = codexModelCatalogQuery.isError;
+  const codexModelContextCandidatesLoading = codexModelContextCandidatesQuery.isFetching;
+  const codexModelContextCandidatesError = codexModelContextCandidatesQuery.isError;
 
   const geminiInfoQuery = useCliManagerGeminiInfoQuery({ enabled: tab === "gemini" });
   const geminiConfigQuery = useCliManagerGeminiConfigQuery({ enabled: tab === "gemini" });
@@ -537,33 +573,55 @@ export function useCliManagerPageDataModel() {
     return true;
   }
 
-  async function persistCodexGpt56372kContext(enabled: boolean) {
+  async function persistCodexModelContextRules(
+    rules: CodexModelContextRule[]
+  ): Promise<CodexModelContextRulesSaveResult> {
     if (settingsWriteBlocked) {
       blockSettingsWrite();
-      return false;
+      return { status: "blocked", settings: appSettings };
     }
-    if (codexGpt56372kContextSaving || commonSettingsSaving || codexConfigWriting || !appSettings)
-      return false;
+    if (
+      codexModelContextRulesSaving ||
+      commonSettingsSaving ||
+      codexConfigSetMutation.isPending ||
+      codexConfigTomlSaving ||
+      !appSettings
+    ) {
+      return { status: "blocked", settings: appSettings };
+    }
+
+    const normalizedRules = normalizeCodexModelContextRules(rules);
+    let failure: unknown = null;
 
     try {
-      const updated = await codexGpt56372kContextMutation.mutateAsync(enabled);
-      if (!updated || updated.codex_gpt56_372k_context_enabled !== enabled) {
-        toast("更新 Codex GPT-5.6 372K 上下文失败：后端未确认目标状态");
-        return false;
+      const updated = await codexModelContextRulesMutation.mutateAsync(normalizedRules);
+      if (
+        updated &&
+        codexModelContextRulesEqual(updated.codex_model_context_rules, normalizedRules)
+      ) {
+        toast("已应用 Codex 模型上下文规则；请新启动 Codex 会话。");
+        return { status: "confirmed", settings: updated };
       }
-
-      toast(enabled ? "已开启 Codex GPT-5.6 372K 上下文" : "已关闭 Codex GPT-5.6 372K 上下文");
-      return true;
+      failure = new Error("后端返回的 canonical 规则与提交集合不一致");
     } catch (err) {
-      const formatted = formatActionFailureToast("更新 Codex GPT-5.6 372K 上下文", err);
-      logToConsole("error", "更新 Codex GPT-5.6 372K 上下文失败", {
-        error: formatted.raw,
-        error_code: formatted.error_code ?? undefined,
-        enabled,
-      });
-      toast(formatted.toast);
-      return false;
+      failure = err;
     }
+
+    const formatted = formatActionFailureToast("保存 Codex 模型上下文规则", failure);
+    logToConsole("error", "保存 Codex 模型上下文规则失败", {
+      error: formatted.raw,
+      error_code: formatted.error_code ?? undefined,
+      rule_count: normalizedRules.length,
+    });
+
+    const reread = await settingsQuery.refetch();
+    if (!reread.isError && reread.data) {
+      toast(`${formatted.toast}；已恢复为最新确认状态`);
+      return { status: "reverted", settings: reread.data };
+    }
+
+    toast("保存 Codex 模型上下文规则失败，且设置回读失败；已进入只读保护");
+    return { status: "blocked", settings: reread.data ?? appSettings };
   }
 
   async function pickCodexHomeDirectory(initialPath?: string): Promise<string | null> {
@@ -782,10 +840,13 @@ export function useCliManagerPageDataModel() {
       codexProviderSyncing,
       codexModelCatalogLoading,
       codexModelCatalogError,
+      codexModelContextCandidatesLoading,
+      codexModelContextCandidatesError,
       codexInfo,
       codexConfig,
       codexConfigToml,
       codexModelCatalog,
+      codexModelContextCandidates,
       appSettings,
       commonSettingsSaving,
       upstreamRetryPolicy,
@@ -793,8 +854,12 @@ export function useCliManagerPageDataModel() {
       streamInternalErrorGuardMs,
       setStreamInternalErrorGuardMs,
       codexHomeSettingsSaving:
-        commonSettingsSaving || codexGpt56372kContextSaving || settingsWriteBlocked,
-      codexGpt56372kContextSaving,
+        commonSettingsSaving || codexModelContextRulesSaving || settingsWriteBlocked,
+      codexModelContextRulesSaving,
+      codexModelContextRulesReadOnly: settingsWriteBlocked,
+      codexModelContextRulesReadErrorMessage: settingsReadErrorMessage,
+      codexModelContextRulesAutoOpenRequestKey:
+        searchParams.get("focus") === "model-context-rules" ? location.key : null,
       refreshCodex,
       openCodexConfigDir,
       persistCodexConfig,
@@ -803,7 +868,9 @@ export function useCliManagerPageDataModel() {
       persistCommonSettings,
       persistCodexHomeSettings,
       persistCodexOauthCompatibleProxyMode,
-      persistCodexGpt56372kContext,
+      persistCodexModelContextRules,
+      retryCodexModelContextCandidates: () => codexModelContextCandidatesQuery.refetch(),
+      retrySettings: () => settingsQuery.refetch(),
       pickCodexHomeDirectory,
     },
     cx2ccTabProps: {

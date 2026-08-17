@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { commands } from "../../../generated/bindings";
-import { logToConsole } from "../../consoleLog";
+import * as consoleLog from "../../consoleLog";
 import {
   type ClaudeEnvState,
   type ClaudeHooksState,
@@ -9,6 +9,7 @@ import {
   type CodexConfigTomlState,
   type CodexConfigTomlValidationResult,
   type CodexModelCatalogState,
+  type CodexModelContextCandidatesState,
   type SimpleCliInfo,
   type GrokConfigState,
   cliManagerClaudeEnvSet,
@@ -23,6 +24,7 @@ import {
   cliManagerCodexConfigTomlValidate,
   cliManagerCodexInfoGet,
   cliManagerCodexModelCatalogGet,
+  cliManagerCodexModelContextCandidatesGet,
   cliManagerCodexProviderSync,
   cliManagerGrokConfigGet,
   cliManagerGrokConfigSet,
@@ -40,6 +42,7 @@ vi.mock("../../../generated/bindings", async () => {
       cliManagerClaudeInfoGet: vi.fn(),
       cliManagerCodexInfoGet: vi.fn(),
       cliManagerCodexModelCatalogGet: vi.fn(),
+      cliManagerCodexModelContextCandidatesGet: vi.fn(),
       cliManagerCodexConfigSet: vi.fn(),
       cliManagerCodexConfigTomlGet: vi.fn(),
       cliManagerCodexConfigTomlValidate: vi.fn(),
@@ -54,14 +57,6 @@ vi.mock("../../../generated/bindings", async () => {
       cliManagerClaudeSettingsGet: vi.fn(),
       cliManagerClaudeSettingsSet: vi.fn(),
     },
-  };
-});
-
-vi.mock("../../consoleLog", async () => {
-  const actual = await vi.importActual<typeof import("../../consoleLog")>("../../consoleLog");
-  return {
-    ...actual,
-    logToConsole: vi.fn(),
   };
 });
 
@@ -127,6 +122,32 @@ function makeCodexModelCatalogState(
     ...overrides,
   };
 }
+
+function makeCodexModelContextCandidatesState(
+  overrides: Partial<CodexModelContextCandidatesState> = {}
+): CodexModelContextCandidatesState {
+  return {
+    status: "ready",
+    issue: null,
+    snapshot: {
+      config_path: "/tmp/.codex/config.toml",
+      executable_path: "/usr/bin/codex",
+      cli_version: "0.0.0",
+    },
+    models: [
+      {
+        model_id: "gpt-5.6-sol",
+        display_name: "GPT-5.6 Sol",
+        hidden: false,
+        base_context_window: 272_000,
+        base_max_context_window: null,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+const candidateCommand = () => vi.mocked(commands.cliManagerCodexModelContextCandidatesGet);
 
 function makeCodexConfigTomlState(
   overrides: Partial<CodexConfigTomlState> = {}
@@ -238,12 +259,13 @@ function makeClaudeSettingsState(
 
 describe("services/cli/cliManager", () => {
   it("rethrows invoke errors and logs", async () => {
+    const logSpy = vi.spyOn(consoleLog, "logToConsole").mockImplementation(() => undefined);
     vi.mocked(commands.cliManagerClaudeInfoGet).mockRejectedValueOnce(
       new Error("cli manager boom")
     );
 
     await expect(cliManagerClaudeInfoGet()).rejects.toThrow("cli manager boom");
-    expect(logToConsole).toHaveBeenCalledWith(
+    expect(logSpy).toHaveBeenCalledWith(
       "error",
       "获取 Claude CLI 信息失败",
       expect.objectContaining({
@@ -269,6 +291,10 @@ describe("services/cli/cliManager", () => {
     vi.mocked(commands.cliManagerCodexModelCatalogGet).mockResolvedValue({
       status: "ok",
       data: makeCodexModelCatalogState(),
+    });
+    candidateCommand().mockResolvedValue({
+      status: "ok",
+      data: makeCodexModelContextCandidatesState(),
     });
     vi.mocked(commands.cliManagerCodexConfigSet).mockResolvedValue({
       status: "ok",
@@ -347,6 +373,9 @@ describe("services/cli/cliManager", () => {
 
     await cliManagerCodexModelCatalogGet();
     expect(commands.cliManagerCodexModelCatalogGet).toHaveBeenCalledWith();
+
+    await cliManagerCodexModelContextCandidatesGet();
+    expect(candidateCommand()).toHaveBeenCalledWith();
 
     await cliManagerCodexConfigSet({ model: "gpt-5" });
     expect(commands.cliManagerCodexConfigSet).toHaveBeenCalledWith(
@@ -432,5 +461,49 @@ describe("services/cli/cliManager", () => {
     } as const;
     await cliManagerGrokConfigSet(preferences);
     expect(commands.cliManagerGrokConfigSet).toHaveBeenCalledWith(preferences);
+  });
+
+  it("strictly decodes Codex model context candidates", async () => {
+    const expected = makeCodexModelContextCandidatesState();
+    candidateCommand().mockResolvedValueOnce({ status: "ok", data: expected });
+    await expect(cliManagerCodexModelContextCandidatesGet()).resolves.toEqual(expected);
+
+    const validModel = expected.models[0];
+    const malformed = [
+      { ...expected, status: "future" },
+      { ...expected, issue: "future" },
+      { ...expected, snapshot: { config_path: "/tmp/.codex/config.toml" } },
+      { ...expected, models: [{ ...validModel, model_id: " padded " }] },
+      { ...expected, models: [{ ...validModel, hidden: "false" }] },
+      {
+        ...expected,
+        models: [{ ...validModel, base_context_window: Number.MAX_SAFE_INTEGER + 1 }],
+      },
+      {
+        ...expected,
+        models: [validModel, { ...validModel }],
+      },
+      {
+        ...expected,
+        models: [
+          {
+            model_id: validModel.model_id,
+            display_name: validModel.display_name,
+            hidden: validModel.hidden,
+            base_context_window: validModel.base_context_window,
+          },
+        ],
+      },
+    ];
+
+    for (const response of malformed) {
+      candidateCommand().mockResolvedValueOnce({
+        status: "ok",
+        data: response as unknown as CodexModelContextCandidatesState,
+      });
+      await expect(cliManagerCodexModelContextCandidatesGet()).rejects.toThrow(
+        "IPC_INVALID_RESULT"
+      );
+    }
   });
 });

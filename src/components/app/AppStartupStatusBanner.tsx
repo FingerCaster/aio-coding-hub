@@ -26,6 +26,12 @@ function startupStageLabel(stage: AppStartupStage | null): string {
   }
 }
 
+function startupSettingsTarget(errorMessage: string | null): string {
+  return errorMessage?.includes("CODEX_MODEL_CONTEXT_RULE")
+    ? "/cli-manager?tab=codex&focus=model-context-rules"
+    : "/settings";
+}
+
 export function AppStartupStatusBanner() {
   const navigate = useNavigate();
   const status = useAppStartupStatus();
@@ -102,7 +108,11 @@ export function AppStartupStatusBanner() {
               退出应用
             </Button>
           ) : (
-            <Button size="sm" variant="ghost" onClick={() => navigate("/settings")}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => navigate(startupSettingsTarget(status.errorMessage))}
+            >
               打开设置
             </Button>
           )}

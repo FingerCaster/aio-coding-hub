@@ -173,12 +173,26 @@ fn set_custom_codex_home_preserving_settings<R: tauri::Runtime>(
     .expect("update Codex home");
 }
 
-fn set_codex_gpt56_372k_policy<R: tauri::Runtime>(app: &tauri::AppHandle<R>, enabled: bool) {
+fn set_codex_model_context_rules<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    rules: Vec<settings::CodexModelContextRule>,
+) {
     settings::update(app, |settings| {
-        settings.codex_gpt56_372k_context_enabled = enabled;
+        settings.codex_model_context_rules = rules;
         Ok(())
     })
-    .expect("update GPT-5.6 372K policy");
+    .expect("update Codex model context rules");
+}
+
+fn gpt56_372k_context_rules() -> Vec<settings::CodexModelContextRule> {
+    ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        .into_iter()
+        .map(|model_id| settings::CodexModelContextRule {
+            model_id: model_id.to_string(),
+            context_window: 372_000,
+            enabled: true,
+        })
+        .collect()
 }
 
 fn set_codex_oauth_compatible_proxy_mode<R: tauri::Runtime>(
@@ -277,7 +291,7 @@ fn enable_codex_proxy_with_372k_policy<R: tauri::Runtime>(
     base_origin: &str,
     marker: &str,
 ) -> (PathBuf, PathBuf, PathBuf) {
-    set_codex_gpt56_372k_policy(app, true);
+    set_codex_model_context_rules(app, gpt56_372k_context_rules());
     let config_path = codex_config_path(app).expect("Codex config path");
     let user_catalog_path = config_path
         .parent()
@@ -2971,7 +2985,7 @@ fn codex_372k_lifecycle_offline_sync_rolls_back_all_files_on_catalog_failure() {
 }
 
 #[test]
-fn codex_372k_lifecycle_offline_home_rebind_reconciles_new_direct_home() {
+fn codex_context_rules_offline_home_rebind_fails_closed_on_home_drift() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();
     let base_origin = "http://127.0.0.1:37123";
@@ -2981,6 +2995,11 @@ fn codex_372k_lifecycle_offline_home_rebind_reconciles_new_direct_home() {
     let (old_config_path, _old_user_catalog, generated_path) =
         enable_codex_proxy_with_372k_policy(&handle, base_origin, "old-home");
     let old_proxy_config = std::fs::read(&old_config_path).expect("read old proxy config");
+    let generated_before =
+        std::fs::read(&generated_path).expect("read generated catalog before home drift");
+    let manifest_path =
+        cli_proxy_manifest_path(&cli_proxy_root_dir(&handle, "codex").expect("proxy root"));
+    let manifest_before = std::fs::read(&manifest_path).expect("read manifest before home drift");
 
     set_custom_codex_home_preserving_settings(&handle, &new_home);
     let new_config_path = codex_config_path(&handle).expect("new config path");
@@ -2992,6 +3011,7 @@ fn codex_372k_lifecycle_offline_home_rebind_reconciles_new_direct_home() {
         &codex_direct_config_with_catalog(&new_user_catalog, "new-home"),
         "{}",
     );
+    let new_config_before = std::fs::read(&new_config_path).expect("read new direct config");
 
     crate::codex_model_catalog::managed::reset_sync_current_invocations_for_test();
     let results = sync_enabled(&handle, base_origin, false).expect("offline home rebind");
@@ -2999,25 +3019,27 @@ fn codex_372k_lifecycle_offline_home_rebind_reconciles_new_direct_home() {
         .iter()
         .find(|result| result.cli_key == "codex")
         .expect("Codex sync result");
-    assert!(codex_result.ok, "{codex_result:?}");
+    assert!(!codex_result.ok, "{codex_result:?}");
+    assert_eq!(
+        codex_result.error_code.as_deref(),
+        Some("CLI_PROXY_MANAGED_MODEL_SYNC_FAILED")
+    );
+    assert!(
+        codex_result
+            .message
+            .contains("CODEX_MODEL_CONTEXT_RULES_HOME_DRIFT"),
+        "{codex_result:?}"
+    );
     assert_eq!(
         crate::codex_model_catalog::managed::sync_current_invocations_for_test(),
         1
     );
-    assert_eq!(model_catalog_binding(&new_config_path), generated_path);
-    assert_gpt56_catalog_uses_372k(&generated_path);
-    assert!(std::fs::read_to_string(&generated_path)
-        .expect("read rebound catalog")
-        .contains("new-home"));
+    assert_eq!(std::fs::read(&new_config_path).unwrap(), new_config_before);
+    assert_eq!(model_catalog_binding(&new_config_path), new_user_catalog);
+    assert_eq!(std::fs::read(&generated_path).unwrap(), generated_before);
+    assert_eq!(std::fs::read(&manifest_path).unwrap(), manifest_before);
     assert!(!codex::is_proxy_config_applied(&handle, base_origin));
     assert_eq!(std::fs::read(&old_config_path).unwrap(), old_proxy_config);
-    let manifest = read_manifest(&handle, "codex")
-        .expect("read manifest")
-        .expect("Codex manifest");
-    assert_eq!(
-        PathBuf::from(&manifest_entry(&manifest, "codex_config_toml").path),
-        new_config_path
-    );
 }
 
 #[test]

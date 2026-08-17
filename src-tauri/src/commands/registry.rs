@@ -20,7 +20,7 @@ macro_rules! generated_command_registry {
             settings_get => crate::commands::settings::settings_get,
             settings_set => crate::commands::settings::settings_set,
             settings_patch => crate::commands::settings::settings_patch,
-            settings_codex_gpt56_372k_context_set => crate::commands::settings::settings_codex_gpt56_372k_context_set,
+            settings_codex_model_context_rules_set => crate::commands::settings::settings_codex_model_context_rules_set,
             settings_update_channel_set => crate::commands::settings::settings_update_channel_set,
             settings_gateway_rectifier_set => crate::commands::settings::settings_gateway_rectifier_set,
             settings_circuit_breaker_notice_set => crate::commands::settings::settings_circuit_breaker_notice_set,
@@ -56,6 +56,7 @@ macro_rules! generated_command_registry {
             cli_manager_claude_info_get => crate::commands::cli_manager::cli_manager_claude_info_get,
             cli_manager_codex_info_get => crate::commands::cli_manager::cli_manager_codex_info_get,
             cli_manager_codex_model_catalog_get => crate::commands::cli_manager::cli_manager_codex_model_catalog_get,
+            cli_manager_codex_model_context_candidates_get => crate::commands::cli_manager::cli_manager_codex_model_context_candidates_get,
             cli_manager_codex_config_get => crate::commands::cli_manager::cli_manager_codex_config_get,
             cli_manager_codex_config_set => crate::commands::cli_manager::cli_manager_codex_config_set,
             cli_manager_codex_config_toml_get => crate::commands::cli_manager::cli_manager_codex_config_toml_get,
@@ -397,6 +398,14 @@ mod tests {
             generated_command_names().contains(&"model_price_upsert"),
             "model_price_upsert should stay in the shared generated command registry"
         );
+    }
+
+    #[test]
+    fn exposes_generic_codex_model_context_commands_only() {
+        let commands = generated_command_names();
+        assert!(commands.contains(&"settings_codex_model_context_rules_set"));
+        assert!(commands.contains(&"cli_manager_codex_model_context_candidates_get"));
+        assert!(!commands.contains(&"settings_codex_gpt56_372k_context_set"));
     }
 
     #[test]

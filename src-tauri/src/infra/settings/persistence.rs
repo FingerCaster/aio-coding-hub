@@ -3,6 +3,7 @@
 use super::defaults::*;
 use super::migration::{
     normalize_cli_priority_order, normalize_codex_home_override,
+    normalize_codex_model_context_rules_for_write,
     normalize_cx2cc_reasoning_effort_mappings_for_write, normalize_upstream_retry_policy_for_write,
     repair_settings,
 };
@@ -236,14 +237,12 @@ fn read_unlocked<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppS
         if legacy_path.exists() {
             legacy_path
         } else {
-            let settings = AppSettings::default();
-            let _ = write_unlocked(app, &settings);
+            let settings = write_unlocked(app, &AppSettings::default())?;
             cache_settings(&path, &settings);
             return Ok(settings);
         }
     } else {
-        let settings = AppSettings::default();
-        let _ = write_unlocked(app, &settings);
+        let settings = write_unlocked(app, &AppSettings::default())?;
         cache_settings(&path, &settings);
         return Ok(settings);
     };
@@ -254,7 +253,7 @@ fn read_unlocked<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppS
     validate_bounds(&settings)?;
 
     if repaired || load_path != path {
-        let _ = write_unlocked(app, &settings);
+        settings = write_unlocked(app, &settings)?;
     }
 
     cache_settings(&path, &settings);
@@ -298,6 +297,8 @@ pub fn request_log_retention_days_fail_open<R: tauri::Runtime>(app: &tauri::AppH
 }
 
 pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
+    let mut codex_model_context_rules = settings.codex_model_context_rules.clone();
+    normalize_codex_model_context_rules_for_write(&mut codex_model_context_rules)?;
     if settings.codex_infinite_retry_test_interval_ms > MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
         return Err(AppError::new(
             "SEC_INVALID_INPUT",
@@ -549,6 +550,7 @@ fn write_unlocked<R: tauri::Runtime>(
     settings.cx2cc_fallback_model_main = settings.cx2cc_fallback_model_main.trim().to_string();
     settings.cx2cc_model_reasoning_effort =
         settings.cx2cc_model_reasoning_effort.trim().to_string();
+    normalize_codex_model_context_rules_for_write(&mut settings.codex_model_context_rules)?;
     normalize_cx2cc_reasoning_effort_mappings_for_write(
         &mut settings.cx2cc_reasoning_effort_mappings,
     )?;
@@ -849,6 +851,69 @@ mod tests {
             restarted_json["upstream_retry_policy"]["stream_internal_errors"]
                 ["passthrough_keywords"],
             serde_json::json!([])
+        );
+        clear_settings_cache();
+    }
+
+    #[test]
+    fn schema_64_rule_migration_requires_durable_repair_and_is_byte_stable() {
+        let _env_lock = test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvVarRestore::set("AIO_CODING_HUB_HOME_DIR", home.path());
+        let _dotdir_restore = EnvVarRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-coding-hub-context-rule-migration-test",
+        );
+        clear_settings_cache();
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let path = settings_path(&handle).expect("settings path");
+        std::fs::create_dir_all(path.parent().expect("settings parent"))
+            .expect("create settings parent");
+        let legacy = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT,
+            "codex_gpt56_372k_context_enabled": true
+        });
+        let legacy_bytes = serde_json::to_vec_pretty(&legacy).expect("serialize legacy settings");
+        std::fs::write(&path, &legacy_bytes).expect("write legacy settings");
+
+        set_settings_finalize_failpoint_for_tests(true);
+        let error = read(&handle).expect_err("failed migration persistence must surface");
+        assert_eq!(error.code(), "SETTINGS_PERSISTENCE_FAILED");
+        assert_eq!(
+            std::fs::read(&path).expect("read restored legacy settings"),
+            legacy_bytes,
+            "a failed repair must keep the durable schema 64 source authoritative"
+        );
+
+        clear_settings_cache();
+        let migrated = read(&handle).expect("retry durable schema 64 migration");
+        assert_eq!(migrated.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            migrated
+                .codex_model_context_rules
+                .iter()
+                .map(|rule| rule.model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
+        );
+        let migrated_bytes = std::fs::read(&path).expect("read migrated settings");
+        let migrated_json: serde_json::Value =
+            serde_json::from_slice(&migrated_bytes).expect("parse migrated settings");
+        assert!(migrated_json
+            .get("codex_gpt56_372k_context_enabled")
+            .is_none());
+
+        clear_settings_cache();
+        let reread = read(&handle).expect("reread migrated settings");
+        assert_eq!(
+            serde_json::to_value(&reread).expect("serialize reread settings"),
+            serde_json::to_value(&migrated).expect("serialize migrated settings")
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read stable migrated settings"),
+            migrated_bytes
         );
         clear_settings_cache();
     }

@@ -16,6 +16,14 @@ import { DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE } from "../../services/gateway/ci
 import { DEFAULT_CYBER_PASSTHROUGH_KEYWORD } from "../../services/gateway/upstreamRetryPolicy";
 import { CODEX_SYSTEM_REQUEST_SPECIAL_SETTING } from "../../services/gateway/requestLogSpecialSettings";
 import { MAX_ATTEMPTS_PER_TRACE } from "../../services/gateway/traceLimits";
+import {
+  MODEL_CONTEXT_WINDOW_MAX_TOKENS,
+  MODEL_CONTEXT_WINDOW_MIN_TOKENS,
+} from "../../services/providers/providerModels";
+import {
+  MAX_CODEX_MODEL_CONTEXT_MODEL_ID_BYTES,
+  MAX_CODEX_MODEL_CONTEXT_RULES,
+} from "../../services/settings/codexModelContextRules";
 import { SETTINGS_VALIDATION_LIMITS } from "../../services/settings/settingsValidation";
 import { getSettingsState, resetMswState } from "../../test/msw/state";
 import bindingsSource from "../../generated/bindings.ts?raw";
@@ -219,11 +227,27 @@ describe("cross-layer contracts", () => {
   });
 
   it("keeps cx2cc context window limits aligned with provider model capabilities", () => {
-    expect(CX2CC_CONTEXT_WINDOW_MIN).toBe(
-      extractRustNumericConst(providerModelsSource, "MODEL_CONTEXT_WINDOW_MIN_TOKENS")
+    const rustMinimum = extractRustNumericConst(
+      providerModelsSource,
+      "MODEL_CONTEXT_WINDOW_MIN_TOKENS"
     );
-    expect(CX2CC_CONTEXT_WINDOW_MAX).toBe(
-      extractRustNumericConst(providerModelsSource, "MODEL_CONTEXT_WINDOW_MAX_TOKENS")
+    const rustMaximum = extractRustNumericConst(
+      providerModelsSource,
+      "MODEL_CONTEXT_WINDOW_MAX_TOKENS"
+    );
+
+    expect(CX2CC_CONTEXT_WINDOW_MIN).toBe(rustMinimum);
+    expect(CX2CC_CONTEXT_WINDOW_MAX).toBe(rustMaximum);
+    expect(MODEL_CONTEXT_WINDOW_MIN_TOKENS).toBe(rustMinimum);
+    expect(MODEL_CONTEXT_WINDOW_MAX_TOKENS).toBe(rustMaximum);
+  });
+
+  it("keeps Codex model context rule limits aligned with Rust settings", () => {
+    expect(MAX_CODEX_MODEL_CONTEXT_RULES).toBe(
+      extractRustNumericConst(settingsDefaultsSource, "MAX_CODEX_MODEL_CONTEXT_RULES")
+    );
+    expect(MAX_CODEX_MODEL_CONTEXT_MODEL_ID_BYTES).toBe(
+      extractRustNumericConst(settingsDefaultsSource, "MAX_CODEX_MODEL_CONTEXT_MODEL_ID_BYTES")
     );
   });
 

@@ -81,32 +81,35 @@ export type SettingsMutationResult = Omit<GeneratedSettingsMutationResult, "sett
 export type SettingsSetInput = OptionalNullableGeneratedFields<FrontendSettingsUpdate>;
 
 export type AppSettingsPatch = Partial<
-  Omit<AppSettings, "update_channel" | "codex_gpt56_372k_context_enabled">
+  Omit<AppSettings, "update_channel" | "codex_model_context_rules">
 > & {
   upstream_proxy_password?: SensitiveStringUpdate;
 };
 
 type AssertNever<TValue extends never> = TValue;
 type DedicatedUpdateChannelViewKey = Extract<keyof AppSettings, "update_channel">;
-type DedicatedCodexGpt56372kContextViewKey = Extract<
+type DedicatedCodexModelContextRulesViewKey = Extract<
   keyof AppSettings,
-  "codex_gpt56_372k_context_enabled"
+  "codex_model_context_rules"
 >;
 type OrdinaryUpdateChannelInputKey = Extract<
   keyof FrontendSettingsUpdate | keyof FrontendSettingsPatch,
   "updateChannel" | "update_channel"
 >;
-type OrdinaryCodexGpt56372kContextInputKey = Extract<
+type OrdinaryCodexModelContextRulesInputKey = Extract<
   keyof FrontendSettingsUpdate | keyof FrontendSettingsPatch,
-  "codexGpt56372kContextEnabled" | "codex_gpt56_372k_context_enabled"
+  | "codexModelContextRules"
+  | "codex_model_context_rules"
+  | "codexGpt56372kContextEnabled"
+  | "codex_gpt56_372k_context_enabled"
 >;
 
 /** update_channel is read-only in SettingsView and owned only by settings_update_channel_set. */
 export type __AssertUpdateChannelExcludedFromOrdinarySettings =
   AssertNever<OrdinaryUpdateChannelInputKey>;
-/** The 372K policy is read-only here and owned only by its catalog transaction. */
-export type __AssertCodexGpt56372kContextExcludedFromOrdinarySettings =
-  AssertNever<OrdinaryCodexGpt56372kContextInputKey>;
+/** Codex context rules are read-only here and owned only by their catalog transaction. */
+export type __AssertCodexModelContextRulesExcludedFromOrdinarySettings =
+  AssertNever<OrdinaryCodexModelContextRulesInputKey>;
 
 export type SettingsViewBackedInputKey = Exclude<
   keyof FrontendSettingsUpdate,
@@ -194,7 +197,7 @@ type SettingsViewKeysHandledByCreateInput =
 type SettingsViewKeysHandledOutsideCreateInput =
   | "schema_version"
   | DedicatedUpdateChannelViewKey
-  | DedicatedCodexGpt56372kContextViewKey
+  | DedicatedCodexModelContextRulesViewKey
   | "enable_circuit_breaker_notice"
   | "enable_codex_session_id_completion"
   | "verbose_provider_error"

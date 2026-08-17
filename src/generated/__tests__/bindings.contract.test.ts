@@ -138,6 +138,46 @@ describe("generated/bindings.ts contract", () => {
     expect(command).toContain('TAURI_INVOKE("settings_update_channel_set", { channel, confirm })');
   });
 
+  it("gives Codex model context rules a dedicated generated ownership surface", () => {
+    const rule = extractTypeBody(bindingsSource, "CodexModelContextRule");
+    expect(rule).toContain("model_id: string");
+    expect(rule).toContain("context_window: number");
+    expect(rule).toContain("enabled: boolean");
+
+    expect(extractTypeBody(bindingsSource, "SettingsView")).toContain(
+      "codex_model_context_rules: CodexModelContextRule[]"
+    );
+    expect(extractTypeBody(bindingsSource, "SettingsUpdate")).not.toContain(
+      "codexModelContextRules"
+    );
+    expect(extractTypeBody(bindingsSource, "SettingsPatch")).not.toContain(
+      "codexModelContextRules"
+    );
+
+    const setRules = extractGeneratedCommand(bindingsSource, "settingsCodexModelContextRulesSet");
+    expect(setRules).toMatch(
+      /settingsCodexModelContextRulesSet\(\s*rules: CodexModelContextRule\[\]\s*\)/
+    );
+    expect(setRules).toContain('TAURI_INVOKE("settings_codex_model_context_rules_set", { rules })');
+
+    const candidate = extractTypeBody(bindingsSource, "CodexModelContextCandidate");
+    expect(candidate).toContain("model_id: string");
+    expect(candidate).toContain("display_name: string");
+    expect(candidate).toContain("hidden: boolean");
+    expect(candidate).toContain("base_context_window: number | null");
+    expect(candidate).toContain("base_max_context_window: number | null");
+    expect(extractTypeBody(bindingsSource, "CodexModelContextCandidatesState")).toContain(
+      "models: CodexModelContextCandidate[]"
+    );
+    expect(
+      extractGeneratedCommand(bindingsSource, "cliManagerCodexModelContextCandidatesGet")
+    ).toContain('TAURI_INVOKE("cli_manager_codex_model_context_candidates_get")');
+
+    expect(bindingsSource).not.toContain("settings_codex_gpt56_372k_context_set");
+    expect(bindingsSource).not.toContain("settingsCodexGpt56372kContextSet");
+    expect(bindingsSource).not.toContain("codex_gpt56_372k_context_enabled");
+  });
+
   it("freezes the Beta confirmation resource across Rust and frontend owners", () => {
     const resource = "update_channel:beta";
     expect(settingsServiceSource).toContain(

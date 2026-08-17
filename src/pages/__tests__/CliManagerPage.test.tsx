@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactElement } from "react";
 import { toast } from "sonner";
-import { tauriDialogOpen, tauriOpenPath } from "../../test/mocks/tauri";
+import { openDesktopSinglePath } from "../../services/desktop/dialog";
+import { openDesktopPath } from "../../services/desktop/opener";
 import type { AppSettings, SettingsMutationResult } from "../../services/settings/settings";
 import { createTestAppSettings } from "../../test/fixtures/settings";
 import { createTestQueryClient } from "../../test/utils/reactQuery";
@@ -12,7 +13,7 @@ import { CliManagerPage } from "../CliManagerPage";
 import { logToConsole } from "../../services/consoleLog";
 import {
   useSettingsCircuitBreakerNoticeSetMutation,
-  useSettingsCodexGpt56372kContextSetMutation,
+  useSettingsCodexModelContextRulesSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
   useSettingsGatewayRectifierSetMutation,
   useSettingsPatchMutation,
@@ -29,6 +30,7 @@ import {
   useCliManagerCodexInfoQuery,
   useCliManagerCodexModelCatalogQuery,
   useCliManagerCodexModelCatalogRefresh,
+  useCliManagerCodexModelContextCandidatesQuery,
   useCliManagerCodexProviderSyncMutation,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
@@ -41,6 +43,8 @@ vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
 }));
 vi.mock("../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
+vi.mock("../../services/desktop/dialog", () => ({ openDesktopSinglePath: vi.fn() }));
+vi.mock("../../services/desktop/opener", () => ({ openDesktopPath: vi.fn() }));
 
 vi.mock("../../components/cli-manager/tabs/GeneralTab", () => ({
   CliManagerGeneralTab: ({
@@ -131,8 +135,9 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     persistCodexConfigToml,
     persistCodexHomeSettings,
     persistCodexOauthCompatibleProxyMode,
-    persistCodexGpt56372kContext,
-    codexGpt56372kContextSaving,
+    persistCodexModelContextRules,
+    codexModelContextRulesSaving,
+    codexModelContextRulesAutoOpenRequestKey,
     pickCodexHomeDirectory,
     syncCodexProvider,
     persistCommonSettings,
@@ -142,7 +147,7 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     setStreamInternalErrorGuardMs,
   }: any) => {
     const [oauthResult, setOauthResult] = useState<boolean | null>(null);
-    const [longContextResult, setLongContextResult] = useState<boolean | null>(null);
+    const [rulesResult, setRulesResult] = useState<string>("pending");
     return (
       <div>
         <div>codex-tab</div>
@@ -186,17 +191,22 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
         <button
           type="button"
           onClick={() =>
-            void Promise.resolve(persistCodexGpt56372kContext?.(true)).then((result) =>
-              setLongContextResult(result ?? false)
-            )
+            void Promise.resolve(
+              persistCodexModelContextRules?.([
+                { model_id: "custom-model", context_window: 372000, enabled: true },
+              ])
+            ).then((result) => setRulesResult(result?.status ?? "missing"))
           }
         >
-          enable-codex-372k
+          save-codex-model-context-rules
         </button>
-        <output aria-label="codex-372k-result">
-          {longContextResult == null ? "pending" : String(longContextResult)}
+        <output aria-label="codex-model-context-rules-result">{rulesResult}</output>
+        <output aria-label="codex-model-context-rules-saving">
+          {String(codexModelContextRulesSaving)}
         </output>
-        <output aria-label="codex-372k-saving">{String(codexGpt56372kContextSaving)}</output>
+        <output aria-label="codex-model-context-rules-auto-open-request-key">
+          {codexModelContextRulesAutoOpenRequestKey ?? "none"}
+        </output>
         <button
           type="button"
           onClick={() =>
@@ -262,7 +272,7 @@ vi.mock("../../query/settings", async () => {
     useSettingsQuery: vi.fn(),
     useSettingsGatewayRectifierSetMutation: vi.fn(),
     useSettingsCircuitBreakerNoticeSetMutation: vi.fn(),
-    useSettingsCodexGpt56372kContextSetMutation: vi.fn(),
+    useSettingsCodexModelContextRulesSetMutation: vi.fn(),
     useSettingsCodexSessionIdCompletionSetMutation: vi.fn(),
     useSettingsPatchMutation: vi.fn(),
   };
@@ -283,6 +293,7 @@ vi.mock("../../query/cliManager", async () => {
     useCliManagerCodexConfigTomlSetMutation: vi.fn(),
     useCliManagerCodexModelCatalogQuery: vi.fn(),
     useCliManagerCodexModelCatalogRefresh: vi.fn(),
+    useCliManagerCodexModelContextCandidatesQuery: vi.fn(),
     useCliManagerCodexProviderSyncMutation: vi.fn(),
     useCliManagerGeminiConfigQuery: vi.fn(),
     useCliManagerGeminiConfigSetMutation: vi.fn(),
@@ -307,6 +318,21 @@ function renderWithProviders(element: ReactElement) {
     </QueryClientProvider>
   );
   return { ...view, client };
+}
+
+function SamePageNavigationHarness() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => navigate("/cli-manager?tab=codex&focus=model-context-rules")}
+      >
+        open-model-context-rules
+      </button>
+      <CliManagerPage />
+    </>
+  );
 }
 
 function createAppSettings(
@@ -358,7 +384,7 @@ beforeEach(() => {
     isPending: false,
     mutateAsync: vi.fn(),
   } as any);
-  vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue({
+  vi.mocked(useSettingsCodexModelContextRulesSetMutation).mockReturnValue({
     isPending: false,
     mutateAsync: vi.fn(),
   } as any);
@@ -427,6 +453,12 @@ beforeEach(() => {
     isError: false,
   } as any);
   vi.mocked(useCliManagerCodexModelCatalogRefresh).mockReturnValue(vi.fn() as any);
+  vi.mocked(useCliManagerCodexModelContextCandidatesQuery).mockReturnValue({
+    data: null,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as any);
 
   vi.mocked(useProvidersListQuery).mockReturnValue({
     data: null,
@@ -441,6 +473,65 @@ beforeEach(() => {
 });
 
 describe("pages/CliManagerPage", () => {
+  it("responds to same-page model-context navigation after the page is mounted", async () => {
+    renderWithProviders(<SamePageNavigationHarness />);
+
+    expect(screen.getByRole("tab", { name: "通用" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("button", { name: "open-model-context-rules" }));
+
+    expect(await screen.findByText("codex-tab")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Codex" })).toHaveAttribute("aria-selected", "true");
+    const firstRequestKey = screen.getByLabelText(
+      "codex-model-context-rules-auto-open-request-key"
+    ).textContent;
+    expect(firstRequestKey).not.toBe("none");
+
+    fireEvent.click(screen.getByRole("button", { name: "open-model-context-rules" }));
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("codex-model-context-rules-auto-open-request-key").textContent
+      ).not.toBe(firstRequestKey)
+    );
+  });
+
+  it("requests context candidates for a configured user catalog when Codex CLI is absent", async () => {
+    vi.mocked(useCliManagerCodexInfoQuery).mockReturnValue({
+      data: {
+        found: false,
+        executable_path: null,
+        version: null,
+        error: null,
+        shell: null,
+        resolved_via: "not_found",
+      },
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerCodexConfigQuery).mockReturnValue({
+      data: {
+        config_path: "/tmp/.codex/config.toml",
+        config_dir: "/tmp/.codex",
+        can_open_config_dir: true,
+      },
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+
+    await waitFor(() =>
+      expect(useCliManagerCodexModelContextCandidatesQuery).toHaveBeenLastCalledWith({
+        enabled: true,
+        snapshot: {
+          configPath: "/tmp/.codex/config.toml",
+          executablePath: null,
+          cliVersion: null,
+        },
+      })
+    );
+  });
+
   it("以独立数据模型延迟编排 Grok Tab", async () => {
     renderWithProviders(<CliManagerPage />);
 
@@ -862,7 +953,7 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "refresh-claude" }));
     await waitFor(() => expect(claudeInfoRefetch).toHaveBeenCalled());
 
-    vi.mocked(tauriOpenPath).mockRejectedValueOnce(new Error("open claude boom"));
+    vi.mocked(openDesktopPath).mockRejectedValueOnce(new Error("open claude boom"));
     fireEvent.click(screen.getByRole("button", { name: "open-claude-dir" }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith("打开目录失败：请查看控制台日志"));
 
@@ -883,10 +974,10 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "open-codex-dir" }));
     expect(toast).toHaveBeenCalledWith("受权限限制，无法自动打开该目录");
 
-    vi.mocked(tauriDialogOpen).mockResolvedValueOnce("/codex-picked");
+    vi.mocked(openDesktopSinglePath).mockResolvedValueOnce("/codex-picked");
     fireEvent.click(screen.getByRole("button", { name: "pick-codex-dir" }));
     await waitFor(() =>
-      expect(tauriDialogOpen).toHaveBeenCalledWith(
+      expect(openDesktopSinglePath).toHaveBeenCalledWith(
         expect.objectContaining({
           directory: true,
           multiple: false,
@@ -902,7 +993,7 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
     await screen.findByText("codex-tab");
 
-    vi.mocked(tauriOpenPath).mockRejectedValueOnce(new Error("open codex boom"));
+    vi.mocked(openDesktopPath).mockRejectedValueOnce(new Error("open codex boom"));
     fireEvent.click(screen.getByRole("button", { name: "open-codex-dir" }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith("打开目录失败：请查看控制台日志"));
 
@@ -1114,7 +1205,7 @@ describe("pages/CliManagerPage", () => {
   it("covers toggle branches, null returns, and open directory fallbacks/success paths", async () => {
     vi.mocked(toast).mockClear();
     vi.mocked(logToConsole).mockClear();
-    vi.mocked(tauriOpenPath).mockClear();
+    vi.mocked(openDesktopPath).mockClear();
 
     vi.mocked(useSettingsQuery).mockReturnValue({
       data: createAppSettings({
@@ -1193,7 +1284,7 @@ describe("pages/CliManagerPage", () => {
       refetch: vi.fn(),
     } as any);
 
-    vi.mocked(tauriOpenPath).mockResolvedValue(true as any);
+    vi.mocked(openDesktopPath).mockResolvedValue(true);
 
     renderWithProviders(<CliManagerPage />);
 
@@ -1219,12 +1310,12 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Claude Code" }));
     await screen.findByText("claude-tab");
     fireEvent.click(screen.getByRole("button", { name: "open-claude-dir" }));
-    await waitFor(() => expect(tauriOpenPath).toHaveBeenCalledWith("/claude-settings"));
+    await waitFor(() => expect(openDesktopPath).toHaveBeenCalledWith("/claude-settings"));
 
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
     await screen.findByText("codex-tab");
     fireEvent.click(screen.getByRole("button", { name: "open-codex-dir" }));
-    await waitFor(() => expect(tauriOpenPath).toHaveBeenCalledWith("/codex"));
+    await waitFor(() => expect(openDesktopPath).toHaveBeenCalledWith("/codex"));
 
     // persist codex config: error -> formatted toast branch (no known code)
     fireEvent.click(screen.getByRole("button", { name: "save-codex" }));
@@ -1429,57 +1520,108 @@ describe("pages/CliManagerPage", () => {
     expect(toast).not.toHaveBeenCalledWith("Codex 目录已切换");
   });
 
-  it("uses the dedicated 372K mutation and reports backend-confirmed success", async () => {
-    const contextMutation = {
+  it("confirms a model-context rule save only when the backend returns the exact collection", async () => {
+    const requestedRules = [{ model_id: "custom-model", context_window: 372000, enabled: true }];
+    const rulesMutation = {
       isPending: false,
       mutateAsync: vi
         .fn()
-        .mockResolvedValue(createAppSettings({ codex_gpt56_372k_context_enabled: true })),
+        .mockResolvedValue(createAppSettings({ codex_model_context_rules: requestedRules })),
     };
-    vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue(contextMutation as any);
+    vi.mocked(useSettingsCodexModelContextRulesSetMutation).mockReturnValue(rulesMutation as any);
 
     renderWithProviders(<CliManagerPage />);
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
     await screen.findByText("codex-tab");
-    fireEvent.click(screen.getByRole("button", { name: "enable-codex-372k" }));
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-model-context-rules" }));
 
-    await waitFor(() => expect(contextMutation.mutateAsync).toHaveBeenCalledWith(true));
-    expect(await screen.findByLabelText("codex-372k-result")).toHaveTextContent("true");
-    expect(toast).toHaveBeenCalledWith("已开启 Codex GPT-5.6 372K 上下文");
+    await waitFor(() => expect(rulesMutation.mutateAsync).toHaveBeenCalledWith(requestedRules));
+    expect(await screen.findByLabelText("codex-model-context-rules-result")).toHaveTextContent(
+      "confirmed"
+    );
+    expect(toast).toHaveBeenCalledWith("已应用 Codex 模型上下文规则；请新启动 Codex 会话。");
   });
 
-  it("does not report 372K success when the backend confirms the previous state", async () => {
-    const contextMutation = {
+  it("forces a settings reread and reverts after a mismatched canonical response", async () => {
+    const settingsRefetch = vi.fn().mockResolvedValue({
+      data: createAppSettings({ codex_model_context_rules: [] }),
+      isError: false,
+    });
+    vi.mocked(useSettingsQuery).mockReturnValue({
+      data: createAppSettings({ codex_model_context_rules: [] }),
+      isLoading: false,
+      isError: false,
+      refetch: settingsRefetch,
+    } as any);
+    const rulesMutation = {
       isPending: false,
-      mutateAsync: vi
-        .fn()
-        .mockResolvedValue(createAppSettings({ codex_gpt56_372k_context_enabled: false })),
+      mutateAsync: vi.fn().mockResolvedValue(
+        createAppSettings({
+          codex_model_context_rules: [
+            { model_id: "custom-model", context_window: 272000, enabled: true },
+          ],
+        })
+      ),
     };
-    vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue(contextMutation as any);
+    vi.mocked(useSettingsCodexModelContextRulesSetMutation).mockReturnValue(rulesMutation as any);
 
     renderWithProviders(<CliManagerPage />);
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
     await screen.findByText("codex-tab");
-    fireEvent.click(screen.getByRole("button", { name: "enable-codex-372k" }));
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-model-context-rules" }));
 
-    expect(await screen.findByLabelText("codex-372k-result")).toHaveTextContent("false");
-    expect(toast).toHaveBeenCalledWith("更新 Codex GPT-5.6 372K 上下文失败：后端未确认目标状态");
-    expect(toast).not.toHaveBeenCalledWith("已开启 Codex GPT-5.6 372K 上下文");
+    expect(await screen.findByLabelText("codex-model-context-rules-result")).toHaveTextContent(
+      "reverted"
+    );
+    expect(settingsRefetch).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("已恢复为最新确认状态"));
+    expect(toast).not.toHaveBeenCalledWith("已应用 Codex 模型上下文规则；请新启动 Codex 会话。");
+  });
+
+  it("returns blocked when a rejected rule save cannot reread canonical settings", async () => {
+    const settingsRefetch = vi.fn().mockResolvedValue({
+      data: null,
+      isError: true,
+      error: new Error("settings reread failed"),
+    });
+    vi.mocked(useSettingsQuery).mockReturnValue({
+      data: createAppSettings({ codex_model_context_rules: [] }),
+      isLoading: false,
+      isError: false,
+      refetch: settingsRefetch,
+    } as any);
+    const rulesMutation = {
+      isPending: false,
+      mutateAsync: vi.fn().mockRejectedValue(new Error("write rejected")),
+    };
+    vi.mocked(useSettingsCodexModelContextRulesSetMutation).mockReturnValue(rulesMutation as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    await screen.findByText("codex-tab");
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-model-context-rules" }));
+
+    expect(await screen.findByLabelText("codex-model-context-rules-result")).toHaveTextContent(
+      "blocked"
+    );
+    expect(settingsRefetch).toHaveBeenCalledTimes(1);
+    expect(toast).toHaveBeenCalledWith(
+      "保存 Codex 模型上下文规则失败，且设置回读失败；已进入只读保护"
+    );
+    expect(toast).not.toHaveBeenCalledWith("已应用 Codex 模型上下文规则；请新启动 Codex 会话。");
   });
 
   it.each([
     ["structured config", true, false],
     ["raw config", false, true],
   ] as const)(
-    "guards the 372K handler while %s is saving",
+    "guards the rule collection handler while %s is saving",
     async (_label, structuredSaving, rawSaving) => {
-      const contextMutation = {
+      const rulesMutation = {
         isPending: false,
         mutateAsync: vi.fn(),
       };
-      vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue(
-        contextMutation as any
-      );
+      vi.mocked(useSettingsCodexModelContextRulesSetMutation).mockReturnValue(rulesMutation as any);
       vi.mocked(useCliManagerCodexConfigSetMutation).mockReturnValue({
         isPending: structuredSaving,
         mutateAsync: vi.fn(),
@@ -1492,15 +1634,17 @@ describe("pages/CliManagerPage", () => {
       renderWithProviders(<CliManagerPage />);
       fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
       await screen.findByText("codex-tab");
-      fireEvent.click(screen.getByRole("button", { name: "enable-codex-372k" }));
+      fireEvent.click(screen.getByRole("button", { name: "save-codex-model-context-rules" }));
 
-      expect(await screen.findByLabelText("codex-372k-result")).toHaveTextContent("false");
-      expect(contextMutation.mutateAsync).not.toHaveBeenCalled();
+      expect(await screen.findByLabelText("codex-model-context-rules-result")).toHaveTextContent(
+        "blocked"
+      );
+      expect(rulesMutation.mutateAsync).not.toHaveBeenCalled();
     }
   );
 
-  it("guards structured and raw config handlers while the 372K mutation is saving", async () => {
-    vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue({
+  it("guards structured and raw config handlers while a rule collection is saving", async () => {
+    vi.mocked(useSettingsCodexModelContextRulesSetMutation).mockReturnValue({
       isPending: true,
       mutateAsync: vi.fn(),
     } as any);
@@ -1530,7 +1674,7 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
     await screen.findByText("codex-tab");
 
-    expect(screen.getByLabelText("codex-372k-saving")).toHaveTextContent("true");
+    expect(screen.getByLabelText("codex-model-context-rules-saving")).toHaveTextContent("true");
     fireEvent.click(screen.getByRole("button", { name: "save-codex" }));
     fireEvent.click(screen.getByRole("button", { name: "save-codex-toml" }));
 

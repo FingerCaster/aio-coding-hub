@@ -246,6 +246,14 @@ fn make_test_bundle(schema_version: u32) -> ConfigBundle {
     }
 }
 
+fn codex_model_context_rule(model_id: &str, enabled: bool) -> settings::CodexModelContextRule {
+    settings::CodexModelContextRule {
+        model_id: model_id.to_string(),
+        context_window: 372_000,
+        enabled,
+    }
+}
+
 #[test]
 fn prepare_config_import_normalizes_beta_participation_to_stable() {
     let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
@@ -417,63 +425,115 @@ fn config_import_current_schema_still_uses_strict_retry_policy_validation() {
 }
 
 #[test]
-fn config_export_always_serializes_stable_update_channel() {
+fn config_export_serializes_stable_channel_and_omits_local_context_rules() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
     let mut beta = settings::read(&app).expect("settings");
     beta.update_channel = settings::UpdateChannel::Beta;
-    beta.codex_gpt56_372k_context_enabled = true;
+    beta.codex_model_context_rules = vec![codex_model_context_rule("gpt-5.6-sol", true)];
     settings::write(&app, &beta).expect("seed beta settings");
 
     let bundle = config_export(&app, &test_app.db).expect("config export");
+    let exported_json: serde_json::Value =
+        serde_json::from_str(&bundle.settings).expect("exported settings JSON");
     let exported: settings::AppSettings =
-        serde_json::from_str(&bundle.settings).expect("exported settings");
+        serde_json::from_value(exported_json.clone()).expect("typed exported settings");
     assert_eq!(exported.update_channel, settings::UpdateChannel::Stable);
-    assert!(!exported.codex_gpt56_372k_context_enabled);
-    assert!(
+    assert!(exported.codex_model_context_rules.is_empty());
+    assert!(exported_json.get("codex_model_context_rules").is_none());
+    assert!(exported_json
+        .get("codex_gpt56_372k_context_enabled")
+        .is_none());
+    assert_eq!(
         settings::read(&app)
             .expect("canonical settings after export")
-            .codex_gpt56_372k_context_enabled
+            .codex_model_context_rules,
+        beta.codex_model_context_rules
     );
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&bundle.settings).expect("exported json")
-            ["update_channel"],
-        serde_json::json!("stable")
-    );
+    assert_eq!(exported_json["update_channel"], serde_json::json!("stable"));
 }
 
 #[test]
-fn config_import_does_not_own_codex_372k_policy() {
+fn prepare_config_import_ignores_all_portable_context_rule_payloads() {
+    let payloads = vec![
+        serde_json::Value::Null,
+        serde_json::json!([]),
+        serde_json::json!([{
+            "model_id": "imported-model",
+            "context_window": 4096,
+            "enabled": true
+        }]),
+        serde_json::json!({"malicious": {"nested": true}}),
+        serde_json::Value::Array(
+            (0..=settings::MAX_CODEX_MODEL_CONTEXT_RULES)
+                .map(|index| {
+                    serde_json::json!({
+                        "model_id": format!("imported-{index}"),
+                        "context_window": 4096,
+                        "enabled": true
+                    })
+                })
+                .collect(),
+        ),
+    ];
+
+    for payload in payloads {
+        let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+        let mut imported = serde_json::to_value(settings::AppSettings::default()).unwrap();
+        imported["codex_model_context_rules"] = payload;
+        imported["codex_gpt56_372k_context_enabled"] = serde_json::json!("not-a-boolean");
+        bundle.settings = serde_json::to_string(&imported).expect("portable settings");
+
+        let prepared =
+            prepare_config_import(bundle).expect("ignored policy must not reject import");
+        assert!(prepared
+            .settings_to_write
+            .codex_model_context_rules
+            .is_empty());
+    }
+}
+
+#[test]
+fn config_import_does_not_own_codex_model_context_rules() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
-    let previous = settings::read(&app).expect("previous settings");
-    assert!(!previous.codex_gpt56_372k_context_enabled);
+    let mut previous = settings::read(&app).expect("previous settings");
+    previous.codex_model_context_rules =
+        vec![codex_model_context_rule("device-local-model", false)];
+    settings::write(&app, &previous).expect("seed local context rules");
 
-    let mut imported = previous.clone();
-    imported.codex_gpt56_372k_context_enabled = true;
-    imported.log_retention_days = previous.log_retention_days.saturating_add(1);
+    let imported_log_retention_days = previous.log_retention_days.saturating_add(1);
+    let mut imported = serde_json::to_value(&previous).expect("serialize imported settings");
+    imported["codex_model_context_rules"] = serde_json::json!({
+        "not": "a rule collection"
+    });
+    imported["codex_gpt56_372k_context_enabled"] = serde_json::json!([true]);
+    imported["log_retention_days"] = serde_json::json!(imported_log_retention_days);
     let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
     bundle.settings = serde_json::to_string(&imported).expect("import settings");
 
     config_import(&app, &test_app.db, bundle).expect("import ordinary settings");
 
     let canonical = settings::read(&app).expect("canonical after import");
-    assert!(!canonical.codex_gpt56_372k_context_enabled);
-    assert_eq!(canonical.log_retention_days, imported.log_retention_days);
+    assert_eq!(
+        canonical.codex_model_context_rules,
+        previous.codex_model_context_rules
+    );
+    assert_eq!(canonical.log_retention_days, imported_log_retention_days);
 }
 
 #[test]
-fn config_import_rejects_codex_home_change_while_372k_policy_is_enabled() {
+fn config_import_rejects_codex_home_change_while_context_rule_is_enabled() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
-    let old_codex_home = test_app.home.path().join("codex-372k-old");
-    let new_codex_home = test_app.home.path().join("codex-372k-new");
+    let old_codex_home = test_app.home.path().join("codex-rules-old");
+    let new_codex_home = test_app.home.path().join("codex-rules-new");
 
     let mut previous = settings::read(&app).expect("previous settings");
     previous.codex_home_mode = settings::CodexHomeMode::Custom;
     previous.codex_home_override = old_codex_home.to_string_lossy().into_owned();
-    previous.codex_gpt56_372k_context_enabled = true;
-    settings::write(&app, &previous).expect("seed active 372K policy");
+    previous.codex_model_context_rules = vec![codex_model_context_rule("device-local-model", true)];
+    settings::write(&app, &previous).expect("seed active context rule");
     let workspace_before = {
         let conn = test_app
             .db
@@ -484,16 +544,21 @@ fn config_import_rejects_codex_home_change_while_372k_policy_is_enabled() {
     assert!(!new_codex_home.exists());
 
     let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
-    let mut imported = previous.clone();
-    imported.codex_gpt56_372k_context_enabled = false;
-    imported.codex_home_mode = settings::CodexHomeMode::Custom;
-    imported.codex_home_override = new_codex_home.to_string_lossy().into_owned();
+    let mut imported = serde_json::to_value(&previous).expect("serialize imported settings");
+    imported["codex_model_context_rules"] = serde_json::json!([]);
+    imported["codex_gpt56_372k_context_enabled"] = serde_json::json!(false);
+    imported["codex_home_mode"] = serde_json::json!("custom");
+    imported["codex_home_override"] =
+        serde_json::json!(new_codex_home.to_string_lossy().into_owned());
     bundle.settings = serde_json::to_string(&imported).expect("import settings");
 
     let error = config_import(&app, &test_app.db, bundle)
-        .expect_err("active 372K policy must block imported Codex home changes");
+        .expect_err("active context rules must block imported Codex home changes");
 
-    assert_eq!(error.code(), "CODEX_GPT56_372K_CONTEXT_HOME_CHANGE_BLOCKED");
+    assert_eq!(
+        error.code(),
+        "CODEX_MODEL_CONTEXT_RULES_HOME_CHANGE_BLOCKED"
+    );
     let canonical = settings::read(&app).expect("canonical after rejected import");
     assert_eq!(
         serde_json::to_value(canonical).expect("canonical settings json"),
@@ -507,6 +572,49 @@ fn config_import_rejects_codex_home_change_while_372k_policy_is_enabled() {
     assert!(!new_codex_home.exists());
 }
 
+#[test]
+fn config_import_allows_equivalent_codex_config_path_with_active_rule() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let codex_home = test_app
+        .codex_catalog
+        .config_path
+        .parent()
+        .expect("fixture Codex home")
+        .to_path_buf();
+
+    let mut previous = settings::read(&app).expect("previous settings");
+    previous.codex_home_mode = settings::CodexHomeMode::Custom;
+    previous.codex_home_override = codex_home.to_string_lossy().into_owned();
+    previous.codex_model_context_rules = vec![codex_model_context_rule("gpt-base", true)];
+    settings::write(&app, &previous).expect("seed active context rule");
+
+    let imported_log_retention_days = previous.log_retention_days.saturating_add(1);
+    let mut imported = serde_json::to_value(&previous).expect("serialize imported settings");
+    imported["codex_home_override"] = serde_json::json!(codex_home
+        .join("config.toml")
+        .to_string_lossy()
+        .into_owned());
+    imported["log_retention_days"] = serde_json::json!(imported_log_retention_days);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+
+    config_import(&app, &test_app.db, bundle)
+        .expect("equivalent config.toml input must not trigger a Codex home rebind");
+
+    let canonical = settings::read(&app).expect("canonical after import");
+    assert_eq!(
+        crate::codex_paths::codex_home_dir_for_settings(&app, &canonical)
+            .expect("canonical Codex home"),
+        codex_home
+    );
+    assert_eq!(
+        canonical.codex_model_context_rules,
+        previous.codex_model_context_rules
+    );
+    assert_eq!(canonical.log_retention_days, imported_log_retention_days);
+}
+
 fn write_codex_home_files(home: &Path, config: &str, auth: &str) {
     std::fs::create_dir_all(home).expect("create Codex home");
     std::fs::write(home.join("config.toml"), config).expect("write Codex config");
@@ -514,7 +622,7 @@ fn write_codex_home_files(home: &Path, config: &str, auth: &str) {
 }
 
 #[test]
-fn config_import_rebinds_enabled_codex_proxy_when_inactive_policy_changes_home() {
+fn config_import_rebinds_enabled_codex_proxy_when_only_disabled_rules_exist() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
     let old_codex_home = test_app.home.path().join("codex-proxy-old");
@@ -527,7 +635,8 @@ fn config_import_rebinds_enabled_codex_proxy_when_inactive_policy_changes_home()
     let mut previous = settings::read(&app).expect("previous settings");
     previous.codex_home_mode = settings::CodexHomeMode::Custom;
     previous.codex_home_override = old_codex_home.to_string_lossy().into_owned();
-    previous.codex_gpt56_372k_context_enabled = false;
+    previous.codex_model_context_rules =
+        vec![codex_model_context_rule("unavailable-on-new-home", false)];
     settings::write(&app, &previous).expect("set old Codex home");
     write_codex_home_files(&old_codex_home, old_config, old_auth);
     let base_origin = crate::gateway::planned_base_url(&previous).expect("planned base origin");
@@ -559,7 +668,10 @@ fn config_import_rebinds_enabled_codex_proxy_when_inactive_policy_changes_home()
             .expect("canonical Codex home"),
         new_codex_home
     );
-    assert!(!canonical.codex_gpt56_372k_context_enabled);
+    assert_eq!(
+        canonical.codex_model_context_rules,
+        previous.codex_model_context_rules
+    );
 
     let baseline = crate::cli_proxy::codex_enabled_proxy_baseline(&app)
         .expect("read rebound baseline")

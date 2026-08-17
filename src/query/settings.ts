@@ -10,12 +10,19 @@ import {
 } from "../services/settings/settings";
 import { settingsCircuitBreakerNoticeSet } from "../services/settings/settingsCircuitBreakerNotice";
 import { settingsCodexSessionIdCompletionSet } from "../services/settings/settingsCodexSessionIdCompletion";
-import { settingsCodexGpt56372kContextSet } from "../services/settings/settingsCodexGpt56372kContext";
+import { settingsCodexModelContextRulesSet } from "../services/settings/settingsCodexModelContextRules";
+import type { CodexModelContextRule } from "../services/settings/codexModelContextRules";
 import {
   settingsGatewayRectifierSet,
   type GatewayRectifierSettingsPatch,
 } from "../services/settings/settingsGatewayRectifier";
-import { cliManagerKeys, cliProxyKeys, gatewayKeys, settingsKeys } from "./keys";
+import {
+  CODEX_CONFIG_MUTATION_SCOPE,
+  cliManagerKeys,
+  cliProxyKeys,
+  gatewayKeys,
+  settingsKeys,
+} from "./keys";
 
 export const SETTINGS_READONLY_MESSAGE =
   "设置文件读取失败，已进入只读保护。请先修复或恢复 settings.json 后刷新页面。";
@@ -158,11 +165,12 @@ export function useSettingsCodexSessionIdCompletionSetMutation() {
   });
 }
 
-export function useSettingsCodexGpt56372kContextSetMutation() {
+export function useSettingsCodexModelContextRulesSetMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (enabled: boolean) => settingsCodexGpt56372kContextSet(enabled),
+    scope: CODEX_CONFIG_MUTATION_SCOPE,
+    mutationFn: (rules: CodexModelContextRule[]) => settingsCodexModelContextRulesSet(rules),
     onSuccess: (updated) => {
       if (!updated) return;
       queryClient.setQueryData<AppSettings | null>(settingsKeys.get(), updated);
@@ -173,6 +181,7 @@ export function useSettingsCodexGpt56372kContextSetMutation() {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
       // Catalog queries self-disable after an error; reset lets active snapshots retry.
       queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelCatalogAll() });
+      queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelContextCandidatesAll() });
       queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });

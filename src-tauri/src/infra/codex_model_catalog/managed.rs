@@ -3,9 +3,10 @@
 use super::protocol;
 use crate::shared::error::{db_err, AppError, AppResult};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest as _, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -17,11 +18,16 @@ const MAX_BASE_MODEL_COUNT: usize = 1_000;
 const MAX_MANAGED_PROFILE_COUNT: usize = 256;
 const OWNER_METADATA_KEY: &str = "_aio_managed_model_catalog";
 const LEGACY_OWNER_SCHEMA_VERSION: u64 = 1;
-const OWNER_SCHEMA_VERSION: u64 = 2;
+const LEGACY_POLICY_OWNER_SCHEMA_VERSION: u64 = 2;
+const OWNER_SCHEMA_VERSION: u64 = 3;
 const MANAGED_BY: &str = "aio-coding-hub";
-pub(crate) const GPT56_372K_CONTEXT_TOKENS: u64 = 372_000;
-const GPT56_372K_POLICY_VERSION: u64 = 1;
-const GPT56_372K_MODEL_SLUGS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const MODEL_CONTEXT_PROJECTION_VERSION: u64 = 1;
+
+// Owner schema v2 encoded the retired GPT-5.6-only policy. These constants are
+// validation-only so an existing generated catalog can be recovered safely.
+const LEGACY_GPT56_372K_CONTEXT_TOKENS: u64 = 372_000;
+const LEGACY_GPT56_372K_POLICY_VERSION: u64 = 1;
+const LEGACY_GPT56_372K_MODEL_SLUGS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedCatalogProfile {
@@ -43,17 +49,67 @@ struct RawManagedCatalogProfile {
     context_window: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ManagedCatalogPolicy {
-    pub(crate) gpt56_372k_context_enabled: bool,
+    pub(crate) model_context_rules: Vec<crate::settings::CodexModelContextRule>,
 }
 
 impl ManagedCatalogPolicy {
-    pub(crate) fn from_settings(settings: &crate::settings::AppSettings) -> Self {
-        Self {
-            gpt56_372k_context_enabled: settings.codex_gpt56_372k_context_enabled,
-        }
+    pub(crate) fn from_settings(settings: &crate::settings::AppSettings) -> AppResult<Self> {
+        Self::from_rules(settings.codex_model_context_rules.clone())
     }
+
+    pub(crate) fn from_rules(
+        model_context_rules: Vec<crate::settings::CodexModelContextRule>,
+    ) -> AppResult<Self> {
+        Self {
+            model_context_rules,
+        }
+        .canonicalized()
+    }
+
+    fn canonicalized(mut self) -> AppResult<Self> {
+        crate::settings::normalize_codex_model_context_rules_for_write(
+            &mut self.model_context_rules,
+        )?;
+        Ok(self)
+    }
+
+    fn enabled_rules(&self) -> impl Iterator<Item = &crate::settings::CodexModelContextRule> {
+        self.model_context_rules.iter().filter(|rule| rule.enabled)
+    }
+
+    fn has_enabled_rules(&self) -> bool {
+        self.enabled_rules().next().is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnabledModelContextRule {
+    model_id: String,
+    context_window: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelContextPolicyProjection {
+    rule_set_sha256: String,
+    enabled_rules: Vec<EnabledModelContextRule>,
+    enabled_rules_sha256: String,
+}
+
+struct CatalogGenerationContext<'a> {
+    profile_set_sha256: &'a str,
+    base_source_fingerprint: &'a str,
+    policy: &'a ManagedCatalogPolicy,
+    policy_projection: &'a ModelContextPolicyProjection,
+    original_catalog_path: Option<&'a Path>,
+    codex_home_key: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodexBaseCatalogRead {
+    pub(crate) bytes: Vec<u8>,
 }
 
 impl ManagedCatalogProfile {
@@ -103,12 +159,16 @@ struct FileSnapshot {
 #[derive(Debug)]
 struct PreparedCatalogChange {
     ownership: CatalogOwnershipContext,
+    ownership_after: CatalogOwnershipContext,
+    codex_home_key: String,
     base_source_guard: Option<BaseCatalogGuard>,
     baseline_backup: Option<AppliedFileChange>,
     config_before: FileSnapshot,
     config_after: Vec<u8>,
+    expected_catalog_binding: Option<PathBuf>,
     generated_before: FileSnapshot,
     generated_after: Option<Vec<u8>>,
+    expected_owner: Option<OwnedCatalogMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,9 +178,30 @@ enum CatalogOwnershipContext {
     Direct { config_path: PathBuf },
 }
 
+#[derive(Debug)]
 struct PreparedCatalogBaseline {
     catalog_path: Option<PathBuf>,
     backup_change: Option<AppliedFileChange>,
+}
+
+struct PreparedCatalogContext {
+    ownership: CatalogOwnershipContext,
+    generated_path: PathBuf,
+    generated_before: FileSnapshot,
+    existing_metadata: Option<OwnedCatalogMetadata>,
+    baseline_backup: Option<AppliedFileChange>,
+    config_before: FileSnapshot,
+    current_config_bytes: Vec<u8>,
+    original_catalog_path: Option<PathBuf>,
+    codex_home_key: String,
+    legacy_catalog_ownership: LegacyCatalogOwnership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyCatalogOwnership {
+    NotLegacy,
+    ActiveV2,
+    Inactive,
 }
 
 #[derive(Debug)]
@@ -147,31 +228,124 @@ impl ManagedCatalogPlan {
         self,
         app: &tauri::AppHandle<R>,
     ) -> AppResult<AppliedManagedCatalog> {
-        let change = self.change;
+        let PreparedCatalogChange {
+            ownership,
+            ownership_after,
+            codex_home_key,
+            base_source_guard,
+            baseline_backup,
+            config_before,
+            config_after,
+            expected_catalog_binding,
+            generated_before,
+            generated_after,
+            expected_owner,
+        } = self.change;
 
-        if catalog_ownership_context(app)? != change.ownership {
+        if current_codex_home_key(app)? != codex_home_key {
+            return Err(AppError::new(
+                "CODEX_MODEL_CONTEXT_RULES_HOME_DRIFT",
+                "the Codex home changed while preparing the managed model catalog",
+            ));
+        }
+        if managed_catalog_path(app)? != generated_before.path {
+            return Err(AppError::new(
+                "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+                "the managed Codex catalog path changed while preparing the catalog",
+            ));
+        }
+        if catalog_ownership_context(app)? != ownership {
             return Err(AppError::new(
                 "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
                 "Codex catalog ownership changed while preparing the managed model catalog",
             ));
         }
-        if let Some(guard) = change.base_source_guard.as_ref() {
+        if let Some(guard) = base_source_guard.as_ref() {
             guard.ensure_unchanged(app)?;
         }
 
-        ensure_snapshot_unchanged(
-            &change.config_before,
-            crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES,
-        )?;
-        ensure_snapshot_unchanged(&change.generated_before, GENERATED_CATALOG_MAX_BYTES)?;
+        ensure_snapshot_unchanged(&config_before, crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES)?;
+        ensure_snapshot_unchanged(&generated_before, GENERATED_CATALOG_MAX_BYTES)?;
 
-        apply_prepared_catalog_files(
-            change.baseline_backup,
-            change.config_before,
-            change.config_after,
-            change.generated_before,
-            change.generated_after,
+        let baseline_expected = baseline_backup.as_ref().map(expected_snapshot_after_change);
+        let config_expected = FileSnapshot {
+            path: config_before.path.clone(),
+            bytes: Some(config_after.clone()),
+        };
+        let generated_expected = FileSnapshot {
+            path: generated_before.path.clone(),
+            bytes: generated_after.clone(),
+        };
+        let applied = apply_prepared_catalog_files(
+            baseline_backup,
+            config_before,
+            config_after,
+            generated_before,
+            generated_after,
+        )?;
+
+        confirm_applied_catalog(
+            applied,
+            baseline_expected.as_ref(),
+            &config_expected,
+            &generated_expected,
+            || {
+                if current_codex_home_key(app)? != codex_home_key {
+                    return Err(AppError::new(
+                        "CODEX_MODEL_CONTEXT_RULES_HOME_DRIFT",
+                        "the Codex home changed while confirming the managed model catalog",
+                    ));
+                }
+                if !catalog_owner_matches_after_apply(
+                    &catalog_ownership_context(app)?,
+                    &ownership_after,
+                ) {
+                    return Err(AppError::new(
+                        "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+                        "Codex catalog ownership changed while confirming the managed model catalog",
+                    ));
+                }
+                if let Some(guard) = base_source_guard.as_ref() {
+                    guard.ensure_unchanged(app)?;
+                }
+                confirm_catalog_binding(&config_expected, expected_catalog_binding.as_deref())?;
+                confirm_generated_owner(
+                    &generated_expected,
+                    expected_owner.as_ref(),
+                    &codex_home_key,
+                )
+            },
         )
+    }
+}
+
+fn catalog_owner_matches_after_apply(
+    actual: &CatalogOwnershipContext,
+    expected: &CatalogOwnershipContext,
+) -> bool {
+    match (actual, expected) {
+        (
+            CatalogOwnershipContext::ProxyApplied(actual)
+            | CatalogOwnershipContext::ProxyRestoredDirect(actual),
+            CatalogOwnershipContext::ProxyApplied(expected)
+            | CatalogOwnershipContext::ProxyRestoredDirect(expected),
+        ) => actual == expected,
+        (
+            CatalogOwnershipContext::Direct {
+                config_path: actual,
+            },
+            CatalogOwnershipContext::Direct {
+                config_path: expected,
+            },
+        ) => actual == expected,
+        _ => false,
+    }
+}
+
+fn expected_snapshot_after_change(change: &AppliedFileChange) -> FileSnapshot {
+    FileSnapshot {
+        path: change.before.path.clone(),
+        bytes: change.after.clone(),
     }
 }
 
@@ -241,6 +415,109 @@ fn apply_prepared_catalog_files(
     }
 }
 
+fn confirm_applied_catalog<F>(
+    applied: AppliedManagedCatalog,
+    baseline_expected: Option<&FileSnapshot>,
+    config_expected: &FileSnapshot,
+    generated_expected: &FileSnapshot,
+    confirm_context: F,
+) -> AppResult<AppliedManagedCatalog>
+where
+    F: FnOnce() -> AppResult<()>,
+{
+    let confirmation = (|| {
+        injected_catalog_post_apply_mutation(
+            baseline_expected,
+            config_expected,
+            generated_expected,
+        )?;
+        if let Some(expected) = baseline_expected {
+            ensure_confirmed_snapshot(
+                expected,
+                crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES,
+                "Codex proxy baseline",
+            )?;
+        }
+        ensure_confirmed_snapshot(
+            generated_expected,
+            GENERATED_CATALOG_MAX_BYTES,
+            "AIO-managed Codex catalog",
+        )?;
+        ensure_confirmed_snapshot(
+            config_expected,
+            crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES,
+            "Codex config",
+        )?;
+        confirm_context()
+    })();
+    match confirmation {
+        Ok(()) => Ok(applied),
+        Err(error) => Err(rollback_catalog_apply_failure(error, applied)),
+    }
+}
+
+fn ensure_confirmed_snapshot(
+    expected: &FileSnapshot,
+    max_len: usize,
+    target: &str,
+) -> AppResult<()> {
+    if read_snapshot(&expected.path, max_len)? != expected.bytes {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+            format!("{target} changed while confirming the managed model catalog"),
+        ));
+    }
+    Ok(())
+}
+
+fn confirm_catalog_binding(
+    config_expected: &FileSnapshot,
+    expected_catalog_binding: Option<&Path>,
+) -> AppResult<()> {
+    let bytes = read_snapshot(
+        &config_expected.path,
+        crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES,
+    )?
+    .ok_or_else(|| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+            "Codex config disappeared while confirming the managed model catalog",
+        )
+    })?;
+    let confirmed = parse_catalog_path(Some(&bytes), "confirmed")?;
+    let matches = match (confirmed.as_deref(), expected_catalog_binding) {
+        (Some(actual), Some(expected)) => catalog_paths_match(actual, expected),
+        (None, None) => true,
+        _ => false,
+    };
+    if !matches {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+            "model_catalog_json did not match the confirmed managed catalog binding",
+        ));
+    }
+    Ok(())
+}
+
+fn confirm_generated_owner(
+    generated_expected: &FileSnapshot,
+    expected_owner: Option<&OwnedCatalogMetadata>,
+    codex_home_key: &str,
+) -> AppResult<()> {
+    let Some(expected_owner) = expected_owner else {
+        return Ok(());
+    };
+    let bytes = read_snapshot(&generated_expected.path, GENERATED_CATALOG_MAX_BYTES)?
+        .ok_or_else(modified_catalog_error)?;
+    let confirmed_owner = validate_owned_catalog(&bytes)?;
+    if &confirmed_owner != expected_owner
+        || confirmed_owner.codex_home_key.as_deref() != Some(codex_home_key)
+    {
+        return Err(modified_catalog_error());
+    }
+    Ok(())
+}
+
 fn apply_generated_catalog_change(
     generated_before: &FileSnapshot,
     generated_after: Option<&[u8]>,
@@ -266,6 +543,8 @@ fn apply_catalog_config_change(
     }
     record_catalog_apply_stage(CatalogApplyStage::Config);
     injected_catalog_apply_failure(CatalogApplyStage::Config)?;
+    #[cfg(test)]
+    injected_catalog_config_write_failure()?;
     crate::cli_proxy::write_cli_proxy_file_atomic(&config_before.path, config_after).map_err(
         |error| {
             AppError::new(
@@ -304,6 +583,15 @@ fn injected_catalog_apply_failure(_stage: CatalogApplyStage) -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(not(test))]
+fn injected_catalog_post_apply_mutation(
+    _baseline_expected: Option<&FileSnapshot>,
+    _config_expected: &FileSnapshot,
+    _generated_expected: &FileSnapshot,
+) -> AppResult<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 thread_local! {
     static CATALOG_APPLY_FAILURE: std::cell::Cell<Option<CatalogApplyStage>> = const {
@@ -315,6 +603,39 @@ thread_local! {
     static CATALOG_ROLLBACK_TRACE: std::cell::RefCell<Vec<CatalogApplyStage>> = const {
         std::cell::RefCell::new(Vec::new())
     };
+    static CATALOG_POST_APPLY_MUTATION: std::cell::Cell<Option<CatalogApplyStage>> = const {
+        std::cell::Cell::new(None)
+    };
+    static CATALOG_CONFIG_WRITE_FAILURE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn fail_next_catalog_config_write_for_test() {
+    CATALOG_CONFIG_WRITE_FAILURE.with(|failure| {
+        assert!(
+            !failure.replace(true),
+            "a managed catalog config write failure is already pending"
+        );
+    });
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn clear_catalog_config_write_failure_for_test() {
+    CATALOG_CONFIG_WRITE_FAILURE.with(|failure| failure.set(false));
+}
+
+#[cfg(test)]
+fn injected_catalog_config_write_failure() -> AppResult<()> {
+    if CATALOG_CONFIG_WRITE_FAILURE.with(std::cell::Cell::take) {
+        Err(AppError::new(
+            "CODEX_MANAGED_MODEL_CONFIG_WRITE_FAILED",
+            "failed to update Codex config.toml",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -345,6 +666,44 @@ fn injected_catalog_apply_failure(stage: CatalogApplyStage) -> AppResult<()> {
     } else {
         Ok(())
     }
+}
+
+#[cfg(test)]
+fn injected_catalog_post_apply_mutation(
+    baseline_expected: Option<&FileSnapshot>,
+    config_expected: &FileSnapshot,
+    generated_expected: &FileSnapshot,
+) -> AppResult<()> {
+    let Some(stage) = CATALOG_POST_APPLY_MUTATION.with(|mutation| mutation.take()) else {
+        return Ok(());
+    };
+    let (path, bytes): (&Path, &[u8]) = match stage {
+        CatalogApplyStage::Baseline => (
+            &baseline_expected
+                .ok_or_else(|| {
+                    AppError::new(
+                        "CODEX_MANAGED_MODEL_TEST_WRITE_FAILED",
+                        "the injected baseline confirmation target is missing",
+                    )
+                })?
+                .path,
+            b"external-baseline-change",
+        ),
+        CatalogApplyStage::Generated => (
+            &generated_expected.path,
+            br#"{"models":[],"external":true}"#,
+        ),
+        CatalogApplyStage::Config => (
+            &config_expected.path,
+            b"model = \"external-confirmation-change\"\n",
+        ),
+    };
+    std::fs::write(path, bytes).map_err(|_| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_TEST_WRITE_FAILED",
+            "failed to inject a post-apply catalog mutation",
+        )
+    })
 }
 
 impl AppliedManagedCatalog {
@@ -536,19 +895,30 @@ impl BaseCatalogGuard {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct OwnedCatalogMetadata {
     schema_version: u64,
     profile_set_sha256: String,
     base_source_fingerprint: String,
     projection_sha256: Option<String>,
-    gpt56_372k_context_enabled: bool,
+    model_context_rule_set_sha256: Option<String>,
+    model_context_enabled_rules: Vec<EnabledModelContextRule>,
+    model_context_enabled_rules_sha256: Option<String>,
+    codex_home_key: Option<String>,
     original_catalog_path: Option<PathBuf>,
 }
 
 impl OwnedCatalogMetadata {
     fn is_legacy_v1(&self) -> bool {
         self.schema_version == LEGACY_OWNER_SCHEMA_VERSION
+    }
+
+    fn is_current(&self) -> bool {
+        self.schema_version == OWNER_SCHEMA_VERSION
+    }
+
+    fn is_legacy_v2(&self) -> bool {
+        self.schema_version == LEGACY_POLICY_OWNER_SCHEMA_VERSION
     }
 }
 
@@ -626,7 +996,7 @@ pub(crate) fn prepare_for_profiles<R: tauri::Runtime>(
     prepare_for_profiles_with_policy(
         app,
         profiles,
-        ManagedCatalogPolicy::from_settings(&settings),
+        ManagedCatalogPolicy::from_settings(&settings)?,
     )
 }
 
@@ -650,8 +1020,136 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
     intent: CatalogReconcileIntent<'_>,
 ) -> AppResult<ManagedCatalogPlan> {
     validate_profiles(profiles)?;
-    let ownership = catalog_ownership_context(app)?;
+    let policy = policy.canonicalized()?;
+    let PreparedCatalogContext {
+        ownership,
+        generated_path,
+        generated_before,
+        existing_metadata,
+        baseline_backup,
+        config_before,
+        current_config_bytes,
+        original_catalog_path,
+        codex_home_key,
+        legacy_catalog_ownership,
+    } = prepare_catalog_context(app, intent)?;
+    let current_config = current_config_bytes.as_slice();
 
+    let needs_generated_catalog = !profiles.is_empty() || policy.has_enabled_rules();
+    if needs_generated_catalog && legacy_catalog_ownership == LegacyCatalogOwnership::Inactive {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "an inactive legacy AIO Codex catalog cannot be claimed by the current Codex home",
+        ));
+    }
+    let (generated_after, base_source_guard) = if !needs_generated_catalog {
+        let generated_after = (legacy_catalog_ownership == LegacyCatalogOwnership::Inactive)
+            .then(|| generated_before.bytes.clone())
+            .flatten();
+        (generated_after, None)
+    } else {
+        let profile_set_sha256 = profile_set_sha256(profiles)?;
+        let policy_projection = model_context_policy_projection(&policy)?;
+        let source = base_catalog_source(app, original_catalog_path.as_deref())?;
+        let source_guard = source.guard();
+        let expected_projection_sha256 = projection_sha256(
+            &profile_set_sha256,
+            source.fingerprint(),
+            &policy_projection,
+            original_catalog_path.as_deref(),
+            &codex_home_key,
+        )?;
+        if existing_metadata.as_ref().is_some_and(|metadata| {
+            metadata.is_current()
+                && metadata.profile_set_sha256 == profile_set_sha256
+                && metadata.base_source_fingerprint == source.fingerprint()
+                && metadata.projection_sha256.as_deref()
+                    == Some(expected_projection_sha256.as_str())
+                && metadata.model_context_rule_set_sha256.as_deref()
+                    == Some(policy_projection.rule_set_sha256.as_str())
+                && metadata.model_context_enabled_rules == policy_projection.enabled_rules
+                && metadata.model_context_enabled_rules_sha256.as_deref()
+                    == Some(policy_projection.enabled_rules_sha256.as_str())
+                && metadata.codex_home_key.as_deref() == Some(codex_home_key.as_str())
+                && metadata.original_catalog_path == original_catalog_path
+        }) {
+            (generated_before.bytes.clone(), Some(source_guard))
+        } else {
+            let source_fingerprint = source.fingerprint().to_string();
+            let base_bytes = source.load(app)?;
+            (
+                Some(generate_catalog(
+                    &base_bytes,
+                    profiles,
+                    &CatalogGenerationContext {
+                        profile_set_sha256: &profile_set_sha256,
+                        base_source_fingerprint: &source_fingerprint,
+                        policy: &policy,
+                        policy_projection: &policy_projection,
+                        original_catalog_path: original_catalog_path.as_deref(),
+                        codex_home_key: &codex_home_key,
+                    },
+                )?),
+                Some(source_guard),
+            )
+        }
+    };
+
+    let desired_catalog_path = needs_generated_catalog.then_some(generated_path.as_path());
+    let expected_catalog_binding = desired_catalog_path
+        .map(Path::to_path_buf)
+        .or_else(|| original_catalog_path.clone());
+    let config_after = patch_model_catalog_config_with_original_path(
+        current_config,
+        original_catalog_path.as_deref(),
+        desired_catalog_path,
+    )?;
+    let expected_owner = if needs_generated_catalog {
+        let metadata = generated_after
+            .as_deref()
+            .ok_or_else(|| {
+                AppError::new(
+                    "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+                    "the active AIO Codex catalog has no expected owner metadata",
+                )
+            })
+            .and_then(validate_owned_catalog)?;
+        if !metadata.is_current() {
+            return Err(AppError::new(
+                "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+                "the active AIO Codex catalog owner metadata was not upgraded",
+            ));
+        }
+        Some(metadata)
+    } else {
+        None
+    };
+    let ownership_after =
+        catalog_ownership_after_baseline_change(&ownership, baseline_backup.as_ref())?;
+
+    Ok(ManagedCatalogPlan {
+        change: PreparedCatalogChange {
+            ownership,
+            ownership_after,
+            codex_home_key,
+            base_source_guard,
+            baseline_backup,
+            config_before,
+            config_after,
+            expected_catalog_binding,
+            generated_before,
+            generated_after,
+            expected_owner,
+        },
+    })
+}
+
+fn prepare_catalog_context<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    intent: CatalogReconcileIntent<'_>,
+) -> AppResult<PreparedCatalogContext> {
+    let ownership = catalog_ownership_context(app)?;
+    let codex_home_key = current_codex_home_key(app)?;
     let generated_path = managed_catalog_path(app)?;
     let generated_before = snapshot_generated_file(&generated_path)?;
     let existing_metadata = generated_before
@@ -659,6 +1157,7 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
         .as_deref()
         .map(validate_owned_catalog)
         .transpose()?;
+    validate_catalog_home_identity(existing_metadata.as_ref(), &codex_home_key)?;
 
     let (baseline_backup, config_before, current_config_bytes, original_catalog_path) =
         match &ownership {
@@ -728,71 +1227,39 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
                 (None, config_before, current, original)
             }
         };
-    let current_config = current_config_bytes.as_slice();
+    let legacy_catalog_ownership = classify_legacy_catalog_ownership(
+        existing_metadata.as_ref(),
+        &ownership,
+        config_before.bytes.as_deref(),
+        &generated_path,
+    )?;
     validate_current_catalog_binding(
-        current_config,
+        &current_config_bytes,
         original_catalog_path.as_deref(),
         &generated_path,
     )?;
 
-    let needs_generated_catalog = !profiles.is_empty() || policy.gpt56_372k_context_enabled;
-    let (generated_after, base_source_guard) = if !needs_generated_catalog {
-        (None, None)
-    } else {
-        let profile_set_sha256 = profile_set_sha256(profiles)?;
-        let source = base_catalog_source(app, original_catalog_path.as_deref())?;
-        let source_guard = source.guard();
-        let expected_projection_sha256 = projection_sha256(
-            &profile_set_sha256,
-            source.fingerprint(),
-            policy.gpt56_372k_context_enabled,
-            original_catalog_path.as_deref(),
-        )?;
-        if existing_metadata.as_ref().is_some_and(|metadata| {
-            metadata.schema_version == OWNER_SCHEMA_VERSION
-                && metadata.profile_set_sha256 == profile_set_sha256
-                && metadata.base_source_fingerprint == source.fingerprint()
-                && metadata.projection_sha256.as_deref()
-                    == Some(expected_projection_sha256.as_str())
-                && metadata.gpt56_372k_context_enabled == policy.gpt56_372k_context_enabled
-                && metadata.original_catalog_path == original_catalog_path
-        }) {
-            (generated_before.bytes.clone(), Some(source_guard))
-        } else {
-            let source_fingerprint = source.fingerprint().to_string();
-            let base_bytes = source.load(app)?;
-            (
-                Some(generate_catalog(
-                    &base_bytes,
-                    profiles,
-                    &profile_set_sha256,
-                    &source_fingerprint,
-                    policy.gpt56_372k_context_enabled,
-                    original_catalog_path.as_deref(),
-                )?),
-                Some(source_guard),
-            )
-        }
-    };
-
-    let desired_catalog_path = needs_generated_catalog.then_some(generated_path.as_path());
-    let config_after = patch_model_catalog_config_with_original_path(
-        current_config,
-        original_catalog_path.as_deref(),
-        desired_catalog_path,
-    )?;
-
-    Ok(ManagedCatalogPlan {
-        change: PreparedCatalogChange {
-            ownership,
-            base_source_guard,
-            baseline_backup,
-            config_before,
-            config_after,
-            generated_before,
-            generated_after,
-        },
+    Ok(PreparedCatalogContext {
+        ownership,
+        generated_path,
+        generated_before,
+        existing_metadata,
+        baseline_backup,
+        config_before,
+        current_config_bytes,
+        original_catalog_path,
+        codex_home_key,
+        legacy_catalog_ownership,
     })
+}
+
+pub(crate) fn read_original_base_catalog_locked<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<CodexBaseCatalogRead> {
+    let context = prepare_catalog_context(app, CatalogReconcileIntent::Background)?;
+    let source = base_catalog_source(app, context.original_catalog_path.as_deref())?;
+    let bytes = source.load(app)?;
+    Ok(CodexBaseCatalogRead { bytes })
 }
 
 fn validate_config_save_snapshot(
@@ -842,6 +1309,13 @@ fn direct_original_catalog_path(
         // the unbound current config is already the authoritative base.
         return Ok(current_catalog_path.map(Path::to_path_buf));
     }
+    if metadata.is_legacy_v2() {
+        return if current_is_generated {
+            Ok(metadata.original_catalog_path.clone())
+        } else {
+            Ok(current_catalog_path.map(Path::to_path_buf))
+        };
+    }
     if current_is_generated || current_catalog_path == metadata.original_catalog_path.as_deref() {
         return Ok(metadata.original_catalog_path.clone());
     }
@@ -849,6 +1323,81 @@ fn direct_original_catalog_path(
         "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
         "model_catalog_json changed outside AIO while the managed catalog was active",
     ))
+}
+
+fn classify_legacy_catalog_ownership(
+    metadata: Option<&OwnedCatalogMetadata>,
+    ownership: &CatalogOwnershipContext,
+    live_config: Option<&[u8]>,
+    generated_path: &Path,
+) -> AppResult<LegacyCatalogOwnership> {
+    let Some(metadata) = metadata else {
+        return Ok(LegacyCatalogOwnership::NotLegacy);
+    };
+    if metadata.is_current() {
+        return Ok(LegacyCatalogOwnership::NotLegacy);
+    }
+
+    let live_binding = parse_catalog_path(live_config, "current")?;
+    let live_is_generated = live_binding
+        .as_deref()
+        .is_some_and(|path| catalog_paths_match(path, generated_path));
+    let baseline_is_generated = match ownership {
+        CatalogOwnershipContext::ProxyApplied(baseline)
+        | CatalogOwnershipContext::ProxyRestoredDirect(baseline) => {
+            parse_catalog_path(baseline.config_bytes.as_deref(), "proxy baseline")?
+                .as_deref()
+                .is_some_and(|path| catalog_paths_match(path, generated_path))
+        }
+        CatalogOwnershipContext::Direct { .. } => false,
+    };
+    let active = live_is_generated || baseline_is_generated;
+    if metadata.is_legacy_v1() {
+        if active {
+            return Err(AppError::new(
+                "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+                "a legacy AIO Codex catalog cannot prove its original binding",
+            ));
+        }
+        return Ok(LegacyCatalogOwnership::Inactive);
+    }
+    if metadata.is_legacy_v2() && active {
+        return Ok(LegacyCatalogOwnership::ActiveV2);
+    }
+    Ok(LegacyCatalogOwnership::Inactive)
+}
+
+fn catalog_ownership_after_baseline_change(
+    ownership: &CatalogOwnershipContext,
+    baseline_change: Option<&AppliedFileChange>,
+) -> AppResult<CatalogOwnershipContext> {
+    let mut expected = ownership.clone();
+    let Some(change) = baseline_change else {
+        return Ok(expected);
+    };
+    let baseline = match &mut expected {
+        CatalogOwnershipContext::ProxyApplied(baseline)
+        | CatalogOwnershipContext::ProxyRestoredDirect(baseline) => baseline,
+        CatalogOwnershipContext::Direct { .. } => {
+            return Err(AppError::new(
+                "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+                "a direct Codex catalog plan cannot repair a proxy baseline",
+            ));
+        }
+    };
+    if baseline.config_backup_path.as_deref() != Some(change.before.path.as_path()) {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "the Codex proxy baseline repair target changed unexpectedly",
+        ));
+    }
+    baseline.config_bytes = Some(change.after.clone().ok_or_else(|| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "the repaired Codex proxy baseline cannot be empty",
+        )
+    })?);
+    Ok(expected)
 }
 
 fn explicit_save_original_catalog_path(
@@ -914,7 +1463,7 @@ pub(crate) fn sync_current_after_config_save_locked<R: tauri::Runtime>(
     let conn = db.open_connection()?;
     let profiles = load_profiles(&conn)?;
     let settings = crate::settings::read(app)?;
-    let policy = ManagedCatalogPolicy::from_settings(&settings);
+    let policy = ManagedCatalogPolicy::from_settings(&settings)?;
     prepare_for_profiles_with_policy_and_intent(
         app,
         &profiles,
@@ -958,22 +1507,157 @@ pub(crate) fn sync_current_invocations_for_test() -> usize {
 }
 
 fn managed_catalog_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<PathBuf> {
-    let root = crate::app_paths::app_data_dir(app)?
-        .join("cli-proxy")
-        .join("codex");
-    std::fs::create_dir_all(&root).map_err(|_| {
+    managed_catalog_path_from_root(&crate::app_paths::app_data_dir(app)?)
+}
+
+fn managed_catalog_path_from_root(app_data_dir: &Path) -> AppResult<PathBuf> {
+    let parent = app_data_dir.join("cli-proxy").join("codex");
+    Ok(resolve_directory_path_without_creation(&parent)?.join(GENERATED_CATALOG_FILE_NAME))
+}
+
+fn resolve_directory_path_without_creation(path: &Path) -> AppResult<PathBuf> {
+    let mut cursor = path;
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(cursor) {
+            Ok(_) => {
+                let mut resolved = std::fs::canonicalize(cursor).map_err(|_| {
+                    AppError::new(
+                        "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
+                        "failed to resolve the managed Codex catalog directory",
+                    )
+                })?;
+                if !std::fs::metadata(&resolved)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+                {
+                    return Err(AppError::new(
+                        "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
+                        "the managed Codex catalog ancestor is not a directory",
+                    ));
+                }
+                for component in missing.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let component = cursor.file_name().ok_or_else(|| {
+                    AppError::new(
+                        "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
+                        "the managed Codex catalog directory has no resolvable ancestor",
+                    )
+                })?;
+                missing.push(component.to_os_string());
+                cursor = cursor.parent().ok_or_else(|| {
+                    AppError::new(
+                        "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
+                        "the managed Codex catalog directory has no resolvable ancestor",
+                    )
+                })?;
+            }
+            Err(_) => {
+                return Err(AppError::new(
+                    "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
+                    "failed to inspect the managed Codex catalog directory",
+                ));
+            }
+        }
+    }
+}
+
+fn current_codex_home_key<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<String> {
+    let home = crate::codex_paths::codex_home_dir(app)?;
+    normalized_codex_home_key(&home)
+}
+
+fn normalized_codex_home_key(home: &Path) -> AppResult<String> {
+    if !home.is_absolute() {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_CONFIG_INVALID",
+            "the resolved Codex home must be absolute",
+        ));
+    }
+    let resolved = canonicalize_allow_missing(home);
+    let key = resolved
+        .to_str()
+        .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
+        .ok_or_else(|| {
+            AppError::new(
+                "CODEX_MANAGED_MODEL_CONFIG_INVALID",
+                "the resolved Codex home must be valid UTF-8",
+            )
+        })?
+        .to_string();
+    #[cfg(windows)]
+    let key = {
+        let mut key = key;
+        key = key.replace('\\', "/");
+        key.make_ascii_lowercase();
+        key
+    };
+    Ok(key)
+}
+
+fn canonicalize_allow_missing(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+
+    let mut cursor = path;
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(mut resolved) = std::fs::canonicalize(cursor) {
+            for component in missing.iter().rev() {
+                resolved.push(component);
+            }
+            return resolved;
+        }
+
+        let Some(file_name) = cursor.file_name() else {
+            return path.to_path_buf();
+        };
+        missing.push(file_name.to_os_string());
+
+        let Some(parent) = cursor.parent() else {
+            return path.to_path_buf();
+        };
+        if parent == cursor {
+            return path.to_path_buf();
+        }
+        cursor = parent;
+    }
+}
+
+fn validate_catalog_home_identity(
+    metadata: Option<&OwnedCatalogMetadata>,
+    current_codex_home_key: &str,
+) -> AppResult<()> {
+    let Some(metadata) = metadata.filter(|metadata| metadata.is_current()) else {
+        return Ok(());
+    };
+    if metadata.codex_home_key.as_deref() != Some(current_codex_home_key) {
+        return Err(AppError::new(
+            "CODEX_MODEL_CONTEXT_RULES_HOME_DRIFT",
+            "the Codex home changed while an AIO-managed catalog was owned by another home",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_managed_catalog_parent(path: &Path) -> AppResult<()> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
+            "the managed Codex catalog path has no parent directory",
+        )
+    })?;
+    std::fs::create_dir_all(parent).map_err(|_| {
         AppError::new(
             "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
             "failed to create the managed Codex catalog directory",
         )
-    })?;
-    let root = std::fs::canonicalize(&root).map_err(|_| {
-        AppError::new(
-            "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
-            "failed to resolve the managed Codex catalog directory",
-        )
-    })?;
-    Ok(root.join(GENERATED_CATALOG_FILE_NAME))
+    })
 }
 
 fn validate_profile(profile: &ManagedCatalogProfile) -> AppResult<()> {
@@ -1063,10 +1747,7 @@ fn ensure_snapshot_unchanged(snapshot: &FileSnapshot, max_len: usize) -> AppResu
     if read_snapshot(&snapshot.path, max_len)? != snapshot.bytes {
         return Err(AppError::new(
             "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
-            format!(
-                "{} changed while preparing the managed model catalog",
-                snapshot.path.display()
-            ),
+            "a managed Codex catalog target changed while preparing the catalog",
         ));
     }
     Ok(())
@@ -1077,10 +1758,7 @@ fn rollback_file_change(change: &AppliedFileChange, max_len: usize) -> AppResult
     if current != change.after {
         return Err(AppError::new(
             "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
-            format!(
-                "{} changed after the managed model catalog update; refusing to overwrite it",
-                change.before.path.display()
-            ),
+            "a managed Codex catalog target changed after update; refusing to overwrite it",
         ));
     }
     match change.before.bytes.as_deref() {
@@ -1088,9 +1766,9 @@ fn rollback_file_change(change: &AppliedFileChange, max_len: usize) -> AppResult
         None => match std::fs::remove_file(&change.before.path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(AppError::new(
+            Err(_) => Err(AppError::new(
                 "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
-                format!("failed to remove {}: {error}", change.before.path.display()),
+                "failed to remove a managed Codex catalog rollback target",
             )),
         },
     }
@@ -1098,12 +1776,15 @@ fn rollback_file_change(change: &AppliedFileChange, max_len: usize) -> AppResult
 
 fn apply_generated_catalog_state(path: &Path, bytes: Option<&[u8]>) -> AppResult<()> {
     match bytes {
-        Some(bytes) => crate::shared::fs::write_file_atomic(path, bytes).map_err(|_| {
-            AppError::new(
-                "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
-                "failed to write the AIO-managed Codex model catalog",
-            )
-        }),
+        Some(bytes) => {
+            ensure_managed_catalog_parent(path)?;
+            crate::shared::fs::write_file_atomic(path, bytes).map_err(|_| {
+                AppError::new(
+                    "CODEX_MANAGED_MODEL_CATALOG_WRITE_FAILED",
+                    "failed to write the AIO-managed Codex model catalog",
+                )
+            })
+        }
         None => match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1157,9 +1838,19 @@ fn prepare_catalog_baseline(
             "the polluted Codex proxy baseline disappeared",
         )
     })?;
-    let recovered_catalog_path = existing_metadata
-        .filter(|metadata| !metadata.is_legacy_v1())
-        .and_then(|metadata| metadata.original_catalog_path.clone());
+    let metadata = existing_metadata.ok_or_else(|| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "the active AIO Codex catalog has no recoverable ownership metadata",
+        )
+    })?;
+    if metadata.is_legacy_v1() {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "a legacy AIO Codex catalog cannot recover its original proxy baseline binding",
+        ));
+    }
+    let recovered_catalog_path = metadata.original_catalog_path.clone();
     let repaired = patch_model_catalog_config_with_original_path(
         current,
         recovered_catalog_path.as_deref(),
@@ -1460,7 +2151,80 @@ fn profile_set_sha256(profiles: &[ManagedCatalogProfile]) -> AppResult<String> {
     Ok(sha256_hex(&bytes))
 }
 
+fn model_context_policy_projection(
+    policy: &ManagedCatalogPolicy,
+) -> AppResult<ModelContextPolicyProjection> {
+    let rule_set_bytes = serde_json::to_vec(&policy.model_context_rules).map_err(|_| {
+        AppError::new(
+            "SYSTEM_ERROR",
+            "failed to serialize the Codex model context rule set",
+        )
+    })?;
+    let enabled_rules = policy
+        .enabled_rules()
+        .map(|rule| EnabledModelContextRule {
+            model_id: rule.model_id.clone(),
+            context_window: rule.context_window,
+        })
+        .collect::<Vec<_>>();
+    let enabled_rule_bytes = serde_json::to_vec(&enabled_rules).map_err(|_| {
+        AppError::new(
+            "SYSTEM_ERROR",
+            "failed to serialize the enabled Codex model context rules",
+        )
+    })?;
+    Ok(ModelContextPolicyProjection {
+        rule_set_sha256: sha256_hex(&rule_set_bytes),
+        enabled_rules_sha256: sha256_hex(&enabled_rule_bytes),
+        enabled_rules,
+    })
+}
+
+fn projection_value(
+    profile_set_sha256: &str,
+    base_source_fingerprint: &str,
+    policy: &ModelContextPolicyProjection,
+    original_catalog_path: Option<&Path>,
+    codex_home_key: &str,
+) -> AppResult<Value> {
+    let original_catalog_path = catalog_path_string(original_catalog_path)?;
+    Ok(json!({
+        "schema_version": OWNER_SCHEMA_VERSION,
+        "projection_algorithm_version": MODEL_CONTEXT_PROJECTION_VERSION,
+        "profile_set_sha256": profile_set_sha256,
+        "base_source_fingerprint": base_source_fingerprint,
+        "original_catalog_path": original_catalog_path,
+        "codex_home_key": codex_home_key,
+        "model_context_rule_set_sha256": policy.rule_set_sha256,
+        "model_context_enabled_rules": policy.enabled_rules,
+        "model_context_enabled_rules_sha256": policy.enabled_rules_sha256,
+    }))
+}
+
 fn projection_sha256(
+    profile_set_sha256: &str,
+    base_source_fingerprint: &str,
+    policy: &ModelContextPolicyProjection,
+    original_catalog_path: Option<&Path>,
+    codex_home_key: &str,
+) -> AppResult<String> {
+    let bytes = serde_json::to_vec(&projection_value(
+        profile_set_sha256,
+        base_source_fingerprint,
+        policy,
+        original_catalog_path,
+        codex_home_key,
+    )?)
+    .map_err(|_| {
+        AppError::new(
+            "SYSTEM_ERROR",
+            "failed to hash the managed Codex catalog projection",
+        )
+    })?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn legacy_v2_projection_sha256(
     profile_set_sha256: &str,
     base_source_fingerprint: &str,
     gpt56_372k_context_enabled: bool,
@@ -1468,21 +2232,16 @@ fn projection_sha256(
 ) -> AppResult<String> {
     let original_catalog_path = catalog_path_string(original_catalog_path)?;
     let bytes = serde_json::to_vec(&json!({
-        "schema_version": OWNER_SCHEMA_VERSION,
+        "schema_version": LEGACY_POLICY_OWNER_SCHEMA_VERSION,
         "profile_set_sha256": profile_set_sha256,
         "base_source_fingerprint": base_source_fingerprint,
         "original_catalog_path": original_catalog_path,
-        "gpt56_372k_policy_version": GPT56_372K_POLICY_VERSION,
+        "gpt56_372k_policy_version": LEGACY_GPT56_372K_POLICY_VERSION,
         "gpt56_372k_context_enabled": gpt56_372k_context_enabled,
-        "gpt56_372k_context_tokens": GPT56_372K_CONTEXT_TOKENS,
-        "gpt56_372k_model_slugs": GPT56_372K_MODEL_SLUGS,
+        "gpt56_372k_context_tokens": LEGACY_GPT56_372K_CONTEXT_TOKENS,
+        "gpt56_372k_model_slugs": LEGACY_GPT56_372K_MODEL_SLUGS,
     }))
-    .map_err(|_| {
-        AppError::new(
-            "SYSTEM_ERROR",
-            "failed to hash the managed Codex catalog projection",
-        )
-    })?;
+    .map_err(|_| modified_catalog_error())?;
     Ok(sha256_hex(&bytes))
 }
 
@@ -1501,11 +2260,20 @@ fn catalog_path_string(path: Option<&Path>) -> AppResult<Option<String>> {
 fn generate_catalog(
     base_bytes: &[u8],
     profiles: &[ManagedCatalogProfile],
-    profile_set_sha256: &str,
-    base_source_fingerprint: &str,
-    gpt56_372k_context_enabled: bool,
-    original_catalog_path: Option<&Path>,
+    context: &CatalogGenerationContext<'_>,
 ) -> AppResult<Vec<u8>> {
+    let profile_set_sha256 = context.profile_set_sha256;
+    let base_source_fingerprint = context.base_source_fingerprint;
+    let policy = context.policy;
+    let policy_projection = context.policy_projection;
+    let original_catalog_path = context.original_catalog_path;
+    let codex_home_key = context.codex_home_key;
+    if model_context_policy_projection(policy)? != *policy_projection {
+        return Err(AppError::new(
+            "SYSTEM_ERROR",
+            "the managed Codex catalog policy projection is inconsistent",
+        ));
+    }
     let mut root: Value = serde_json::from_slice(base_bytes).map_err(|_| {
         AppError::new(
             "CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID",
@@ -1541,8 +2309,13 @@ fn generate_catalog(
     }
 
     let mut slugs = HashSet::with_capacity(models.len() + profiles.len());
+    let mut slug_indices = HashMap::with_capacity(models.len());
+    let enabled_targets = policy
+        .enabled_rules()
+        .map(|rule| (rule.model_id.as_str(), rule.context_window))
+        .collect::<HashMap<_, _>>();
     let mut template = None;
-    for model in models.iter() {
+    for (index, model) in models.iter().enumerate() {
         let model_object = model.as_object().ok_or_else(|| {
             AppError::new(
                 "CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID",
@@ -1560,10 +2333,10 @@ fn generate_catalog(
                 )
             })?;
         if !slugs.insert(slug.to_string()) {
-            if gpt56_372k_context_enabled && GPT56_372K_MODEL_SLUGS.contains(&slug) {
+            if enabled_targets.contains_key(slug) {
                 return Err(AppError::new(
-                    "CODEX_GPT56_372K_MODELS_MISSING",
-                    "the Codex model catalog must contain exactly one of every supported GPT-5.6 model",
+                    "CODEX_MODEL_CONTEXT_RULE_TARGET_INVALID",
+                    format!("Codex model {slug} appears more than once in the base catalog"),
                 ));
             }
             return Err(AppError::new(
@@ -1571,6 +2344,7 @@ fn generate_catalog(
                 "the base Codex model catalog contains duplicate slugs",
             ));
         }
+        slug_indices.insert(slug.to_string(), index);
         if template.is_none()
             && model_object.get("visibility").and_then(Value::as_str) == Some("list")
         {
@@ -1588,8 +2362,45 @@ fn generate_catalog(
         })?)
     };
 
-    if gpt56_372k_context_enabled {
-        apply_gpt56_372k_context_policy(models)?;
+    let mut context_updates = Vec::with_capacity(enabled_targets.len());
+    for rule in policy.enabled_rules() {
+        let index = slug_indices.get(&rule.model_id).copied().ok_or_else(|| {
+            AppError::new(
+                "CODEX_MODEL_CONTEXT_RULE_TARGET_MISSING",
+                format!(
+                    "Codex model {} is missing from the base catalog",
+                    rule.model_id
+                ),
+            )
+        })?;
+        let model = models[index]
+            .as_object()
+            .expect("base model objects were validated");
+        if model
+            .get("context_window")
+            .and_then(Value::as_u64)
+            .is_none()
+            || model
+                .get("max_context_window")
+                .and_then(Value::as_u64)
+                .is_none()
+        {
+            return Err(AppError::new(
+                "CODEX_MODEL_CONTEXT_RULE_TARGET_INVALID",
+                format!(
+                    "Codex model {} has invalid context window fields",
+                    rule.model_id
+                ),
+            ));
+        }
+        context_updates.push((index, rule.context_window));
+    }
+    for (index, context_window) in context_updates {
+        let model = models[index]
+            .as_object_mut()
+            .expect("base model objects were validated");
+        model.insert("context_window".to_string(), json!(context_window));
+        model.insert("max_context_window".to_string(), json!(context_window));
     }
 
     for (index, profile) in profiles.iter().enumerate() {
@@ -1615,8 +2426,9 @@ fn generate_catalog(
     let projection_sha256 = projection_sha256(
         profile_set_sha256,
         base_source_fingerprint,
-        gpt56_372k_context_enabled,
+        policy_projection,
         original_catalog_path,
+        codex_home_key,
     )?;
     let original_catalog_path = catalog_path_string(original_catalog_path)?;
     let mut payload_root = root.clone();
@@ -1632,10 +2444,11 @@ fn generate_catalog(
             "base_source_fingerprint": base_source_fingerprint,
             "managed_aliases": aliases,
             "projection_sha256": projection_sha256,
-            "gpt56_372k_policy_version": GPT56_372K_POLICY_VERSION,
-            "gpt56_372k_context_enabled": gpt56_372k_context_enabled,
-            "gpt56_372k_context_tokens": GPT56_372K_CONTEXT_TOKENS,
-            "gpt56_372k_model_slugs": GPT56_372K_MODEL_SLUGS,
+            "projection_algorithm_version": MODEL_CONTEXT_PROJECTION_VERSION,
+            "model_context_rule_set_sha256": policy_projection.rule_set_sha256,
+            "model_context_enabled_rules": policy_projection.enabled_rules,
+            "model_context_enabled_rules_sha256": policy_projection.enabled_rules_sha256,
+            "codex_home_key": codex_home_key,
             "original_catalog_path": original_catalog_path,
         }))
         .map_err(|_| {
@@ -1658,10 +2471,11 @@ fn generate_catalog(
                 "base_source_fingerprint": base_source_fingerprint,
                 "managed_aliases": aliases,
                 "projection_sha256": projection_sha256,
-                "gpt56_372k_policy_version": GPT56_372K_POLICY_VERSION,
-                "gpt56_372k_context_enabled": gpt56_372k_context_enabled,
-                "gpt56_372k_context_tokens": GPT56_372K_CONTEXT_TOKENS,
-                "gpt56_372k_model_slugs": GPT56_372K_MODEL_SLUGS,
+                "projection_algorithm_version": MODEL_CONTEXT_PROJECTION_VERSION,
+                "model_context_rule_set_sha256": policy_projection.rule_set_sha256,
+                "model_context_enabled_rules": policy_projection.enabled_rules,
+                "model_context_enabled_rules_sha256": policy_projection.enabled_rules_sha256,
+                "codex_home_key": codex_home_key,
                 "original_catalog_path": original_catalog_path,
             }),
         );
@@ -1679,58 +2493,6 @@ fn generate_catalog(
         ));
     }
     Ok(output)
-}
-
-fn apply_gpt56_372k_context_policy(models: &mut [Value]) -> AppResult<()> {
-    let mut matched = HashSet::with_capacity(GPT56_372K_MODEL_SLUGS.len());
-    for model in models {
-        let object = model.as_object_mut().ok_or_else(|| {
-            AppError::new(
-                "CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID",
-                "every base Codex model must be an object",
-            )
-        })?;
-        let Some(slug) = object
-            .get("slug")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            continue;
-        };
-        if !GPT56_372K_MODEL_SLUGS.contains(&slug.as_str()) {
-            continue;
-        }
-        if object
-            .get("context_window")
-            .and_then(Value::as_u64)
-            .is_none()
-            || object
-                .get("max_context_window")
-                .and_then(Value::as_u64)
-                .is_none()
-        {
-            return Err(AppError::new(
-                "CODEX_GPT56_372K_CATALOG_INVALID",
-                format!("Codex model {slug} has invalid context window fields"),
-            ));
-        }
-        object.insert(
-            "context_window".to_string(),
-            json!(GPT56_372K_CONTEXT_TOKENS),
-        );
-        object.insert(
-            "max_context_window".to_string(),
-            json!(GPT56_372K_CONTEXT_TOKENS),
-        );
-        matched.insert(slug);
-    }
-    if matched.len() != GPT56_372K_MODEL_SLUGS.len() {
-        return Err(AppError::new(
-            "CODEX_GPT56_372K_MODELS_MISSING",
-            "the Codex model catalog does not contain all supported GPT-5.6 models",
-        ));
-    }
-    Ok(())
 }
 
 fn build_managed_model(
@@ -1856,7 +2618,7 @@ fn validate_owned_catalog(bytes: &[u8]) -> AppResult<OwnedCatalogMetadata> {
         .ok_or_else(modified_catalog_error)?;
     if !matches!(
         schema_version,
-        LEGACY_OWNER_SCHEMA_VERSION | OWNER_SCHEMA_VERSION
+        LEGACY_OWNER_SCHEMA_VERSION | LEGACY_POLICY_OWNER_SCHEMA_VERSION | OWNER_SCHEMA_VERSION
     ) || metadata.get("managed_by").and_then(Value::as_str) != Some(MANAGED_BY)
     {
         return Err(modified_catalog_error());
@@ -1869,7 +2631,13 @@ fn validate_owned_catalog(bytes: &[u8]) -> AppResult<OwnedCatalogMetadata> {
         .get("managed_aliases")
         .and_then(Value::as_array)
         .ok_or_else(modified_catalog_error)?;
-    if aliases.iter().any(|alias| alias.as_str().is_none()) {
+    if aliases.len() > MAX_MANAGED_PROFILE_COUNT
+        || aliases.iter().any(|alias| {
+            alias
+                .as_str()
+                .is_none_or(|value| value.is_empty() || value.len() > 320)
+        })
+    {
         return Err(modified_catalog_error());
     }
 
@@ -1880,6 +2648,16 @@ fn validate_owned_catalog(bytes: &[u8]) -> AppResult<OwnedCatalogMetadata> {
         .remove(OWNER_METADATA_KEY);
 
     if schema_version == LEGACY_OWNER_SCHEMA_VERSION {
+        const LEGACY_V1_METADATA_KEYS: [&str; 7] = [
+            "schema_version",
+            "managed_by",
+            "payload_sha256",
+            "profile_set_sha256",
+            "base_catalog_sha256",
+            "base_source_fingerprint",
+            "managed_aliases",
+        ];
+        validate_exact_metadata_keys(metadata, &LEGACY_V1_METADATA_KEYS)?;
         let expected = sha256_hex(
             &serde_json::to_vec(&json!({
                 "catalog": payload_root,
@@ -1898,43 +2676,182 @@ fn validate_owned_catalog(bytes: &[u8]) -> AppResult<OwnedCatalogMetadata> {
             profile_set_sha256: profile_set_sha256.to_string(),
             base_source_fingerprint: base_source_fingerprint.to_string(),
             projection_sha256: None,
-            gpt56_372k_context_enabled: false,
+            model_context_rule_set_sha256: None,
+            model_context_enabled_rules: Vec::new(),
+            model_context_enabled_rules_sha256: None,
+            codex_home_key: None,
             original_catalog_path: None,
         });
     }
 
-    let projection_sha256_value = required_metadata_string(metadata, "projection_sha256")?;
-    if metadata
-        .get("gpt56_372k_policy_version")
-        .and_then(Value::as_u64)
-        != Some(GPT56_372K_POLICY_VERSION)
+    if schema_version == LEGACY_POLICY_OWNER_SCHEMA_VERSION {
+        const LEGACY_V2_METADATA_KEYS: [&str; 13] = [
+            "schema_version",
+            "managed_by",
+            "payload_sha256",
+            "profile_set_sha256",
+            "base_catalog_sha256",
+            "base_source_fingerprint",
+            "managed_aliases",
+            "projection_sha256",
+            "gpt56_372k_policy_version",
+            "gpt56_372k_context_enabled",
+            "gpt56_372k_context_tokens",
+            "gpt56_372k_model_slugs",
+            "original_catalog_path",
+        ];
+        validate_exact_metadata_keys(metadata, &LEGACY_V2_METADATA_KEYS)?;
+        return validate_legacy_v2_owned_catalog(
+            metadata,
+            payload_root,
+            payload_sha256,
+            profile_set_sha256,
+            base_catalog_sha256,
+            base_source_fingerprint,
+            aliases,
+        );
+    }
+
+    const CURRENT_METADATA_KEYS: [&str; 14] = [
+        "schema_version",
+        "managed_by",
+        "payload_sha256",
+        "profile_set_sha256",
+        "base_catalog_sha256",
+        "base_source_fingerprint",
+        "managed_aliases",
+        "projection_sha256",
+        "projection_algorithm_version",
+        "model_context_rule_set_sha256",
+        "model_context_enabled_rules",
+        "model_context_enabled_rules_sha256",
+        "codex_home_key",
+        "original_catalog_path",
+    ];
+    if metadata.len() != CURRENT_METADATA_KEYS.len()
         || metadata
-            .get("gpt56_372k_context_tokens")
+            .keys()
+            .any(|key| !CURRENT_METADATA_KEYS.contains(&key.as_str()))
+        || metadata
+            .get("projection_algorithm_version")
             .and_then(Value::as_u64)
-            != Some(GPT56_372K_CONTEXT_TOKENS)
-        || metadata.get("gpt56_372k_model_slugs") != Some(&json!(GPT56_372K_MODEL_SLUGS))
+            != Some(MODEL_CONTEXT_PROJECTION_VERSION)
     {
         return Err(modified_catalog_error());
     }
-    let gpt56_372k_context_enabled = metadata
-        .get("gpt56_372k_context_enabled")
-        .and_then(Value::as_bool)
+
+    let projection_sha256_value = required_metadata_string(metadata, "projection_sha256")?;
+    let rule_set_sha256 = required_metadata_string(metadata, "model_context_rule_set_sha256")?;
+    let enabled_rules_sha256 =
+        required_metadata_string(metadata, "model_context_enabled_rules_sha256")?;
+    let enabled_rules = parse_owned_enabled_rules(metadata)?;
+    let expected_enabled_rules_sha256 =
+        sha256_hex(&serde_json::to_vec(&enabled_rules).map_err(|_| modified_catalog_error())?);
+    if enabled_rules_sha256 != expected_enabled_rules_sha256 {
+        return Err(modified_catalog_error());
+    }
+    let codex_home_key = metadata
+        .get("codex_home_key")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.is_empty() && value.len() <= 4_096 && !value.chars().any(char::is_control)
+        })
         .ok_or_else(modified_catalog_error)?;
-    let original_catalog_path = match metadata.get("original_catalog_path") {
-        Some(Value::Null) => None,
-        Some(Value::String(value)) => {
-            let path = PathBuf::from(value);
-            if value.is_empty() || !path.is_absolute() {
-                return Err(modified_catalog_error());
-            }
-            Some(path)
-        }
-        _ => return Err(modified_catalog_error()),
+    #[cfg(windows)]
+    if codex_home_key.contains('\\') || codex_home_key.bytes().any(|byte| byte.is_ascii_uppercase())
+    {
+        return Err(modified_catalog_error());
+    }
+    let original_catalog_path = metadata_original_catalog_path(metadata)?;
+    let policy_projection = ModelContextPolicyProjection {
+        rule_set_sha256: rule_set_sha256.to_string(),
+        enabled_rules: enabled_rules.clone(),
+        enabled_rules_sha256: enabled_rules_sha256.to_string(),
     };
     let expected_projection_sha256 = projection_sha256(
         profile_set_sha256,
         base_source_fingerprint,
-        gpt56_372k_context_enabled,
+        &policy_projection,
+        original_catalog_path.as_deref(),
+        codex_home_key,
+    )
+    .map_err(|_| modified_catalog_error())?;
+    if projection_sha256_value != expected_projection_sha256 {
+        return Err(modified_catalog_error());
+    }
+    let expected_payload_sha256 = sha256_hex(
+        &serde_json::to_vec(&json!({
+            "catalog": payload_root,
+            "profile_set_sha256": profile_set_sha256,
+            "base_catalog_sha256": base_catalog_sha256,
+            "base_source_fingerprint": base_source_fingerprint,
+            "managed_aliases": aliases,
+            "projection_sha256": projection_sha256_value,
+            "projection_algorithm_version": MODEL_CONTEXT_PROJECTION_VERSION,
+            "model_context_rule_set_sha256": rule_set_sha256,
+            "model_context_enabled_rules": enabled_rules,
+            "model_context_enabled_rules_sha256": enabled_rules_sha256,
+            "codex_home_key": codex_home_key,
+            "original_catalog_path": original_catalog_path.as_ref().and_then(|path| path.to_str()),
+        }))
+        .map_err(|_| modified_catalog_error())?,
+    );
+    if payload_sha256 != expected_payload_sha256 {
+        return Err(modified_catalog_error());
+    }
+    Ok(OwnedCatalogMetadata {
+        schema_version,
+        profile_set_sha256: profile_set_sha256.to_string(),
+        base_source_fingerprint: base_source_fingerprint.to_string(),
+        projection_sha256: Some(projection_sha256_value.to_string()),
+        model_context_rule_set_sha256: Some(rule_set_sha256.to_string()),
+        model_context_enabled_rules: policy_projection.enabled_rules,
+        model_context_enabled_rules_sha256: Some(enabled_rules_sha256.to_string()),
+        codex_home_key: Some(codex_home_key.to_string()),
+        original_catalog_path,
+    })
+}
+
+fn validate_exact_metadata_keys(metadata: &Map<String, Value>, allowed: &[&str]) -> AppResult<()> {
+    if metadata.len() != allowed.len()
+        || metadata.keys().any(|key| !allowed.contains(&key.as_str()))
+    {
+        return Err(modified_catalog_error());
+    }
+    Ok(())
+}
+
+fn validate_legacy_v2_owned_catalog(
+    metadata: &Map<String, Value>,
+    payload_root: Value,
+    payload_sha256: &str,
+    profile_set_sha256: &str,
+    base_catalog_sha256: &str,
+    base_source_fingerprint: &str,
+    aliases: &[Value],
+) -> AppResult<OwnedCatalogMetadata> {
+    let projection_sha256_value = required_metadata_string(metadata, "projection_sha256")?;
+    if metadata
+        .get("gpt56_372k_policy_version")
+        .and_then(Value::as_u64)
+        != Some(LEGACY_GPT56_372K_POLICY_VERSION)
+        || metadata
+            .get("gpt56_372k_context_tokens")
+            .and_then(Value::as_u64)
+            != Some(LEGACY_GPT56_372K_CONTEXT_TOKENS)
+        || metadata.get("gpt56_372k_model_slugs") != Some(&json!(LEGACY_GPT56_372K_MODEL_SLUGS))
+    {
+        return Err(modified_catalog_error());
+    }
+    let legacy_enabled = metadata
+        .get("gpt56_372k_context_enabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(modified_catalog_error)?;
+    let original_catalog_path = metadata_original_catalog_path(metadata)?;
+    let expected_projection_sha256 = legacy_v2_projection_sha256(
+        profile_set_sha256,
+        base_source_fingerprint,
+        legacy_enabled,
         original_catalog_path.as_deref(),
     )
     .map_err(|_| modified_catalog_error())?;
@@ -1949,10 +2866,10 @@ fn validate_owned_catalog(bytes: &[u8]) -> AppResult<OwnedCatalogMetadata> {
             "base_source_fingerprint": base_source_fingerprint,
             "managed_aliases": aliases,
             "projection_sha256": projection_sha256_value,
-            "gpt56_372k_policy_version": GPT56_372K_POLICY_VERSION,
-            "gpt56_372k_context_enabled": gpt56_372k_context_enabled,
-            "gpt56_372k_context_tokens": GPT56_372K_CONTEXT_TOKENS,
-            "gpt56_372k_model_slugs": GPT56_372K_MODEL_SLUGS,
+            "gpt56_372k_policy_version": LEGACY_GPT56_372K_POLICY_VERSION,
+            "gpt56_372k_context_enabled": legacy_enabled,
+            "gpt56_372k_context_tokens": LEGACY_GPT56_372K_CONTEXT_TOKENS,
+            "gpt56_372k_model_slugs": LEGACY_GPT56_372K_MODEL_SLUGS,
             "original_catalog_path": original_catalog_path.as_ref().and_then(|path| path.to_str()),
         }))
         .map_err(|_| modified_catalog_error())?,
@@ -1961,20 +2878,75 @@ fn validate_owned_catalog(bytes: &[u8]) -> AppResult<OwnedCatalogMetadata> {
         return Err(modified_catalog_error());
     }
     Ok(OwnedCatalogMetadata {
-        schema_version,
+        schema_version: LEGACY_POLICY_OWNER_SCHEMA_VERSION,
         profile_set_sha256: profile_set_sha256.to_string(),
         base_source_fingerprint: base_source_fingerprint.to_string(),
         projection_sha256: Some(projection_sha256_value.to_string()),
-        gpt56_372k_context_enabled,
+        model_context_rule_set_sha256: None,
+        model_context_enabled_rules: Vec::new(),
+        model_context_enabled_rules_sha256: None,
+        codex_home_key: None,
         original_catalog_path,
     })
+}
+
+fn parse_owned_enabled_rules(
+    metadata: &Map<String, Value>,
+) -> AppResult<Vec<EnabledModelContextRule>> {
+    let rules = serde_json::from_value::<Vec<EnabledModelContextRule>>(
+        metadata
+            .get("model_context_enabled_rules")
+            .cloned()
+            .ok_or_else(modified_catalog_error)?,
+    )
+    .map_err(|_| modified_catalog_error())?;
+    let mut canonical = rules
+        .iter()
+        .map(|rule| crate::settings::CodexModelContextRule {
+            model_id: rule.model_id.clone(),
+            context_window: rule.context_window,
+            enabled: true,
+        })
+        .collect::<Vec<_>>();
+    let changed = crate::settings::normalize_codex_model_context_rules_for_write(&mut canonical)
+        .map_err(|_| modified_catalog_error())?;
+    if changed
+        || canonical.len() != rules.len()
+        || canonical.iter().zip(&rules).any(|(canonical, rule)| {
+            canonical.model_id != rule.model_id
+                || canonical.context_window != rule.context_window
+                || !canonical.enabled
+        })
+    {
+        return Err(modified_catalog_error());
+    }
+    Ok(rules)
+}
+
+fn metadata_original_catalog_path(metadata: &Map<String, Value>) -> AppResult<Option<PathBuf>> {
+    match metadata.get("original_catalog_path") {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            let path = PathBuf::from(value);
+            if value.is_empty() || !path.is_absolute() {
+                return Err(modified_catalog_error());
+            }
+            Ok(Some(path))
+        }
+        _ => Err(modified_catalog_error()),
+    }
 }
 
 fn required_metadata_string<'a>(metadata: &'a Map<String, Value>, key: &str) -> AppResult<&'a str> {
     metadata
         .get(key)
         .and_then(Value::as_str)
-        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        })
         .ok_or_else(modified_catalog_error)
 }
 
@@ -1998,6 +2970,75 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{OsStr, OsString};
+
+    const TEST_CODEX_HOME_KEY: &str = "/test/codex-home";
+
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvRestore {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            crate::settings::clear_cache();
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn context_rule(
+        model_id: &str,
+        context_window: i64,
+        enabled: bool,
+    ) -> crate::settings::CodexModelContextRule {
+        crate::settings::CodexModelContextRule {
+            model_id: model_id.to_string(),
+            context_window,
+            enabled,
+        }
+    }
+
+    fn policy(rules: Vec<crate::settings::CodexModelContextRule>) -> ManagedCatalogPolicy {
+        ManagedCatalogPolicy::from_rules(rules).expect("valid test policy")
+    }
+
+    fn empty_policy() -> ManagedCatalogPolicy {
+        ManagedCatalogPolicy::default()
+    }
+
+    fn generate_test_catalog(
+        base_bytes: &[u8],
+        profiles: &[ManagedCatalogProfile],
+        profile_set_sha256: &str,
+        base_source_fingerprint: &str,
+        policy: &ManagedCatalogPolicy,
+        original_catalog_path: Option<&Path>,
+    ) -> AppResult<Vec<u8>> {
+        let policy_projection = model_context_policy_projection(policy)?;
+        generate_catalog(
+            base_bytes,
+            profiles,
+            &CatalogGenerationContext {
+                profile_set_sha256,
+                base_source_fingerprint,
+                policy,
+                policy_projection: &policy_projection,
+                original_catalog_path,
+                codex_home_key: TEST_CODEX_HOME_KEY,
+            },
+        )
+    }
 
     fn base_catalog() -> Vec<u8> {
         serde_json::to_vec(&json!({
@@ -2042,15 +3083,20 @@ mod tests {
         .expect("base catalog")
     }
 
-    fn gpt56_base_catalog(context_window: u64) -> Vec<u8> {
-        let mut models = GPT56_372K_MODEL_SLUGS
+    fn rule_base_catalog() -> Vec<u8> {
+        let target_models = [
+            ("model-alpha", 120_000_u64),
+            ("Model-Beta", 272_000_u64),
+            ("model-gamma", 640_000_u64),
+        ];
+        let mut models = target_models
             .iter()
             .enumerate()
-            .map(|(index, slug)| {
+            .map(|(index, (slug, context_window))| {
                 json!({
                     "slug": slug,
                     "display_name": slug,
-                    "description": "base GPT-5.6",
+                    "description": "base model",
                     "visibility": if index == 0 { "list" } else { "hide" },
                     "context_window": context_window,
                     "max_context_window": context_window,
@@ -2062,7 +3108,7 @@ mod tests {
             .collect::<Vec<_>>();
         models.extend([
             json!({
-                "slug": "gpt-5.6-future",
+                "slug": "model-untouched",
                 "visibility": "hide",
                 "context_window": 280000,
                 "max_context_window": 280000,
@@ -2086,7 +3132,7 @@ mod tests {
             "future_top_level": {"kept": true},
             "models": models,
         }))
-        .expect("GPT-5.6 base catalog")
+        .expect("rule base catalog")
     }
 
     fn model_by_slug<'a>(root: &'a Value, slug: &str) -> &'a Value {
@@ -2129,15 +3175,15 @@ mod tests {
     }
 
     fn legacy_v1_catalog() -> Vec<u8> {
-        let current = generate_catalog(
+        let current = generate_test_catalog(
             &base_catalog(),
             &[profile()],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            false,
+            &empty_policy(),
             None,
         )
-        .expect("generate v2 fixture source");
+        .expect("generate current fixture source");
         let mut root: Value = serde_json::from_slice(&current).expect("json");
         let metadata = root[OWNER_METADATA_KEY].clone();
         root.as_object_mut()
@@ -2170,14 +3216,83 @@ mod tests {
         output
     }
 
-    #[test]
-    fn generated_catalog_preserves_base_and_sets_managed_reasoning_capabilities() {
-        let output = generate_catalog(
+    fn legacy_v2_catalog(original_catalog_path: Option<&Path>) -> Vec<u8> {
+        let current = generate_test_catalog(
             &base_catalog(),
             &[profile()],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
+            &empty_policy(),
+            original_catalog_path,
+        )
+        .expect("generate current fixture source");
+        let mut root: Value = serde_json::from_slice(&current).expect("json");
+        let metadata = root[OWNER_METADATA_KEY].clone();
+        root.as_object_mut()
+            .expect("catalog object")
+            .remove(OWNER_METADATA_KEY);
+        let profile_set_sha256 = metadata["profile_set_sha256"]
+            .as_str()
+            .expect("profile hash");
+        let base_source_fingerprint = metadata["base_source_fingerprint"]
+            .as_str()
+            .expect("source fingerprint");
+        let original_catalog_path_string =
+            catalog_path_string(original_catalog_path).expect("catalog path");
+        let projection_sha256 = legacy_v2_projection_sha256(
+            profile_set_sha256,
+            base_source_fingerprint,
             false,
+            original_catalog_path,
+        )
+        .expect("legacy projection hash");
+        let payload_sha256 = sha256_hex(
+            &serde_json::to_vec(&json!({
+                "catalog": root,
+                "profile_set_sha256": profile_set_sha256,
+                "base_catalog_sha256": metadata["base_catalog_sha256"],
+                "base_source_fingerprint": base_source_fingerprint,
+                "managed_aliases": metadata["managed_aliases"],
+                "projection_sha256": projection_sha256,
+                "gpt56_372k_policy_version": LEGACY_GPT56_372K_POLICY_VERSION,
+                "gpt56_372k_context_enabled": false,
+                "gpt56_372k_context_tokens": LEGACY_GPT56_372K_CONTEXT_TOKENS,
+                "gpt56_372k_model_slugs": LEGACY_GPT56_372K_MODEL_SLUGS,
+                "original_catalog_path": original_catalog_path_string,
+            }))
+            .expect("legacy payload"),
+        );
+        root.as_object_mut().expect("catalog object").insert(
+            OWNER_METADATA_KEY.to_string(),
+            json!({
+                "schema_version": LEGACY_POLICY_OWNER_SCHEMA_VERSION,
+                "managed_by": MANAGED_BY,
+                "payload_sha256": payload_sha256,
+                "profile_set_sha256": profile_set_sha256,
+                "base_catalog_sha256": metadata["base_catalog_sha256"],
+                "base_source_fingerprint": base_source_fingerprint,
+                "managed_aliases": metadata["managed_aliases"],
+                "projection_sha256": projection_sha256,
+                "gpt56_372k_policy_version": LEGACY_GPT56_372K_POLICY_VERSION,
+                "gpt56_372k_context_enabled": false,
+                "gpt56_372k_context_tokens": LEGACY_GPT56_372K_CONTEXT_TOKENS,
+                "gpt56_372k_model_slugs": LEGACY_GPT56_372K_MODEL_SLUGS,
+                "original_catalog_path": original_catalog_path_string,
+            }),
+        );
+        let mut output = serde_json::to_vec_pretty(&root).expect("legacy v2 catalog");
+        output.push(b'\n');
+        output
+    }
+
+    #[test]
+    fn generated_catalog_preserves_base_and_sets_managed_reasoning_capabilities() {
+        let output = generate_test_catalog(
+            &base_catalog(),
+            &[profile()],
+            "a".repeat(64).as_str(),
+            "b".repeat(64).as_str(),
+            &empty_policy(),
             None,
         )
         .expect("generate");
@@ -2222,29 +3337,39 @@ mod tests {
     }
 
     #[test]
-    fn gpt56_policy_rewrites_only_exact_targets_and_preserves_aio_capabilities() {
+    fn model_context_rules_rewrite_exact_targets_and_preserve_unowned_fields() {
         let original_catalog = std::env::temp_dir().join("codex-user-models.json");
-        let output = generate_catalog(
-            &gpt56_base_catalog(272_000),
+        let rules = policy(vec![
+            context_rule("model-gamma", 640_000, true),
+            context_rule("missing-disabled", 200_000, false),
+            context_rule("model-alpha", 80_000, true),
+            context_rule("Model-Beta", 372_000, true),
+        ]);
+        let output = generate_test_catalog(
+            &rule_base_catalog(),
             &[profile()],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            true,
+            &rules,
             Some(&original_catalog),
         )
-        .expect("generate 372K catalog");
+        .expect("generate rule catalog");
         let root: Value = serde_json::from_slice(&output).expect("json");
 
-        for slug in GPT56_372K_MODEL_SLUGS {
+        for (slug, expected) in [
+            ("model-alpha", 80_000),
+            ("Model-Beta", 372_000),
+            ("model-gamma", 640_000),
+        ] {
             let model = model_by_slug(&root, slug);
-            assert_eq!(model["context_window"], json!(372_000));
-            assert_eq!(model["max_context_window"], json!(372_000));
+            assert_eq!(model["context_window"], json!(expected));
+            assert_eq!(model["max_context_window"], json!(expected));
             assert_eq!(model["effective_context_window_percent"], json!(95));
             assert_eq!(model["auto_compact_token_limit"], Value::Null);
             assert_eq!(model["future_model_field"]["kept"], json!(slug));
         }
         assert_eq!(
-            model_by_slug(&root, "gpt-5.6-future")["context_window"],
+            model_by_slug(&root, "model-untouched")["context_window"],
             json!(280_000)
         );
         assert_eq!(
@@ -2264,18 +3389,19 @@ mod tests {
         let metadata = &root[OWNER_METADATA_KEY];
         assert_eq!(metadata["schema_version"], json!(OWNER_SCHEMA_VERSION));
         assert_eq!(
-            metadata["gpt56_372k_policy_version"],
-            json!(GPT56_372K_POLICY_VERSION)
+            metadata["projection_algorithm_version"],
+            json!(MODEL_CONTEXT_PROJECTION_VERSION)
         );
         assert_eq!(
-            metadata["gpt56_372k_context_tokens"],
-            json!(GPT56_372K_CONTEXT_TOKENS)
+            metadata["model_context_enabled_rules"],
+            json!([
+                {"model_id": "Model-Beta", "context_window": 372000},
+                {"model_id": "model-alpha", "context_window": 80000},
+                {"model_id": "model-gamma", "context_window": 640000},
+            ])
         );
-        assert_eq!(
-            metadata["gpt56_372k_model_slugs"],
-            json!(GPT56_372K_MODEL_SLUGS)
-        );
-        assert_eq!(metadata["gpt56_372k_context_enabled"], json!(true));
+        assert_eq!(metadata["codex_home_key"], json!(TEST_CODEX_HOME_KEY));
+        assert!(metadata.get("gpt56_372k_context_enabled").is_none());
         assert_eq!(
             metadata["original_catalog_path"],
             json!(original_catalog.to_str().expect("UTF-8 path"))
@@ -2284,124 +3410,199 @@ mod tests {
     }
 
     #[test]
-    fn decimal_380928_is_not_treated_as_the_372k_policy_value() {
-        let base = gpt56_base_catalog(380_928);
-        let output = generate_catalog(
-            &base,
+    fn model_context_rule_bounds_are_projected_exactly() {
+        let rules = policy(vec![
+            context_rule("model-alpha", 1_024, true),
+            context_rule("Model-Beta", 10_000_000, true),
+        ]);
+        let output = generate_test_catalog(
+            &rule_base_catalog(),
             &[],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            false,
+            &rules,
             None,
         )
-        .expect("generate policy-off catalog");
+        .expect("generate boundary rules");
         let root: Value = serde_json::from_slice(&output).expect("json");
-        for slug in GPT56_372K_MODEL_SLUGS {
-            let model = model_by_slug(&root, slug);
-            assert_eq!(model["context_window"], json!(380_928));
-            assert_eq!(model["max_context_window"], json!(380_928));
-        }
         assert_eq!(
-            root[OWNER_METADATA_KEY]["gpt56_372k_context_enabled"],
-            json!(false)
+            model_by_slug(&root, "model-alpha")["context_window"],
+            json!(1_024)
         );
         assert_eq!(
-            root[OWNER_METADATA_KEY]["gpt56_372k_context_tokens"],
-            json!(372_000)
+            model_by_slug(&root, "Model-Beta")["max_context_window"],
+            json!(10_000_000)
         );
-
-        let enabled = generate_catalog(
-            &base,
-            &[],
-            "a".repeat(64).as_str(),
-            "b".repeat(64).as_str(),
-            true,
-            None,
-        )
-        .expect("generate policy-on catalog");
-        let enabled: Value = serde_json::from_slice(&enabled).expect("json");
-        for slug in GPT56_372K_MODEL_SLUGS {
-            assert_eq!(
-                model_by_slug(&enabled, slug)["context_window"],
-                json!(372_000)
-            );
-        }
     }
 
     #[test]
-    fn gpt56_policy_fails_closed_for_missing_duplicate_or_invalid_targets() {
-        let mut missing: Value =
-            serde_json::from_slice(&gpt56_base_catalog(272_000)).expect("json");
+    fn managed_policy_revalidates_static_rule_contract_and_count_limit() {
+        let error = ManagedCatalogPolicy::from_rules(vec![context_rule("   ", 1_024, true)])
+            .expect_err("empty model ID");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_INVALID");
+
+        let error = ManagedCatalogPolicy::from_rules(vec![context_rule("bad\nid", 1_024, true)])
+            .expect_err("control character");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_INVALID");
+
+        let error =
+            ManagedCatalogPolicy::from_rules(vec![context_rule(&"é".repeat(129), 1_024, true)])
+                .expect_err("model ID over 256 UTF-8 bytes");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_INVALID");
+
+        let error =
+            ManagedCatalogPolicy::from_rules(vec![context_rule("aio/reserved", 1_024, false)])
+                .expect_err("reserved target");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_INVALID");
+
+        let error = ManagedCatalogPolicy::from_rules(vec![
+            context_rule("model-alpha", 1_024, true),
+            context_rule(" model-alpha ", 2_048, false),
+        ])
+        .expect_err("normalized duplicate");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_DUPLICATE");
+
+        let error =
+            ManagedCatalogPolicy::from_rules(vec![context_rule("model-alpha", 1_023, true)])
+                .expect_err("context below lower bound");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_INVALID");
+
+        let mut rules = (0..128)
+            .rev()
+            .map(|index| context_rule(&format!("model-{index:03}"), 1_024, false))
+            .collect::<Vec<_>>();
+        let policy = ManagedCatalogPolicy::from_rules(rules.clone()).expect("128 rules");
+        assert_eq!(policy.model_context_rules.len(), 128);
+        assert_eq!(policy.model_context_rules[0].model_id, "model-000");
+        rules.push(context_rule("model-128", 1_024, false));
+        let error = ManagedCatalogPolicy::from_rules(rules).expect_err("129 rules");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_LIMIT");
+    }
+
+    #[test]
+    fn catalog_projects_the_maximum_128_enabled_rules_atomically() {
+        let models = (0..128)
+            .map(|index| {
+                json!({
+                    "slug": format!("model-{index:03}"),
+                    "visibility": "hide",
+                    "context_window": 272000,
+                    "max_context_window": 272000,
+                })
+            })
+            .collect::<Vec<_>>();
+        let base = serde_json::to_vec(&json!({"models": models})).expect("base");
+        let rules = policy(
+            (0..128)
+                .rev()
+                .map(|index| {
+                    context_rule(&format!("model-{index:03}"), 1_024 + i64::from(index), true)
+                })
+                .collect(),
+        );
+        let output = generate_test_catalog(
+            &base,
+            &[],
+            "a".repeat(64).as_str(),
+            "b".repeat(64).as_str(),
+            &rules,
+            None,
+        )
+        .expect("generate maximum rule set");
+        let root: Value = serde_json::from_slice(&output).expect("json");
+        assert_eq!(
+            model_by_slug(&root, "model-000")["context_window"],
+            json!(1_024)
+        );
+        assert_eq!(
+            model_by_slug(&root, "model-127")["max_context_window"],
+            json!(1_151)
+        );
+    }
+
+    #[test]
+    fn model_context_rules_fail_closed_for_missing_duplicate_or_invalid_targets() {
+        let target_policy = policy(vec![context_rule("model-alpha", 372_000, true)]);
+        let mut missing: Value = serde_json::from_slice(&rule_base_catalog()).expect("json");
         missing["models"]
             .as_array_mut()
             .expect("models")
-            .retain(|model| model["slug"].as_str() != Some("gpt-5.6-luna"));
-        let error = generate_catalog(
+            .retain(|model| model["slug"].as_str() != Some("model-alpha"));
+        let error = generate_test_catalog(
             &serde_json::to_vec(&missing).expect("serialize"),
             &[],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            true,
+            &target_policy,
             None,
         )
         .expect_err("missing target must fail");
-        assert_eq!(error.code(), "CODEX_GPT56_372K_MODELS_MISSING");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_TARGET_MISSING");
 
-        let mut duplicate: Value =
-            serde_json::from_slice(&gpt56_base_catalog(272_000)).expect("json");
-        let duplicate_model = model_by_slug(&duplicate, "gpt-5.6-sol").clone();
+        let mut duplicate: Value = serde_json::from_slice(&rule_base_catalog()).expect("json");
+        let duplicate_model = model_by_slug(&duplicate, "model-alpha").clone();
         duplicate["models"]
             .as_array_mut()
             .expect("models")
             .push(duplicate_model);
-        let error = generate_catalog(
+        let error = generate_test_catalog(
             &serde_json::to_vec(&duplicate).expect("serialize"),
             &[],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            true,
+            &target_policy,
             None,
         )
         .expect_err("duplicate target must fail");
-        assert_eq!(error.code(), "CODEX_GPT56_372K_MODELS_MISSING");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_TARGET_INVALID");
 
-        let mut invalid: Value =
-            serde_json::from_slice(&gpt56_base_catalog(272_000)).expect("json");
+        let mut invalid: Value = serde_json::from_slice(&rule_base_catalog()).expect("json");
         let invalid_model = invalid["models"]
             .as_array_mut()
             .expect("models")
             .iter_mut()
-            .find(|model| model["slug"].as_str() == Some("gpt-5.6-terra"))
+            .find(|model| model["slug"].as_str() == Some("model-alpha"))
             .expect("target");
         invalid_model["max_context_window"] = json!("272000");
-        let error = generate_catalog(
+        let error = generate_test_catalog(
             &serde_json::to_vec(&invalid).expect("serialize"),
             &[],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            true,
+            &target_policy,
             None,
         )
         .expect_err("invalid target field must fail");
-        assert_eq!(error.code(), "CODEX_GPT56_372K_CATALOG_INVALID");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_TARGET_INVALID");
+
+        let case_mismatch = policy(vec![context_rule("Model-alpha", 372_000, true)]);
+        let error = generate_test_catalog(
+            &rule_base_catalog(),
+            &[],
+            "a".repeat(64).as_str(),
+            "b".repeat(64).as_str(),
+            &case_mismatch,
+            None,
+        )
+        .expect_err("matching must remain case-sensitive");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_TARGET_MISSING");
     }
 
     #[test]
-    fn gpt56_policy_keeps_non_target_duplicate_as_base_catalog_error() {
-        let mut duplicate: Value =
-            serde_json::from_slice(&gpt56_base_catalog(272_000)).expect("json");
+    fn model_context_rules_keep_non_target_duplicates_as_base_catalog_errors() {
+        let mut duplicate: Value = serde_json::from_slice(&rule_base_catalog()).expect("json");
         let duplicate_model = model_by_slug(&duplicate, "gpt-base").clone();
         duplicate["models"]
             .as_array_mut()
             .expect("models")
             .push(duplicate_model);
 
-        let error = generate_catalog(
+        let error = generate_test_catalog(
             &serde_json::to_vec(&duplicate).expect("serialize"),
             &[],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            true,
+            &policy(vec![context_rule("model-alpha", 372_000, true)]),
             None,
         )
         .expect_err("non-target duplicate must fail");
@@ -2411,45 +3612,56 @@ mod tests {
 
     #[test]
     fn policy_only_catalog_does_not_require_a_managed_profile_template() {
-        let mut base: Value = serde_json::from_slice(&gpt56_base_catalog(272_000)).expect("json");
+        let mut base: Value = serde_json::from_slice(&rule_base_catalog()).expect("json");
         for model in base["models"].as_array_mut().expect("models") {
             model["visibility"] = json!("hide");
         }
-        let output = generate_catalog(
+        let output = generate_test_catalog(
             &serde_json::to_vec(&base).expect("serialize"),
             &[],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            true,
+            &policy(vec![context_rule("model-alpha", 372_000, true)]),
             None,
         )
         .expect("policy-only catalog");
         let root: Value = serde_json::from_slice(&output).expect("json");
         assert_eq!(
-            model_by_slug(&root, "gpt-5.6-sol")["context_window"],
+            model_by_slug(&root, "model-alpha")["context_window"],
             json!(372_000)
         );
     }
 
     #[test]
-    fn v2_projection_is_byte_stable_and_detects_policy_metadata_tampering() {
-        let base = gpt56_base_catalog(272_000);
+    fn v3_projection_is_order_stable_and_detects_owner_metadata_tampering() {
+        let base = rule_base_catalog();
         let profile_sha = profile_set_sha256(&[profile()]).expect("profile hash");
-        let first = generate_catalog(
+        let first_policy = policy(vec![
+            context_rule("model-alpha", 372_000, true),
+            context_rule("missing-disabled", 200_000, false),
+            context_rule("Model-Beta", 500_000, true),
+        ]);
+        let reordered_policy = policy(vec![
+            context_rule("Model-Beta", 500_000, true),
+            context_rule("missing-disabled", 200_000, false),
+            context_rule("model-alpha", 372_000, true),
+        ]);
+        assert_eq!(first_policy, reordered_policy);
+        let first = generate_test_catalog(
             &base,
             &[profile()],
             &profile_sha,
             "b".repeat(64).as_str(),
-            true,
+            &first_policy,
             None,
         )
         .expect("first generation");
-        let second = generate_catalog(
+        let second = generate_test_catalog(
             &base,
             &[profile()],
             &profile_sha,
             "b".repeat(64).as_str(),
-            true,
+            &reordered_policy,
             None,
         )
         .expect("second generation");
@@ -2463,33 +3675,37 @@ mod tests {
                 .to_string()
         };
         let first_projection = projection_of(&first);
-        let disabled = generate_catalog(
+        let changed_disabled = generate_test_catalog(
             &base,
             &[profile()],
             &profile_sha,
             "b".repeat(64).as_str(),
-            false,
+            &policy(vec![
+                context_rule("model-alpha", 372_000, true),
+                context_rule("missing-disabled", 201_000, false),
+                context_rule("Model-Beta", 500_000, true),
+            ]),
             None,
         )
-        .expect("disabled projection");
-        assert_ne!(first_projection, projection_of(&disabled));
-        let different_base = generate_catalog(
+        .expect("changed disabled rule projection");
+        assert_ne!(first_projection, projection_of(&changed_disabled));
+        let different_base = generate_test_catalog(
             &base,
             &[profile()],
             &profile_sha,
             "c".repeat(64).as_str(),
-            true,
+            &first_policy,
             None,
         )
         .expect("different base projection");
         assert_ne!(first_projection, projection_of(&different_base));
         let original_path = std::env::temp_dir().join("projection-user-catalog.json");
-        let different_binding = generate_catalog(
+        let different_binding = generate_test_catalog(
             &base,
             &[profile()],
             &profile_sha,
             "b".repeat(64).as_str(),
-            true,
+            &first_policy,
             Some(&original_path),
         )
         .expect("different binding projection");
@@ -2498,19 +3714,20 @@ mod tests {
         changed_profile.capabilities.context_window = Some(256_000);
         let changed_profile_sha = profile_set_sha256(std::slice::from_ref(&changed_profile))
             .expect("changed profile hash");
-        let different_profile = generate_catalog(
+        let different_profile = generate_test_catalog(
             &base,
             &[changed_profile],
             &changed_profile_sha,
             "b".repeat(64).as_str(),
-            true,
+            &first_policy,
             None,
         )
         .expect("different profile projection");
         assert_ne!(first_projection, projection_of(&different_profile));
 
         let mut root: Value = serde_json::from_slice(&first).expect("json");
-        root[OWNER_METADATA_KEY]["gpt56_372k_context_tokens"] = json!(380_928);
+        root[OWNER_METADATA_KEY]["model_context_enabled_rules"][0]["context_window"] =
+            json!(380_928);
         let tampered = serde_json::to_vec(&root).expect("serialize");
         assert_eq!(
             validate_owned_catalog(&tampered)
@@ -2518,6 +3735,31 @@ mod tests {
                 .code(),
             "CODEX_MANAGED_MODEL_CATALOG_MODIFIED"
         );
+
+        let mut root: Value = serde_json::from_slice(&first).expect("json");
+        root[OWNER_METADATA_KEY]["unexpected_owner_field"] = json!(true);
+        let tampered = serde_json::to_vec(&root).expect("serialize");
+        assert_eq!(
+            validate_owned_catalog(&tampered)
+                .expect_err("unknown owner metadata must fail closed")
+                .code(),
+            "CODEX_MANAGED_MODEL_CATALOG_MODIFIED"
+        );
+    }
+
+    #[test]
+    fn legacy_owner_metadata_rejects_unhashed_unknown_fields() {
+        for legacy in [legacy_v1_catalog(), legacy_v2_catalog(None)] {
+            let mut root: Value = serde_json::from_slice(&legacy).expect("legacy json");
+            root[OWNER_METADATA_KEY]["unhashed_external_field"] = json!(true);
+            let tampered = serde_json::to_vec(&root).expect("serialize tampered legacy owner");
+            assert_eq!(
+                validate_owned_catalog(&tampered)
+                    .expect_err("unknown legacy owner metadata must fail closed")
+                    .code(),
+                "CODEX_MANAGED_MODEL_CATALOG_MODIFIED"
+            );
+        }
     }
 
     #[test]
@@ -2530,12 +3772,12 @@ mod tests {
                 context_window: None,
             })
             .expect("no reasoning capabilities");
-        let output = generate_catalog(
+        let output = generate_test_catalog(
             &base_catalog(),
             &[profile],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            false,
+            &empty_policy(),
             None,
         )
         .expect("generate");
@@ -2550,12 +3792,12 @@ mod tests {
 
     #[test]
     fn ownership_hash_detects_external_model_changes() {
-        let mut output = generate_catalog(
+        let mut output = generate_test_catalog(
             &base_catalog(),
             &[profile()],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            false,
+            &empty_policy(),
             None,
         )
         .expect("generate");
@@ -2590,6 +3832,188 @@ mod tests {
     }
 
     #[test]
+    fn managed_catalog_path_computation_has_no_directory_side_effect() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let app_data = temp.path().join("missing-app-data");
+        let expected = std::fs::canonicalize(temp.path())
+            .expect("canonical temp directory")
+            .join("missing-app-data")
+            .join("cli-proxy")
+            .join("codex")
+            .join(GENERATED_CATALOG_FILE_NAME);
+
+        assert_eq!(
+            managed_catalog_path_from_root(&app_data).expect("managed path"),
+            expected
+        );
+        assert!(!app_data.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_apply_rejects_managed_parent_symlink_drift() {
+        use std::os::unix::fs::symlink;
+
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home");
+        let outside = tempfile::tempdir().expect("outside");
+        let _home_restore = EnvRestore::set("AIO_CODING_HUB_TEST_HOME", home.path());
+        let _dotdir_restore = EnvRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-managed-parent-drift-test",
+        );
+        crate::settings::clear_cache();
+
+        let codex_home = home.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("Codex home");
+        let base_path = codex_home.join("user-models.json");
+        std::fs::write(&base_path, rule_base_catalog()).expect("base catalog");
+        std::fs::write(
+            codex_home.join("config.toml"),
+            config_with_catalog(Some(&base_path)),
+        )
+        .expect("Codex config");
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let plan = prepare_for_profiles_with_policy(
+            &handle,
+            &[],
+            policy(vec![context_rule("model-alpha", 372_000, true)]),
+        )
+        .expect("prepare catalog plan");
+        let app_data = crate::app_paths::app_data_dir(&handle).expect("app data");
+        let cli_proxy = app_data.join("cli-proxy");
+        assert!(!cli_proxy.exists());
+        symlink(outside.path(), &cli_proxy).expect("replace managed parent with symlink");
+
+        let error = plan
+            .apply(&handle)
+            .expect_err("managed parent drift must fail before writes");
+        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_CONFIG_DRIFT");
+        assert!(!outside.path().join("codex").exists());
+    }
+
+    #[test]
+    fn catalog_apply_rechecks_codex_home_identity_before_writing() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let first_home = tempfile::tempdir().expect("first home");
+        let second_home = tempfile::tempdir().expect("second home");
+        let _home_restore = EnvRestore::set("AIO_CODING_HUB_TEST_HOME", first_home.path());
+        let _dotdir_restore =
+            EnvRestore::set("AIO_CODING_HUB_DOTDIR_NAME", ".aio-managed-home-drift-test");
+        crate::settings::clear_cache();
+        std::fs::create_dir_all(first_home.path().join(".codex")).expect("first Codex home");
+        std::fs::write(
+            first_home.path().join(".codex").join("config.toml"),
+            b"model = \"gpt-base\"\n",
+        )
+        .expect("first config");
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let plan = prepare_for_profiles_with_policy(&handle, &[], empty_policy())
+            .expect("prepare first-home plan");
+
+        let _second_home_restore = EnvRestore::set("AIO_CODING_HUB_TEST_HOME", second_home.path());
+        crate::settings::clear_cache();
+        std::fs::create_dir_all(second_home.path().join(".codex")).expect("second Codex home");
+        std::fs::write(
+            second_home.path().join(".codex").join("config.toml"),
+            b"model = \"gpt-base\"\n",
+        )
+        .expect("second config");
+
+        let error = plan
+            .apply(&handle)
+            .expect_err("home drift must fail before catalog writes");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULES_HOME_DRIFT");
+        assert!(!second_home
+            .path()
+            .join(".aio-managed-home-drift-test")
+            .join("cli-proxy")
+            .join("codex")
+            .exists());
+    }
+
+    #[test]
+    fn v3_owner_binds_to_one_normalized_codex_home() {
+        let output = generate_test_catalog(
+            &base_catalog(),
+            &[profile()],
+            "a".repeat(64).as_str(),
+            "b".repeat(64).as_str(),
+            &empty_policy(),
+            None,
+        )
+        .expect("generate v3 catalog");
+        let metadata = validate_owned_catalog(&output).expect("metadata");
+        validate_catalog_home_identity(Some(&metadata), TEST_CODEX_HOME_KEY)
+            .expect("same home identity");
+        let error = validate_catalog_home_identity(Some(&metadata), "/other/codex-home")
+            .expect_err("different home must fail closed");
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULES_HOME_DRIFT");
+
+        let legacy = validate_owned_catalog(&legacy_v2_catalog(None)).expect("legacy v2");
+        validate_catalog_home_identity(Some(&legacy), "/other/codex-home")
+            .expect("legacy home ownership is classified from current live bindings");
+    }
+
+    #[test]
+    fn home_identity_is_stable_when_the_home_is_created_after_prepare() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("missing").join("codex-home");
+        let before = normalized_codex_home_key(&home).expect("missing-home key");
+
+        std::fs::create_dir_all(&home).expect("create Codex home");
+
+        assert_eq!(
+            normalized_codex_home_key(&home).expect("created-home key"),
+            before
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_home_identity_preserves_literal_backslashes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let literal_backslash = temp.path().join("a\\b");
+        let nested = temp.path().join("a").join("b");
+        std::fs::create_dir_all(&literal_backslash).expect("create literal-backslash home");
+        std::fs::create_dir_all(&nested).expect("create nested home");
+
+        assert_ne!(
+            normalized_codex_home_key(&literal_backslash).expect("literal-backslash key"),
+            normalized_codex_home_key(&nested).expect("nested key")
+        );
+
+        let literal_key =
+            normalized_codex_home_key(&literal_backslash).expect("literal-backslash key");
+        let policy = empty_policy();
+        let policy_projection =
+            model_context_policy_projection(&policy).expect("policy projection");
+        let output = generate_catalog(
+            &base_catalog(),
+            &[profile()],
+            &CatalogGenerationContext {
+                profile_set_sha256: &"a".repeat(64),
+                base_source_fingerprint: &"b".repeat(64),
+                policy: &policy,
+                policy_projection: &policy_projection,
+                original_catalog_path: None,
+                codex_home_key: &literal_key,
+            },
+        )
+        .expect("generate catalog for literal-backslash home");
+        let metadata =
+            validate_owned_catalog(&output).expect("validate catalog for literal-backslash home");
+        assert_eq!(
+            metadata.codex_home_key.as_deref(),
+            Some(literal_key.as_str())
+        );
+    }
+
+    #[test]
     fn bundled_base_catalog_descriptor_tracks_launch_and_executable_changes() {
         let temp = tempfile::tempdir().expect("tempdir");
         let executable = temp.path().join("codex-test.exe");
@@ -2618,7 +4042,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_catalog_is_validated_and_regenerated_from_a_proxy_baseline() {
+    fn legacy_v1_catalog_cannot_recover_an_active_proxy_binding() {
         let legacy = legacy_v1_catalog();
         let legacy_metadata = validate_owned_catalog(&legacy).expect("valid legacy catalog");
         assert!(legacy_metadata.is_legacy_v1());
@@ -2626,12 +4050,8 @@ mod tests {
 
         let temp = tempfile::tempdir().expect("tempdir");
         let generated_path = temp.path().join(GENERATED_CATALOG_FILE_NAME);
-        let user_catalog_path = temp.path().join("user-catalog.json");
         let backup_path = temp.path().join("config.toml.backup");
-        let mut baseline_document = toml_edit::DocumentMut::new();
-        baseline_document["model_catalog_json"] =
-            toml_edit::value(user_catalog_path.to_string_lossy().to_string());
-        let baseline_bytes = baseline_document.to_string().into_bytes();
+        let baseline_bytes = config_with_catalog(Some(&generated_path));
         std::fs::write(&backup_path, &baseline_bytes).expect("write baseline");
         let baseline = crate::cli_proxy::CodexProxyBaseline {
             config_path: temp.path().join("config.toml"),
@@ -2639,29 +4059,9 @@ mod tests {
             config_bytes: Some(baseline_bytes),
             base_origin: "http://127.0.0.1:37123".to_string(),
         };
-        let prepared = prepare_catalog_baseline(&baseline, &generated_path, Some(&legacy_metadata))
-            .expect("proxy baseline");
-        assert_eq!(
-            prepared.catalog_path.as_deref(),
-            Some(user_catalog_path.as_path())
-        );
-
-        let migrated = generate_catalog(
-            &base_catalog(),
-            &[profile()],
-            "a".repeat(64).as_str(),
-            "b".repeat(64).as_str(),
-            false,
-            prepared.catalog_path.as_deref(),
-        )
-        .expect("regenerate v2 catalog");
-        let migrated_metadata = validate_owned_catalog(&migrated).expect("valid v2 catalog");
-        assert_eq!(migrated_metadata.schema_version, OWNER_SCHEMA_VERSION);
-        assert!(migrated_metadata.projection_sha256.is_some());
-        assert_eq!(
-            migrated_metadata.original_catalog_path.as_deref(),
-            Some(user_catalog_path.as_path())
-        );
+        let error = prepare_catalog_baseline(&baseline, &generated_path, Some(&legacy_metadata))
+            .expect_err("v1 has no recoverable original binding");
+        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED");
     }
 
     #[test]
@@ -2700,19 +4100,123 @@ mod tests {
     }
 
     #[test]
-    fn direct_mode_uses_v2_original_binding_and_rejects_third_party_drift() {
+    fn inactive_legacy_catalog_is_preserved_and_cannot_be_claimed() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvRestore::set("AIO_CODING_HUB_TEST_HOME", home.path());
+        let _dotdir_restore = EnvRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-managed-legacy-inactive-test",
+        );
+        crate::settings::clear_cache();
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let codex_home = home.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        let config_path = codex_home.join("config.toml");
+        let config_bytes = b"model = \"gpt-base\"\n".to_vec();
+        std::fs::write(&config_path, &config_bytes).expect("write config");
+
+        let generated_path = managed_catalog_path(&handle).expect("managed path");
+        std::fs::create_dir_all(generated_path.parent().expect("managed parent"))
+            .expect("create managed parent");
+        let legacy_bytes = legacy_v2_catalog(None);
+        std::fs::write(&generated_path, &legacy_bytes).expect("write inactive legacy catalog");
+
+        let applied = prepare_for_profiles_with_policy(&handle, &[], empty_policy())
+            .expect("prepare disabled policy")
+            .apply(&handle)
+            .expect("preserve inactive legacy catalog");
+        assert_eq!(
+            std::fs::read(&generated_path).expect("read preserved legacy catalog"),
+            legacy_bytes
+        );
+        assert_eq!(
+            std::fs::read(&config_path).expect("read unchanged config"),
+            config_bytes
+        );
+        drop(applied);
+
+        let error = prepare_for_profiles_with_policy(
+            &handle,
+            std::slice::from_ref(&profile()),
+            empty_policy(),
+        )
+        .expect_err("the current home cannot claim an inactive legacy catalog");
+        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED");
+        assert_eq!(
+            std::fs::read(&generated_path).expect("read unclaimed legacy catalog"),
+            legacy_bytes
+        );
+        assert_eq!(
+            std::fs::read(config_path).expect("read config after rejected claim"),
+            config_bytes
+        );
+    }
+
+    #[test]
+    fn active_legacy_v2_binding_is_upgraded_to_the_current_home_owner() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvRestore::set("AIO_CODING_HUB_TEST_HOME", home.path());
+        let _dotdir_restore = EnvRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-managed-legacy-active-test",
+        );
+        crate::settings::clear_cache();
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let codex_home = home.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        let base_path = codex_home.join("base-models.json");
+        std::fs::write(&base_path, base_catalog()).expect("write base catalog");
+
+        let generated_path = managed_catalog_path(&handle).expect("managed path");
+        std::fs::create_dir_all(generated_path.parent().expect("managed parent"))
+            .expect("create managed parent");
+        std::fs::write(&generated_path, legacy_v2_catalog(Some(&base_path)))
+            .expect("write active legacy catalog");
+        let config_path = codex_home.join("config.toml");
+        std::fs::write(&config_path, config_with_catalog(Some(&generated_path)))
+            .expect("write active config");
+
+        let _applied = prepare_for_profiles_with_policy(
+            &handle,
+            std::slice::from_ref(&profile()),
+            empty_policy(),
+        )
+        .expect("prepare v2 upgrade")
+        .apply(&handle)
+        .expect("apply v2 upgrade");
+
+        let generated = std::fs::read(&generated_path).expect("read upgraded catalog");
+        let metadata = validate_owned_catalog(&generated).expect("validate v3 owner");
+        let current_home_key = current_codex_home_key(&handle).expect("current home key");
+        assert!(metadata.is_current());
+        assert_eq!(
+            metadata.codex_home_key.as_deref(),
+            Some(current_home_key.as_str())
+        );
+        assert_eq!(
+            parse_catalog_path(
+                Some(&std::fs::read(config_path).expect("read active config")),
+                "confirmed",
+            )
+            .expect("parse active config")
+            .as_deref(),
+            Some(generated_path.as_path())
+        );
+    }
+
+    #[test]
+    fn direct_mode_uses_active_v2_binding_and_ignores_inactive_legacy_metadata() {
         let original_path = std::env::temp_dir().join("original-catalog.json");
         let generated_path = std::env::temp_dir().join(GENERATED_CATALOG_FILE_NAME);
-        let output = generate_catalog(
-            &base_catalog(),
-            &[profile()],
-            "a".repeat(64).as_str(),
-            "b".repeat(64).as_str(),
-            false,
-            Some(&original_path),
-        )
-        .expect("generate v2 catalog");
+        let output = legacy_v2_catalog(Some(&original_path));
         let metadata = validate_owned_catalog(&output).expect("metadata");
+        assert_eq!(metadata.schema_version, LEGACY_POLICY_OWNER_SCHEMA_VERSION);
         assert_eq!(
             direct_original_catalog_path(Some(&generated_path), &generated_path, Some(&metadata))
                 .expect("active generated binding"),
@@ -2725,10 +4229,11 @@ mod tests {
         );
 
         let external_path = std::env::temp_dir().join("external-catalog.json");
-        let error =
-            direct_original_catalog_path(Some(&external_path), &generated_path, Some(&metadata))
-                .expect_err("external binding drift");
-        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_CONFIG_DRIFT");
+        assert_eq!(
+            direct_original_catalog_path(Some(&external_path), &generated_path, Some(&metadata),)
+                .expect("inactive legacy metadata must not own the current binding"),
+            Some(external_path)
+        );
     }
 
     #[test]
@@ -2737,15 +4242,15 @@ mod tests {
         let original_path = temp.path().join("original-catalog.json");
         let next_path = temp.path().join("next-catalog.json");
         let generated_path = temp.path().join(GENERATED_CATALOG_FILE_NAME);
-        let output = generate_catalog(
+        let output = generate_test_catalog(
             &base_catalog(),
             &[profile()],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            false,
+            &empty_policy(),
             Some(&original_path),
         )
-        .expect("generate v2 catalog");
+        .expect("generate v3 catalog");
         let metadata = validate_owned_catalog(&output).expect("metadata");
         let previous = config_with_catalog(Some(&generated_path));
         let committed = config_with_catalog(Some(&next_path));
@@ -2810,12 +4315,12 @@ mod tests {
     fn base_catalog_alias_conflicts_fail_closed() {
         let mut base: Value = serde_json::from_slice(&base_catalog()).expect("json");
         base["models"][0]["slug"] = json!("aio/grok");
-        let error = generate_catalog(
+        let error = generate_test_catalog(
             &serde_json::to_vec(&base).expect("serialize"),
             &[profile()],
             "a".repeat(64).as_str(),
             "b".repeat(64).as_str(),
-            false,
+            &empty_policy(),
             None,
         )
         .expect_err("conflict");
@@ -2907,6 +4412,8 @@ base_url = "http://127.0.0.1:37123/v1"
 
     fn reset_catalog_transaction_test_state() {
         CATALOG_APPLY_FAILURE.with(|failure| failure.set(None));
+        CATALOG_CONFIG_WRITE_FAILURE.with(|failure| failure.set(false));
+        CATALOG_POST_APPLY_MUTATION.with(|mutation| mutation.set(None));
         CATALOG_APPLY_TRACE.with(|trace| trace.borrow_mut().clear());
         CATALOG_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().clear());
     }
@@ -2996,6 +4503,78 @@ base_url = "http://127.0.0.1:37123/v1"
             assert_eq!(std::fs::read(baseline_path).unwrap(), b"baseline-before");
             assert_eq!(std::fs::read(config_path).unwrap(), b"config-before");
             assert_eq!(std::fs::read(generated_path).unwrap(), b"generated-before");
+        }
+    }
+
+    #[test]
+    fn catalog_post_apply_confirmation_rejects_owner_or_binding_tampering() {
+        for mutation_stage in [CatalogApplyStage::Generated, CatalogApplyStage::Config] {
+            reset_catalog_transaction_test_state();
+            let temp = tempfile::tempdir().expect("tempdir");
+            let (baseline, config, config_after, generated, generated_after) =
+                catalog_transaction_fixture(temp.path());
+            let baseline_path = baseline.as_ref().unwrap().before.path.clone();
+            let config_path = config.path.clone();
+            let generated_path = generated.path.clone();
+            let baseline_expected = baseline
+                .as_ref()
+                .map(expected_snapshot_after_change)
+                .expect("baseline expected");
+            let config_expected = FileSnapshot {
+                path: config_path.clone(),
+                bytes: Some(config_after.clone()),
+            };
+            let generated_expected = FileSnapshot {
+                path: generated_path.clone(),
+                bytes: generated_after.clone(),
+            };
+            let applied = apply_prepared_catalog_files(
+                baseline,
+                config,
+                config_after,
+                generated,
+                generated_after,
+            )
+            .expect("apply catalog transaction");
+            CATALOG_POST_APPLY_MUTATION.with(|mutation| mutation.set(Some(mutation_stage)));
+
+            let error = confirm_applied_catalog(
+                applied,
+                Some(&baseline_expected),
+                &config_expected,
+                &generated_expected,
+                || Ok(()),
+            )
+            .expect_err("post-apply mutation must fail confirmation");
+
+            assert_eq!(error.code(), "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED");
+            assert_eq!(
+                std::fs::read(&baseline_path).expect("read restored baseline"),
+                b"baseline-before"
+            );
+            match mutation_stage {
+                CatalogApplyStage::Generated => {
+                    assert_eq!(
+                        std::fs::read(&config_path).expect("read restored config"),
+                        b"config-before"
+                    );
+                    assert_ne!(
+                        std::fs::read(&generated_path).expect("read external catalog winner"),
+                        b"generated-before"
+                    );
+                }
+                CatalogApplyStage::Config => {
+                    assert_ne!(
+                        std::fs::read(&config_path).expect("read external config winner"),
+                        b"config-before"
+                    );
+                    assert_eq!(
+                        std::fs::read(&generated_path).expect("read restored catalog"),
+                        b"generated-before"
+                    );
+                }
+                CatalogApplyStage::Baseline => unreachable!(),
+            }
         }
     }
 
@@ -3165,6 +4744,17 @@ base_url = "http://127.0.0.1:37123/v1"
         ));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let generated = dir.join(GENERATED_CATALOG_FILE_NAME);
+        let generated_bytes = generate_test_catalog(
+            &base_catalog(),
+            &[profile()],
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &empty_policy(),
+            None,
+        )
+        .expect("generate owned catalog");
+        std::fs::write(&generated, &generated_bytes).expect("write owned catalog");
+        let metadata = validate_owned_catalog(&generated_bytes).expect("owned metadata");
         let backup_path = dir.join("config.toml.backup");
         let mut document = toml_edit::DocumentMut::new();
         document["model"] = toml_edit::value("gpt-5");
@@ -3178,8 +4768,14 @@ base_url = "http://127.0.0.1:37123/v1"
             base_origin: "http://127.0.0.1:37123".to_string(),
         };
 
-        let prepared =
-            prepare_catalog_baseline(&baseline, &generated, None).expect("prepare repair");
+        assert_eq!(
+            prepare_catalog_baseline(&baseline, &generated, None)
+                .expect_err("an unowned active generated binding must fail closed")
+                .code(),
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED"
+        );
+        let prepared = prepare_catalog_baseline(&baseline, &generated, Some(&metadata))
+            .expect("prepare repair");
 
         assert!(prepared.catalog_path.is_none());
         assert!(prepared.backup_change.is_some());
@@ -3203,15 +4799,7 @@ base_url = "http://127.0.0.1:37123/v1"
         let temp = tempfile::tempdir().expect("tempdir");
         let generated = temp.path().join(GENERATED_CATALOG_FILE_NAME);
         let original_catalog = temp.path().join("user-catalog.json");
-        let generated_bytes = generate_catalog(
-            &base_catalog(),
-            &[profile()],
-            "a".repeat(64).as_str(),
-            "b".repeat(64).as_str(),
-            false,
-            Some(&original_catalog),
-        )
-        .expect("generate v2 catalog");
+        let generated_bytes = legacy_v2_catalog(Some(&original_catalog));
         std::fs::write(&generated, &generated_bytes).expect("write generated catalog");
         let metadata = validate_owned_catalog(&generated_bytes).expect("v2 metadata");
 

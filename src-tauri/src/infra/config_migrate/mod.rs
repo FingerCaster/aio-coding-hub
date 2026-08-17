@@ -405,10 +405,18 @@ pub fn config_export<R: tauri::Runtime>(
     // always serialize the fail-closed stable value.
     let mut app_settings = settings::read(app)?;
     app_settings.update_channel = settings::UpdateChannel::Stable;
-    // Catalog policy is device/home-owned and can only be changed through its
-    // dedicated transaction, so portable bundles carry the fail-closed value.
-    app_settings.codex_gpt56_372k_context_enabled = false;
-    let settings_string = serde_json::to_string(&app_settings)
+    let mut portable_settings = serde_json::to_value(&app_settings)
+        .map_err(|e| format!("SYSTEM_ERROR: failed to serialize settings: {e}"))?;
+    {
+        let portable_settings = portable_settings.as_object_mut().ok_or_else(|| {
+            "SYSTEM_ERROR: failed to serialize settings: expected an object".to_string()
+        })?;
+        // Model-context rules are device/home-owned. Omit both the canonical key
+        // and the retired compatibility key so a portable bundle owns neither.
+        portable_settings.remove("codex_model_context_rules");
+        portable_settings.remove("codex_gpt56_372k_context_enabled");
+    }
+    let settings_string = serde_json::to_string(&portable_settings)
         .map_err(|e| format!("SYSTEM_ERROR: failed to serialize settings: {e}"))?;
 
     let conn = db.open_connection()?;
@@ -558,8 +566,15 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         None
     };
 
-    let raw_settings: serde_json::Value = serde_json::from_str(&settings)
+    let mut raw_settings: serde_json::Value = serde_json::from_str(&settings)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid settings bundle: {e}"))?;
+    if let Some(object) = raw_settings.as_object_mut() {
+        // Ignore device-local policy before typed deserialization. Malformed or
+        // oversized-in-shape policy values must not turn an ignored field into
+        // an import rejection surface.
+        object.remove("codex_model_context_rules");
+        object.remove("codex_gpt56_372k_context_enabled");
+    }
     let schema_version_present = raw_settings.get("schema_version").is_some();
     let mut settings_to_write: settings::AppSettings = serde_json::from_value(raw_settings)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid settings bundle: {e}"))?;
@@ -703,14 +718,20 @@ pub fn config_import<R: tauri::Runtime>(
     } = prepared;
 
     let previous_settings = settings::read(app)?;
-    settings_to_write.codex_gpt56_372k_context_enabled =
-        previous_settings.codex_gpt56_372k_context_enabled;
-    let codex_home_changed = previous_settings.codex_home_mode != settings_to_write.codex_home_mode
-        || previous_settings.codex_home_override != settings_to_write.codex_home_override;
-    if previous_settings.codex_gpt56_372k_context_enabled && codex_home_changed {
+    settings_to_write.codex_model_context_rules =
+        previous_settings.codex_model_context_rules.clone();
+    let codex_home_changed =
+        crate::codex_paths::codex_home_dir_for_settings(app, &previous_settings)?
+            != crate::codex_paths::codex_home_dir_for_settings(app, &settings_to_write)?;
+    if previous_settings
+        .codex_model_context_rules
+        .iter()
+        .any(|rule| rule.enabled)
+        && codex_home_changed
+    {
         return Err(crate::shared::error::AppError::new(
-            "CODEX_GPT56_372K_CONTEXT_HOME_CHANGE_BLOCKED",
-            "disable GPT-5.6 372K context before importing a different Codex home",
+            "CODEX_MODEL_CONTEXT_RULES_HOME_CHANGE_BLOCKED",
+            "disable all Codex model context rules before importing a different Codex home",
         ));
     }
     let prepared_codex_home_rebind = codex_home_changed
@@ -911,12 +932,11 @@ pub fn config_import<R: tauri::Runtime>(
 
     let catalog_plan =
         match crate::codex_model_catalog::managed::load_profiles(&tx).and_then(|profiles| {
+            let policy = crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_settings(
+                &settings_to_write,
+            )?;
             crate::codex_model_catalog::managed::prepare_for_profiles_with_policy(
-                app,
-                &profiles,
-                crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_settings(
-                    &settings_to_write,
-                ),
+                app, &profiles, policy,
             )
         }) {
             Ok(plan) => plan,

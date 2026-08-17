@@ -1,0 +1,28 @@
+{
+  "id": "codex-custom-model-context-rules",
+  "name": "codex-custom-model-context-rules",
+  "title": "Codex 可自定义模型上下文规则",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "cross-layer",
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-17",
+  "completedAt": null,
+  "branch": "FingerCaster/codex-custom-model-context-rules",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "worktree_path": "D:\\OrcaProjects\\aio-coding-hub-fork\\codex-custom-model-context-rules"
+  }
+}

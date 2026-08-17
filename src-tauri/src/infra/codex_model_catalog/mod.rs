@@ -1,10 +1,14 @@
 //! Read the model capability catalog exposed by the installed Codex CLI.
 
+mod candidates;
 pub(crate) mod managed;
 mod protocol;
 
 use crate::{cli_manager, codex_paths};
 use serde::Serialize;
+
+pub(crate) use candidates::codex_model_context_candidates_get_locked;
+pub use candidates::CodexModelContextCandidatesState;
 
 #[derive(Debug, Clone, Copy, Serialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -56,17 +60,31 @@ pub struct CodexModelCatalogState {
     pub models: Vec<CodexModelCapability>,
 }
 
+fn catalog_snapshot<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<(
+    CodexModelCatalogSnapshot,
+    Option<cli_manager::CodexLaunchSpec>,
+)> {
+    let config_path = codex_paths::codex_config_toml_path(app)?;
+    let launch = cli_manager::codex_launch_spec(app)?;
+    Ok((
+        CodexModelCatalogSnapshot {
+            config_path: config_path.to_string_lossy().to_string(),
+            executable_path: launch
+                .as_ref()
+                .map(|launch| launch.executable.to_string_lossy().to_string()),
+            cli_version: launch.as_ref().and_then(|launch| launch.version.clone()),
+        },
+        launch,
+    ))
+}
+
 pub fn codex_model_catalog_get<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<CodexModelCatalogState> {
-    let config_path = codex_paths::codex_config_toml_path(app)?;
-    let mut snapshot = CodexModelCatalogSnapshot {
-        config_path: config_path.to_string_lossy().to_string(),
-        executable_path: None,
-        cli_version: None,
-    };
-
-    let Some(launch) = cli_manager::codex_launch_spec(app)? else {
+    let (snapshot, launch) = catalog_snapshot(app)?;
+    let Some(launch) = launch else {
         return Ok(CodexModelCatalogState {
             status: CodexModelCatalogStatus::Unavailable,
             issue: Some(CodexModelCatalogIssue::CliNotFound),
@@ -74,9 +92,6 @@ pub fn codex_model_catalog_get<R: tauri::Runtime>(
             models: Vec::new(),
         });
     };
-
-    snapshot.executable_path = Some(launch.executable.to_string_lossy().to_string());
-    snapshot.cli_version = launch.version.clone();
 
     let codex_home = codex_paths::codex_home_dir(app)?;
     match protocol::fetch_model_catalog(&launch, &codex_home) {

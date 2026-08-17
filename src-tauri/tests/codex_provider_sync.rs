@@ -55,6 +55,14 @@ fn write_gpt56_catalog(path: &Path) {
     .expect("write catalog");
 }
 
+fn gpt56_372k_context_rules() -> Value {
+    json!([
+        { "model_id": "gpt-5.6-sol", "context_window": 372000, "enabled": true },
+        { "model_id": "gpt-5.6-terra", "context_window": 372000, "enabled": true },
+        { "model_id": "gpt-5.6-luna", "context_window": 372000, "enabled": true }
+    ])
+}
+
 fn configure_user_catalog(
     handle: &tauri::AppHandle<tauri::test::MockRuntime>,
     catalog_path: &Path,
@@ -360,8 +368,11 @@ fn managed_catalog_and_config_roll_back_when_history_preflight_fails() {
     let user_catalog = home.join("user-models.json");
     write_gpt56_catalog(&user_catalog);
     configure_user_catalog(&handle, &user_catalog);
-    aio_coding_hub_lib::test_support::settings_codex_gpt56_372k_context_set_json(&handle, true)
-        .expect("enable managed 372K catalog");
+    aio_coding_hub_lib::test_support::settings_codex_model_context_rules_set_json(
+        &handle,
+        gpt56_372k_context_rules(),
+    )
+    .expect("apply managed model context rules");
 
     let config_before = read_codex_config(&handle);
     let generated_path = configured_catalog_path(&config_before);
@@ -403,8 +414,11 @@ fn managed_catalog_failure_happens_before_history_migration() {
     let user_catalog = home.join("user-models.json");
     write_gpt56_catalog(&user_catalog);
     configure_user_catalog(&handle, &user_catalog);
-    aio_coding_hub_lib::test_support::settings_codex_gpt56_372k_context_set_json(&handle, true)
-        .expect("enable managed 372K catalog");
+    aio_coding_hub_lib::test_support::settings_codex_model_context_rules_set_json(
+        &handle,
+        gpt56_372k_context_rules(),
+    )
+    .expect("apply managed model context rules");
 
     let config_before = read_codex_config(&handle);
     let generated_path = configured_catalog_path(&config_before);

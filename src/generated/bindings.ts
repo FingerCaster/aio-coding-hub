@@ -30,11 +30,13 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
-  async settingsCodexGpt56372kContextSet(enabled: boolean): Promise<Result<SettingsView, string>> {
+  async settingsCodexModelContextRulesSet(
+    rules: CodexModelContextRule[]
+  ): Promise<Result<SettingsView, string>> {
     try {
       return {
         status: "ok",
-        data: await TAURI_INVOKE("settings_codex_gpt56_372k_context_set", { enabled }),
+        data: await TAURI_INVOKE("settings_codex_model_context_rules_set", { rules }),
       };
     } catch (e) {
       if (e instanceof Error) throw e;
@@ -323,6 +325,19 @@ export const commands = {
   async cliManagerCodexModelCatalogGet(): Promise<Result<CodexModelCatalogState, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("cli_manager_codex_model_catalog_get") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async cliManagerCodexModelContextCandidatesGet(): Promise<
+    Result<CodexModelContextCandidatesState, string>
+  > {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("cli_manager_codex_model_context_candidates_get"),
+      };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -3042,6 +3057,20 @@ export type CodexModelCatalogState = {
   models: CodexModelCapability[];
 };
 export type CodexModelCatalogStatus = "ready" | "degraded" | "unavailable";
+export type CodexModelContextCandidate = {
+  model_id: string;
+  display_name: string;
+  hidden: boolean;
+  base_context_window: number | null;
+  base_max_context_window: number | null;
+};
+export type CodexModelContextCandidatesState = {
+  status: CodexModelCatalogStatus;
+  issue: CodexModelCatalogIssue | null;
+  snapshot: CodexModelCatalogSnapshot;
+  models: CodexModelContextCandidate[];
+};
+export type CodexModelContextRule = { model_id: string; context_window: number; enabled: boolean };
 export type CodexProviderSyncResult = {
   status: string;
   target_provider: string;
@@ -4543,7 +4572,7 @@ export type SettingsView = {
   codex_home_mode: CodexHomeMode;
   codex_home_override: string;
   codex_oauth_compatible_proxy_mode: boolean;
-  codex_gpt56_372k_context_enabled: boolean;
+  codex_model_context_rules: CodexModelContextRule[];
   codex_provider_test_model: string;
   codex_infinite_retry_test_enabled: boolean;
   codex_infinite_retry_test_interval_ms: number;
