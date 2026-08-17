@@ -2,14 +2,121 @@
 
 use super::defaults::*;
 use super::types::{
-    AppSettings, CodexHomeMode, Cx2ccReasoningEffortMapping, ModelRoutingPolicy, ModelRoutingRule,
-    UpdateChannel, UpstreamErrorMessageBehavior, UpstreamErrorResponseRule,
-    UpstreamErrorStatusBehavior, UpstreamHttpRetryRule, UpstreamRetryPolicy,
+    AppSettings, CodexHomeMode, CodexModelContextRule, Cx2ccReasoningEffortMapping,
+    ModelRoutingPolicy, ModelRoutingRule, UpdateChannel, UpstreamErrorMessageBehavior,
+    UpstreamErrorResponseRule, UpstreamErrorStatusBehavior, UpstreamHttpRetryRule,
+    UpstreamRetryPolicy,
 };
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
 
 pub(super) const SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK: u32 = 36;
+
+const LEGACY_GPT56_372K_CONTEXT_TOKENS: i64 = 372_000;
+const LEGACY_GPT56_MODEL_IDS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+
+pub fn normalize_codex_model_context_rules_for_write(
+    rules: &mut Vec<CodexModelContextRule>,
+) -> AppResult<bool> {
+    let original = rules.clone();
+    if rules.len() > MAX_CODEX_MODEL_CONTEXT_RULES {
+        return Err(format!(
+            "CODEX_MODEL_CONTEXT_RULE_LIMIT: rules must contain at most {MAX_CODEX_MODEL_CONTEXT_RULES} entries"
+        )
+        .into());
+    }
+
+    let mut model_ids = HashSet::with_capacity(rules.len());
+    for rule in rules.iter_mut() {
+        rule.model_id = rule.model_id.trim().to_string();
+        if rule.model_id.is_empty()
+            || rule.model_id.len() > MAX_CODEX_MODEL_CONTEXT_MODEL_ID_BYTES
+            || rule.model_id.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "CODEX_MODEL_CONTEXT_RULE_INVALID: model_id must be 1..={MAX_CODEX_MODEL_CONTEXT_MODEL_ID_BYTES} UTF-8 bytes without control characters"
+            )
+            .into());
+        }
+        if rule.model_id.starts_with("aio/") {
+            return Err(
+                "CODEX_MODEL_CONTEXT_RULE_INVALID: model_id must not use the reserved aio/ prefix"
+                    .into(),
+            );
+        }
+        if !(crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS
+            ..=crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS)
+            .contains(&rule.context_window)
+        {
+            return Err(format!(
+                "CODEX_MODEL_CONTEXT_RULE_INVALID: context_window must be in {}..={} tokens",
+                crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS,
+                crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS
+            )
+            .into());
+        }
+        if !model_ids.insert(rule.model_id.clone()) {
+            return Err(format!(
+                "CODEX_MODEL_CONTEXT_RULE_DUPLICATE: duplicate model_id: {}",
+                rule.model_id
+            )
+            .into());
+        }
+    }
+
+    rules.sort_by(|left, right| left.model_id.as_bytes().cmp(right.model_id.as_bytes()));
+    Ok(*rules != original)
+}
+
+fn legacy_gpt56_context_rules() -> Vec<CodexModelContextRule> {
+    LEGACY_GPT56_MODEL_IDS
+        .into_iter()
+        .map(|model_id| CodexModelContextRule {
+            model_id: model_id.to_string(),
+            context_window: LEGACY_GPT56_372K_CONTEXT_TOKENS,
+            enabled: true,
+        })
+        .collect()
+}
+
+fn migrate_and_normalize_codex_model_context_rules(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+    raw_settings_json: &serde_json::Value,
+) -> AppResult<bool> {
+    let original_schema_version = raw_settings_json
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64);
+    let mut changed = false;
+
+    if !schema_version_present || original_schema_version.is_some_and(|version| version < 65) {
+        let legacy_enabled = if original_schema_version == Some(64) {
+            match raw_settings_json.get("codex_gpt56_372k_context_enabled") {
+                None => false,
+                Some(value) => value.as_bool().ok_or_else(|| {
+                    crate::shared::error::AppError::from(
+                        "SEC_INVALID_INPUT: codex_gpt56_372k_context_enabled must be a boolean",
+                    )
+                })?,
+            }
+        } else {
+            false
+        };
+        let migrated = if legacy_enabled {
+            legacy_gpt56_context_rules()
+        } else {
+            Vec::new()
+        };
+        if settings.codex_model_context_rules != migrated {
+            settings.codex_model_context_rules = migrated;
+            changed = true;
+        }
+    }
+
+    changed |=
+        normalize_codex_model_context_rules_for_write(&mut settings.codex_model_context_rules)?;
+    Ok(changed)
+}
 
 pub fn normalize_cx2cc_reasoning_effort_mappings_for_write(
     mappings: &mut Vec<Cx2ccReasoningEffortMapping>,
@@ -1628,22 +1735,22 @@ fn migrate_add_codex_gpt56_372k_context(
     settings: &mut AppSettings,
     schema_version_present: bool,
 ) -> bool {
-    if schema_version_present
-        && settings.schema_version >= SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT
-    {
-        return false;
-    }
-
-    let mut changed = migrate_bump_schema_version(
+    migrate_bump_schema_version(
         settings,
         schema_version_present,
         SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT,
-    );
-    if settings.codex_gpt56_372k_context_enabled {
-        settings.codex_gpt56_372k_context_enabled = false;
-        changed = true;
-    }
-    changed
+    )
+}
+
+fn migrate_add_codex_model_context_rules(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_MODEL_CONTEXT_RULES,
+    )
 }
 
 pub(super) fn sanitize_codex_infinite_retry_test(settings: &mut AppSettings) -> bool {
@@ -1702,6 +1809,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_restore_cyber_passthrough,
     migrate_add_cx2cc_reasoning_effort_mappings,
     migrate_add_codex_gpt56_372k_context,
+    migrate_add_codex_model_context_rules,
 ];
 
 pub(crate) fn migrate_to_current_schema(
@@ -1720,7 +1828,12 @@ pub(super) fn repair_settings(
     schema_version_present: bool,
     raw_settings_json: &serde_json::Value,
 ) -> AppResult<bool> {
-    let mut repaired = migrate_to_current_schema(settings, schema_version_present);
+    let mut repaired = migrate_and_normalize_codex_model_context_rules(
+        settings,
+        schema_version_present,
+        raw_settings_json,
+    )?;
+    repaired |= migrate_to_current_schema(settings, schema_version_present);
     repaired |= sanitize_log_retention_days(settings);
     repaired |= sanitize_request_log_retention_days(settings);
     repaired |= sanitize_failover_settings(settings);
@@ -2418,16 +2531,15 @@ mod tests {
     }
 
     #[test]
-    fn app_settings_default_codex_gpt56_372k_context_disabled() {
+    fn app_settings_default_codex_model_context_rules_empty() {
         let s = AppSettings::default();
-        assert!(!s.codex_gpt56_372k_context_enabled);
+        assert!(s.codex_model_context_rules.is_empty());
     }
 
     #[test]
     fn migrate_add_codex_gpt56_372k_context_bumps_schema_version() {
         let mut s = AppSettings {
             schema_version: SCHEMA_VERSION_ADD_CX2CC_REASONING_EFFORT_MAPPINGS,
-            codex_gpt56_372k_context_enabled: true,
             ..Default::default()
         };
 
@@ -2436,19 +2548,218 @@ mod tests {
             s.schema_version,
             SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT
         );
-        assert!(!s.codex_gpt56_372k_context_enabled);
+        assert!(s.codex_model_context_rules.is_empty());
     }
 
     #[test]
-    fn current_schema_preserves_enabled_codex_gpt56_372k_context() {
+    fn migrate_add_codex_model_context_rules_bumps_schema_version() {
         let mut s = AppSettings {
             schema_version: SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT,
-            codex_gpt56_372k_context_enabled: true,
             ..Default::default()
         };
 
-        assert!(!migrate_add_codex_gpt56_372k_context(&mut s, true));
-        assert!(s.codex_gpt56_372k_context_enabled);
+        assert!(migrate_add_codex_model_context_rules(&mut s, true));
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_ADD_CODEX_MODEL_CONTEXT_RULES
+        );
+        assert!(s.codex_model_context_rules.is_empty());
+    }
+
+    #[test]
+    fn repair_settings_migrates_schema_64_legacy_context_rules() {
+        for legacy in [None, Some(false)] {
+            let mut raw = serde_json::json!({
+                "schema_version": SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT
+            });
+            if let Some(enabled) = legacy {
+                raw["codex_gpt56_372k_context_enabled"] = serde_json::json!(enabled);
+            }
+            let mut settings: AppSettings =
+                serde_json::from_value(raw.clone()).expect("deserialize schema 64 settings");
+
+            assert!(repair_settings(&mut settings, true, &raw).expect("migrate schema 64"));
+            assert_eq!(settings.schema_version, SCHEMA_VERSION);
+            assert!(settings.codex_model_context_rules.is_empty());
+        }
+
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT,
+            "codex_gpt56_372k_context_enabled": true
+        });
+        let mut settings: AppSettings =
+            serde_json::from_value(raw.clone()).expect("deserialize enabled schema 64 settings");
+
+        assert!(repair_settings(&mut settings, true, &raw).expect("migrate enabled schema 64"));
+        assert_eq!(settings.schema_version, SCHEMA_VERSION);
+        assert_eq!(
+            settings
+                .codex_model_context_rules
+                .iter()
+                .map(|rule| (rule.model_id.as_str(), rule.context_window, rule.enabled))
+                .collect::<Vec<_>>(),
+            vec![
+                ("gpt-5.6-luna", 372_000, true),
+                ("gpt-5.6-sol", 372_000, true),
+                ("gpt-5.6-terra", 372_000, true),
+            ]
+        );
+
+        let canonical = serde_json::to_value(&settings).expect("serialize migrated settings");
+        assert!(canonical.get("codex_gpt56_372k_context_enabled").is_none());
+        let mut reread: AppSettings =
+            serde_json::from_value(canonical.clone()).expect("deserialize canonical settings");
+        assert!(!repair_settings(&mut reread, true, &canonical).expect("repeat migration"));
+        assert_eq!(
+            serde_json::to_value(&reread).expect("serialize reread settings"),
+            canonical
+        );
+    }
+
+    #[test]
+    fn repair_settings_rejects_malformed_schema_64_legacy_context_flag() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_GPT56_372K_CONTEXT,
+            "codex_gpt56_372k_context_enabled": "true"
+        });
+        let mut settings: AppSettings =
+            serde_json::from_value(raw.clone()).expect("deserialize malformed legacy settings");
+
+        let error = repair_settings(&mut settings, true, &raw)
+            .expect_err("malformed legacy flag must fail closed");
+        assert_eq!(error.code(), "SEC_INVALID_INPUT");
+        assert!(settings.codex_model_context_rules.is_empty());
+    }
+
+    #[test]
+    fn repair_settings_preserves_and_canonicalizes_schema_65_rules() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_MODEL_CONTEXT_RULES,
+            "codex_model_context_rules": [
+                {"model_id": " zeta ", "context_window": 2048, "enabled": false},
+                {"model_id": "alpha", "context_window": 1024, "enabled": true}
+            ],
+            "codex_gpt56_372k_context_enabled": true
+        });
+        let mut settings: AppSettings =
+            serde_json::from_value(raw.clone()).expect("deserialize schema 65 settings");
+
+        assert!(repair_settings(&mut settings, true, &raw).expect("repair schema 65"));
+        assert_eq!(
+            settings
+                .codex_model_context_rules
+                .iter()
+                .map(|rule| (rule.model_id.as_str(), rule.enabled))
+                .collect::<Vec<_>>(),
+            vec![("alpha", true), ("zeta", false)]
+        );
+    }
+
+    #[test]
+    fn normalize_codex_model_context_rules_accepts_inclusive_bounds_and_sorts() {
+        let mut rules = vec![
+            CodexModelContextRule {
+                model_id: " zeta ".to_string(),
+                context_window: crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS,
+                enabled: false,
+            },
+            CodexModelContextRule {
+                model_id: "alpha".to_string(),
+                context_window: crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS,
+                enabled: true,
+            },
+        ];
+
+        assert!(normalize_codex_model_context_rules_for_write(&mut rules).unwrap());
+        assert_eq!(rules[0].model_id, "alpha");
+        assert_eq!(rules[1].model_id, "zeta");
+
+        let mut max_rules = (0..MAX_CODEX_MODEL_CONTEXT_RULES)
+            .map(|index| CodexModelContextRule {
+                model_id: format!("model-{index:03}"),
+                context_window: 4_096,
+                enabled: index % 2 == 0,
+            })
+            .collect::<Vec<_>>();
+        assert!(!normalize_codex_model_context_rules_for_write(&mut max_rules).unwrap());
+    }
+
+    #[test]
+    fn normalize_codex_model_context_rules_rejects_invalid_collections() {
+        let rule = |model_id: String, context_window: i64| CodexModelContextRule {
+            model_id,
+            context_window,
+            enabled: true,
+        };
+
+        let mut too_many = (0..=MAX_CODEX_MODEL_CONTEXT_RULES)
+            .map(|index| rule(format!("model-{index}"), 4_096))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            normalize_codex_model_context_rules_for_write(&mut too_many)
+                .unwrap_err()
+                .code(),
+            "CODEX_MODEL_CONTEXT_RULE_LIMIT"
+        );
+
+        for model_id in [
+            String::new(),
+            "x".repeat(MAX_CODEX_MODEL_CONTEXT_MODEL_ID_BYTES + 1),
+            "line\nbreak".to_string(),
+            "aio/managed".to_string(),
+        ] {
+            let mut rules = vec![rule(model_id, 4_096)];
+            assert_eq!(
+                normalize_codex_model_context_rules_for_write(&mut rules)
+                    .unwrap_err()
+                    .code(),
+                "CODEX_MODEL_CONTEXT_RULE_INVALID"
+            );
+        }
+
+        let mut utf8_boundary = vec![rule("\u{00e9}".repeat(128), 4_096)];
+        assert!(!normalize_codex_model_context_rules_for_write(&mut utf8_boundary).unwrap());
+        let mut utf8_too_long = vec![rule("\u{00e9}".repeat(129), 4_096)];
+        assert_eq!(
+            normalize_codex_model_context_rules_for_write(&mut utf8_too_long)
+                .unwrap_err()
+                .code(),
+            "CODEX_MODEL_CONTEXT_RULE_INVALID"
+        );
+
+        for context_window in [
+            crate::provider_models::MODEL_CONTEXT_WINDOW_MIN_TOKENS - 1,
+            crate::provider_models::MODEL_CONTEXT_WINDOW_MAX_TOKENS + 1,
+        ] {
+            let mut rules = vec![rule("model".to_string(), context_window)];
+            assert_eq!(
+                normalize_codex_model_context_rules_for_write(&mut rules)
+                    .unwrap_err()
+                    .code(),
+                "CODEX_MODEL_CONTEXT_RULE_INVALID"
+            );
+        }
+
+        let mut duplicate = vec![
+            rule("model".to_string(), 4_096),
+            CodexModelContextRule {
+                model_id: " model ".to_string(),
+                context_window: 8_192,
+                enabled: false,
+            },
+        ];
+        assert_eq!(
+            normalize_codex_model_context_rules_for_write(&mut duplicate)
+                .unwrap_err()
+                .code(),
+            "CODEX_MODEL_CONTEXT_RULE_DUPLICATE"
+        );
+
+        let mut case_sensitive = vec![
+            rule("Model".to_string(), 4_096),
+            rule("model".to_string(), 4_096),
+        ];
+        assert!(normalize_codex_model_context_rules_for_write(&mut case_sensitive).is_ok());
     }
 
     #[test]

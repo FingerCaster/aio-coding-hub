@@ -14,34 +14,36 @@ pub(crate) const UPDATE_CHANNEL_CONFIRM_ACTION: &str = "settings_update_channel_
 pub(crate) const UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE: &str = "update_channel:beta";
 
 #[cfg(test)]
-type CodexGpt56CatalogBeforeApplyHook = Box<dyn FnOnce() -> crate::shared::error::AppResult<()>>;
+type CodexModelContextRulesBeforeApplyHook =
+    Box<dyn FnOnce() -> crate::shared::error::AppResult<()>>;
 
 #[cfg(test)]
 thread_local! {
-    static FAIL_NEXT_CODEX_GPT56_372K_CATALOG_APPLY: std::cell::Cell<bool> = const {
+    static FAIL_NEXT_CODEX_MODEL_CONTEXT_RULES_CATALOG_APPLY: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
-    static BEFORE_CODEX_GPT56_372K_CATALOG_APPLY: std::cell::RefCell<
-        Option<CodexGpt56CatalogBeforeApplyHook>
+    static BEFORE_CODEX_MODEL_CONTEXT_RULES_CATALOG_APPLY: std::cell::RefCell<
+        Option<CodexModelContextRulesBeforeApplyHook>
     > = const {
         std::cell::RefCell::new(None)
     };
-    static FAIL_NEXT_CODEX_GPT56_372K_CONFIRMATION: std::cell::Cell<bool> = const {
+    static FAIL_NEXT_CODEX_MODEL_CONTEXT_RULES_CONFIRMATION: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
 }
 
-fn before_codex_gpt56_372k_catalog_apply() -> crate::shared::error::AppResult<()> {
+fn before_codex_model_context_rules_catalog_apply() -> crate::shared::error::AppResult<()> {
     #[cfg(test)]
-    if FAIL_NEXT_CODEX_GPT56_372K_CATALOG_APPLY.with(|failure| failure.replace(false)) {
+    if FAIL_NEXT_CODEX_MODEL_CONTEXT_RULES_CATALOG_APPLY.with(|failure| failure.replace(false)) {
         return Err(crate::shared::error::AppError::new(
-            "CODEX_GPT56_372K_CONTEXT_TEST_APPLY_FAILED",
-            "injected catalog apply failure after the dedicated setting commit",
+            "CODEX_MODEL_CONTEXT_RULES_TEST_APPLY_FAILED",
+            "injected catalog apply failure after the dedicated rules commit",
         ));
     }
 
     #[cfg(test)]
-    if let Some(hook) = BEFORE_CODEX_GPT56_372K_CATALOG_APPLY.with(|slot| slot.borrow_mut().take())
+    if let Some(hook) =
+        BEFORE_CODEX_MODEL_CONTEXT_RULES_CATALOG_APPLY.with(|slot| slot.borrow_mut().take())
     {
         hook()?;
     }
@@ -50,24 +52,40 @@ fn before_codex_gpt56_372k_catalog_apply() -> crate::shared::error::AppResult<()
 }
 
 #[cfg(test)]
-fn set_before_codex_gpt56_372k_catalog_apply_hook(hook: CodexGpt56CatalogBeforeApplyHook) {
-    BEFORE_CODEX_GPT56_372K_CATALOG_APPLY.with(|slot| {
+fn set_before_codex_model_context_rules_catalog_apply_hook(
+    hook: CodexModelContextRulesBeforeApplyHook,
+) {
+    BEFORE_CODEX_MODEL_CONTEXT_RULES_CATALOG_APPLY.with(|slot| {
         *slot.borrow_mut() = Some(hook);
     });
 }
 
-fn read_codex_gpt56_372k_confirmation<R: tauri::Runtime>(
+fn read_codex_model_context_rules_confirmation<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<settings::AppSettings> {
     #[cfg(test)]
-    if FAIL_NEXT_CODEX_GPT56_372K_CONFIRMATION.with(|failure| failure.replace(false)) {
+    if FAIL_NEXT_CODEX_MODEL_CONTEXT_RULES_CONFIRMATION.with(|failure| failure.replace(false)) {
         return Err(crate::shared::error::AppError::new(
-            "CODEX_GPT56_372K_CONTEXT_TEST_CONFIRMATION_FAILED",
+            "CODEX_MODEL_CONTEXT_RULES_TEST_CONFIRMATION_FAILED",
             "injected settings confirmation failure after catalog activation",
         ));
     }
 
     settings::read(app)
+}
+
+fn confirm_codex_model_context_rules_commit<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    requested_rules: &[settings::CodexModelContextRule],
+) -> crate::shared::error::AppResult<()> {
+    let canonical = settings::read(app)?;
+    if canonical.codex_model_context_rules.as_slice() != requested_rules {
+        return Err(crate::shared::error::AppError::new(
+            "SETTINGS_CONCURRENT_UPDATE",
+            "Codex model context rules changed before catalog application",
+        ));
+    }
+    Ok(())
 }
 
 fn write_settings_view<R, F>(
@@ -383,7 +401,7 @@ struct SettingsServiceOwnedToken {
     codex_home_mode: settings::CodexHomeMode,
     codex_home_override: String,
     // Compare-only guard: ordinary settings writes never own or apply this policy.
-    codex_gpt56_372k_context_enabled: bool,
+    codex_model_context_rules: Vec<settings::CodexModelContextRule>,
     codex_oauth_compatible_proxy_mode: bool,
     codex_provider_test_model: String,
     codex_infinite_retry_test_enabled: bool,
@@ -449,7 +467,7 @@ impl SettingsServiceOwnedToken {
             wsl_custom_host_address: settings.wsl_custom_host_address.clone(),
             codex_home_mode: settings.codex_home_mode,
             codex_home_override: settings.codex_home_override.clone(),
-            codex_gpt56_372k_context_enabled: settings.codex_gpt56_372k_context_enabled,
+            codex_model_context_rules: settings.codex_model_context_rules.clone(),
             codex_oauth_compatible_proxy_mode: settings.codex_oauth_compatible_proxy_mode,
             codex_provider_test_model: settings.codex_provider_test_model.clone(),
             codex_infinite_retry_test_enabled: settings.codex_infinite_retry_test_enabled,
@@ -521,7 +539,7 @@ impl SettingsServiceOwnedToken {
         settings.wsl_custom_host_address = self.wsl_custom_host_address.clone();
         settings.codex_home_mode = self.codex_home_mode;
         settings.codex_home_override = self.codex_home_override.clone();
-        // codex_gpt56_372k_context_enabled is a CAS guard, not an applied field.
+        // codex_model_context_rules is a CAS guard, not an applied field.
         settings.codex_oauth_compatible_proxy_mode = self.codex_oauth_compatible_proxy_mode;
         settings.codex_provider_test_model = self.codex_provider_test_model.clone();
         settings.codex_infinite_retry_test_enabled = self.codex_infinite_retry_test_enabled;
@@ -570,7 +588,7 @@ pub(crate) struct SettingsView {
     pub codex_home_mode: settings::CodexHomeMode,
     pub codex_home_override: String,
     pub codex_oauth_compatible_proxy_mode: bool,
-    pub codex_gpt56_372k_context_enabled: bool,
+    pub codex_model_context_rules: Vec<settings::CodexModelContextRule>,
     pub codex_provider_test_model: String,
     pub codex_infinite_retry_test_enabled: bool,
     pub codex_infinite_retry_test_interval_ms: u32,
@@ -702,7 +720,7 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_home_mode: value.codex_home_mode,
             codex_home_override: value.codex_home_override.clone(),
             codex_oauth_compatible_proxy_mode: value.codex_oauth_compatible_proxy_mode,
-            codex_gpt56_372k_context_enabled: value.codex_gpt56_372k_context_enabled,
+            codex_model_context_rules: value.codex_model_context_rules.clone(),
             codex_provider_test_model: value.codex_provider_test_model.clone(),
             codex_infinite_retry_test_enabled: value.codex_infinite_retry_test_enabled,
             codex_infinite_retry_test_interval_ms: value.codex_infinite_retry_test_interval_ms,
@@ -1042,15 +1060,6 @@ fn apply_settings_update_owned_patch(
         .unwrap_or_else(|| previous_token.codex_home_override.clone())
         .trim()
         .to_string();
-    if latest.codex_gpt56_372k_context_enabled
-        && (codex_home_mode != previous_token.codex_home_mode
-            || codex_home_override != previous_token.codex_home_override)
-    {
-        return Err(crate::shared::error::AppError::new(
-            "CODEX_GPT56_372K_CONTEXT_HOME_CHANGE_BLOCKED",
-            "disable GPT-5.6 372K context before changing the Codex home",
-        ));
-    }
     let codex_oauth_compatible_proxy_mode = update
         .codex_oauth_compatible_proxy_mode
         .unwrap_or(previous_token.codex_oauth_compatible_proxy_mode);
@@ -1248,7 +1257,7 @@ fn apply_settings_update_owned_patch(
         wsl_custom_host_address,
         codex_home_mode,
         codex_home_override,
-        codex_gpt56_372k_context_enabled: previous_token.codex_gpt56_372k_context_enabled,
+        codex_model_context_rules: previous_token.codex_model_context_rules.clone(),
         codex_oauth_compatible_proxy_mode,
         codex_provider_test_model,
         codex_infinite_retry_test_enabled,
@@ -1585,19 +1594,19 @@ pub(crate) async fn settings_get(app: tauri::AppHandle) -> Result<SettingsView, 
     .map_err(Into::into)
 }
 
-fn compensate_codex_gpt56_372k_context_failure<R: tauri::Runtime>(
+fn compensate_codex_model_context_rules_failure<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    requested_enabled: bool,
-    previous_enabled: bool,
+    requested_rules: &[settings::CodexModelContextRule],
+    previous_rules: Vec<settings::CodexModelContextRule>,
     applied_catalog: Option<crate::codex_model_catalog::managed::AppliedManagedCatalog>,
     original: crate::shared::error::AppError,
 ) -> crate::shared::error::AppError {
     let catalog_rollback_error = applied_catalog.and_then(|applied| applied.rollback().err());
     let setting_rollback = settings::update(app, |latest| {
-        if latest.codex_gpt56_372k_context_enabled != requested_enabled {
+        if latest.codex_model_context_rules.as_slice() != requested_rules {
             return Ok(false);
         }
-        latest.codex_gpt56_372k_context_enabled = previous_enabled;
+        latest.codex_model_context_rules = previous_rules.clone();
         latest.schema_version = settings::SCHEMA_VERSION;
         Ok(true)
     });
@@ -1609,9 +1618,9 @@ fn compensate_codex_gpt56_372k_context_failure<R: tauri::Runtime>(
                 .map(|error| format!("; catalog rollback also failed: {error}"))
                 .unwrap_or_default();
             return crate::shared::error::AppError::new(
-                "CODEX_GPT56_372K_CONTEXT_RECOVERY_REQUIRED",
+                "CODEX_MODEL_CONTEXT_RULES_RECOVERY_REQUIRED",
                 format!(
-                    "372K context update failed ({original}); owned setting rollback failed: {rollback_error}{catalog_detail}"
+                    "model context rules update failed ({original}); owned setting rollback failed: {rollback_error}{catalog_detail}"
                 ),
             );
         }
@@ -1626,78 +1635,79 @@ fn compensate_codex_gpt56_372k_context_failure<R: tauri::Runtime>(
                 .map(|error| format!("; catalog rollback failed: {error}"))
                 .unwrap_or_default();
             return crate::shared::error::AppError::new(
-                "CODEX_GPT56_372K_CONTEXT_RECOVERY_REQUIRED",
+                "CODEX_MODEL_CONTEXT_RULES_RECOVERY_REQUIRED",
                 format!(
-                    "372K context update failed ({original}); canonical catalog reconciliation failed: {converge_error}{catalog_detail}"
+                    "model context rules update failed ({original}); canonical catalog reconciliation failed: {converge_error}{catalog_detail}"
                 ),
             );
         }
     }
 
     tracing::warn!(
-        requested_enabled,
-        previous_enabled,
-        canonical_enabled = canonical.codex_gpt56_372k_context_enabled,
+        requested_rule_count = requested_rules.len(),
+        previous_rule_count = previous_rules.len(),
+        canonical_rule_count = canonical.codex_model_context_rules.len(),
         setting_restored,
         catalog_rollback_recovered = catalog_rollback_error.is_some(),
         error = %original,
-        "Codex GPT-5.6 372K update failed; compensated to canonical state"
+        "Codex model context rules update failed; compensated to canonical state"
     );
     original
 }
 
-pub(crate) fn settings_codex_gpt56_372k_context_set_sync<R: tauri::Runtime>(
+pub(crate) fn settings_codex_model_context_rules_set_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    enabled: bool,
+    rules: Vec<settings::CodexModelContextRule>,
 ) -> crate::shared::error::AppResult<SettingsView> {
     let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
     let db = crate::db::init(app)?;
     let conn = db.open_connection()?;
     let profiles = crate::codex_model_catalog::managed::load_profiles(&conn)?;
-    let policy = crate::codex_model_catalog::managed::ManagedCatalogPolicy {
-        gpt56_372k_context_enabled: enabled,
-    };
+    let policy = crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_rules(rules)?;
+    let requested_rules = policy.model_context_rules.clone();
     let plan = crate::codex_model_catalog::managed::prepare_for_profiles_with_policy(
         app, &profiles, policy,
     )?;
 
-    let (_, previous_enabled) = settings::update(app, |latest| {
-        let previous_enabled = latest.codex_gpt56_372k_context_enabled;
-        latest.codex_gpt56_372k_context_enabled = enabled;
+    let (_, previous_rules) = settings::update(app, |latest| {
+        let previous_rules = latest.codex_model_context_rules.clone();
+        latest.codex_model_context_rules = requested_rules.clone();
         latest.schema_version = settings::SCHEMA_VERSION;
-        Ok(previous_enabled)
+        Ok(previous_rules)
     })?;
 
-    let applied_catalog =
-        match before_codex_gpt56_372k_catalog_apply().and_then(|()| plan.apply(app)) {
-            Ok(applied) => applied,
-            Err(apply_error) => {
-                return Err(compensate_codex_gpt56_372k_context_failure(
-                    app,
-                    enabled,
-                    previous_enabled,
-                    None,
-                    apply_error,
-                ));
-            }
-        };
+    let applied_catalog = match before_codex_model_context_rules_catalog_apply()
+        .and_then(|()| confirm_codex_model_context_rules_commit(app, &requested_rules))
+        .and_then(|()| plan.apply(app))
+    {
+        Ok(applied) => applied,
+        Err(apply_error) => {
+            return Err(compensate_codex_model_context_rules_failure(
+                app,
+                &requested_rules,
+                previous_rules,
+                None,
+                apply_error,
+            ));
+        }
+    };
 
-    let mut canonical = match read_codex_gpt56_372k_confirmation(app) {
+    let mut canonical = match read_codex_model_context_rules_confirmation(app) {
         Ok(canonical) => canonical,
         Err(confirmation_error) => {
-            return Err(compensate_codex_gpt56_372k_context_failure(
+            return Err(compensate_codex_model_context_rules_failure(
                 app,
-                enabled,
-                previous_enabled,
+                &requested_rules,
+                previous_rules,
                 Some(applied_catalog),
                 confirmation_error,
             ));
         }
     };
-    if canonical.codex_gpt56_372k_context_enabled != enabled {
+    if canonical.codex_model_context_rules != requested_rules {
         crate::codex_model_catalog::managed::sync_current_locked(app).map_err(|error| {
             crate::shared::error::AppError::new(
-                "CODEX_GPT56_372K_CONTEXT_RECOVERY_REQUIRED",
+                "CODEX_MODEL_CONTEXT_RULES_RECOVERY_REQUIRED",
                 format!(
                     "a newer setting won after catalog apply and canonical reconciliation failed: {error}"
                 ),
@@ -1709,12 +1719,12 @@ pub(crate) fn settings_codex_gpt56_372k_context_set_sync<R: tauri::Runtime>(
     Ok(SettingsView::from(&canonical))
 }
 
-pub(crate) async fn settings_codex_gpt56_372k_context_set<R: tauri::Runtime>(
+pub(crate) async fn settings_codex_model_context_rules_set<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    enabled: bool,
+    rules: Vec<settings::CodexModelContextRule>,
 ) -> Result<SettingsView, String> {
-    blocking::run("settings_codex_gpt56_372k_context_set", move || {
-        settings_codex_gpt56_372k_context_set_sync(&app, enabled)
+    blocking::run("settings_codex_model_context_rules_set", move || {
+        settings_codex_model_context_rules_set_sync(&app, rules)
     })
     .await
     .map_err(Into::into)
@@ -1771,9 +1781,9 @@ fn commit_settings_mutation_owned<R: tauri::Runtime>(
     ),
     String,
 > {
-    // Codex-home selection and the 372K catalog transaction share one ownership
+    // Codex-home selection and the model-context rules transaction share one ownership
     // boundary. Keep the lifecycle guard outside AUTO_START -> SETTINGS so a
-    // disable cannot expose its temporary false intent to a concurrent home move.
+    // rules update cannot expose temporary intent to a concurrent home move.
     let _codex_profile_lifecycle = mutation
         .has_codex_home_intent()
         .then(crate::codex_managed_profiles::lock_profile_lifecycle);
@@ -1856,7 +1866,9 @@ fn persist_settings_mutation_owned<R: tauri::Runtime>(
     let (committed, (previous_token, previous_auto_start)) =
         settings::update(app, |latest| {
             let previous_auto_start = latest.auto_start;
+            let previous_settings = latest.clone();
             let previous = mutation.apply(latest)?;
+            validate_active_codex_home_stability(app, &previous_settings, latest)?;
             Ok((previous, previous_auto_start))
         })
         .map_err(|err| {
@@ -1891,6 +1903,26 @@ fn persist_settings_mutation_owned<R: tauri::Runtime>(
             }
         })?;
     Ok((committed, previous_token, previous_auto_start))
+}
+
+fn validate_active_codex_home_stability<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    previous: &settings::AppSettings,
+    candidate: &settings::AppSettings,
+) -> crate::shared::error::AppResult<()> {
+    if previous
+        .codex_model_context_rules
+        .iter()
+        .any(|rule| rule.enabled)
+        && crate::codex_paths::codex_home_dir_for_settings(app, previous)?
+            != crate::codex_paths::codex_home_dir_for_settings(app, candidate)?
+    {
+        return Err(crate::shared::error::AppError::new(
+            "CODEX_MODEL_CONTEXT_RULES_HOME_CHANGE_BLOCKED",
+            "disable all Codex model context rules before changing the Codex home",
+        ));
+    }
+    Ok(())
 }
 
 fn finalize_settings_update_owned(
@@ -2990,10 +3022,23 @@ mod tests {
         }
     }
 
+    fn model_context_rule(
+        model_id: &str,
+        context_window: i64,
+        enabled: bool,
+    ) -> settings::CodexModelContextRule {
+        settings::CodexModelContextRule {
+            model_id: model_id.to_string(),
+            context_window,
+            enabled,
+        }
+    }
+
     #[test]
-    fn ordinary_settings_owner_preserves_codex_gpt56_372k_context_policy() {
+    fn ordinary_settings_owner_preserves_codex_model_context_rules() {
+        let expected_rules = vec![model_context_rule("custom-model", 500_000, true)];
         let mut latest = settings::AppSettings {
-            codex_gpt56_372k_context_enabled: true,
+            codex_model_context_rules: expected_rules.clone(),
             ..settings::AppSettings::default()
         };
         let update = ordinary_update_from_settings(
@@ -3004,31 +3049,32 @@ mod tests {
 
         apply_settings_update_owned_patch(&mut latest, &update).expect("ordinary settings update");
 
-        assert!(latest.codex_gpt56_372k_context_enabled);
+        assert_eq!(latest.codex_model_context_rules, expected_rules);
     }
 
     #[test]
-    fn settings_service_owned_token_apply_to_does_not_write_372k_policy() {
+    fn settings_service_owned_token_apply_to_does_not_write_model_context_rules() {
         let source = settings::AppSettings::default();
-        assert!(!source.codex_gpt56_372k_context_enabled);
+        assert!(source.codex_model_context_rules.is_empty());
         let token = SettingsServiceOwnedToken::from_settings(&source);
+        let expected_rules = vec![model_context_rule("paused-model", 128_000, false)];
         let mut target = settings::AppSettings {
-            codex_gpt56_372k_context_enabled: true,
+            codex_model_context_rules: expected_rules.clone(),
             ..settings::AppSettings::default()
         };
 
         token.apply_to(&mut target);
 
-        assert!(target.codex_gpt56_372k_context_enabled);
+        assert_eq!(target.codex_model_context_rules, expected_rules);
     }
 
     #[test]
-    fn home_commit_rollback_preserves_concurrent_372k_policy_winner() {
+    fn home_commit_rollback_preserves_concurrent_model_context_rules_winner() {
         let env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
         let previous = settings::read(&handle).expect("previous settings");
-        assert!(!previous.codex_gpt56_372k_context_enabled);
+        assert!(previous.codex_model_context_rules.is_empty());
 
         let committed_home = env._home.path().join("committed-codex-home");
         std::fs::create_dir_all(&committed_home).expect("create committed Codex home");
@@ -3047,13 +3093,15 @@ mod tests {
         assert!(auto_start_token.is_none());
         assert_eq!(committed.codex_home_mode, settings::CodexHomeMode::Custom);
         assert_eq!(committed.codex_home_override, committed_home);
-        assert!(!committed.codex_gpt56_372k_context_enabled);
+        assert!(committed.codex_model_context_rules.is_empty());
 
+        let winner_rules = vec![model_context_rule("winner-model", 640_000, true)];
+        let winner_rules_for_commit = winner_rules.clone();
         settings::update(&handle, |latest| {
-            latest.codex_gpt56_372k_context_enabled = true;
+            latest.codex_model_context_rules = winner_rules_for_commit.clone();
             Ok(())
         })
-        .expect("commit concurrent 372K policy winner");
+        .expect("commit concurrent model context rules winner");
 
         let rollback = tauri::async_runtime::block_on(rollback_settings_service_owned_fields(
             &handle,
@@ -3063,26 +3111,77 @@ mod tests {
         ));
         let winner = match rollback {
             OwnedSettingsRollback::ConcurrentWinner(winner) => winner,
-            OwnedSettingsRollback::Restored => panic!("policy winner must block home rollback"),
+            OwnedSettingsRollback::Restored => {
+                panic!("rules winner must block home rollback")
+            }
             OwnedSettingsRollback::Failed(error) => panic!("rollback failed: {error}"),
         };
-        assert!(winner.codex_gpt56_372k_context_enabled);
+        assert_eq!(winner.codex_model_context_rules, winner_rules);
         assert_eq!(winner.codex_home_mode, settings::CodexHomeMode::Custom);
         assert_eq!(winner.codex_home_override, committed_home);
 
         let canonical = settings::read(&handle).expect("canonical concurrent winner");
-        assert!(canonical.codex_gpt56_372k_context_enabled);
+        assert_eq!(canonical.codex_model_context_rules, winner_rules);
         assert_eq!(canonical.codex_home_mode, settings::CodexHomeMode::Custom);
         assert_eq!(canonical.codex_home_override, committed_home);
     }
 
     #[test]
-    fn ordinary_settings_owner_rejects_codex_home_change_while_372k_is_enabled() {
-        let mut latest = settings::AppSettings {
-            codex_gpt56_372k_context_enabled: true,
+    fn ordinary_settings_owner_rejects_codex_home_change_while_a_rule_is_enabled() {
+        let env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let active_rules = vec![model_context_rule("active-model", 372_000, true)];
+        let latest = settings::AppSettings {
+            codex_model_context_rules: active_rules.clone(),
             ..settings::AppSettings::default()
         };
-        let previous_mode = latest.codex_home_mode;
+        let mut candidate = latest.clone();
+        candidate.codex_home_mode = settings::CodexHomeMode::Custom;
+        candidate.codex_home_override = env
+            ._home
+            .path()
+            .join("alternate-codex-home")
+            .to_string_lossy()
+            .into_owned();
+
+        let error = validate_active_codex_home_stability(app.handle(), &latest, &candidate)
+            .expect_err("an enabled rule must block Codex home changes");
+
+        assert_eq!(
+            error.code(),
+            "CODEX_MODEL_CONTEXT_RULES_HOME_CHANGE_BLOCKED"
+        );
+        assert_eq!(latest.codex_model_context_rules, active_rules);
+    }
+
+    #[test]
+    fn ordinary_settings_owner_allows_equivalent_codex_config_path_with_active_rule() {
+        let env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let codex_home = env._home.path().join("equivalent-codex-home");
+        let previous = settings::AppSettings {
+            codex_home_mode: settings::CodexHomeMode::Custom,
+            codex_home_override: codex_home.to_string_lossy().into_owned(),
+            codex_model_context_rules: vec![model_context_rule("active-model", 372_000, true)],
+            ..settings::AppSettings::default()
+        };
+        let mut candidate = previous.clone();
+        candidate.codex_home_override = codex_home
+            .join("config.toml")
+            .to_string_lossy()
+            .into_owned();
+
+        validate_active_codex_home_stability(app.handle(), &previous, &candidate)
+            .expect("equivalent config.toml input must resolve to the same Codex home");
+    }
+
+    #[test]
+    fn ordinary_settings_owner_allows_codex_home_change_with_only_disabled_rules() {
+        let disabled_rules = vec![model_context_rule("paused-model", 372_000, false)];
+        let mut latest = settings::AppSettings {
+            codex_model_context_rules: disabled_rules.clone(),
+            ..settings::AppSettings::default()
+        };
         let mut update = ordinary_update_from_settings(
             &latest,
             latest.auto_start,
@@ -3091,17 +3190,16 @@ mod tests {
         update.codex_home_mode = Some(settings::CodexHomeMode::Custom);
         update.codex_home_override = Some("D:/alternate-codex-home".to_string());
 
-        let error = apply_settings_update_owned_patch(&mut latest, &update)
-            .expect_err("active 372K policy must block Codex home changes");
+        apply_settings_update_owned_patch(&mut latest, &update)
+            .expect("disabled rules must not block a Codex home change");
 
-        assert_eq!(error.code(), "CODEX_GPT56_372K_CONTEXT_HOME_CHANGE_BLOCKED");
-        assert_eq!(latest.codex_home_mode, previous_mode);
-        assert!(latest.codex_home_override.is_empty());
-        assert!(latest.codex_gpt56_372k_context_enabled);
+        assert_eq!(latest.codex_home_mode, settings::CodexHomeMode::Custom);
+        assert_eq!(latest.codex_home_override, "D:/alternate-codex-home");
+        assert_eq!(latest.codex_model_context_rules, disabled_rules);
     }
 
     #[test]
-    fn codex_home_writer_waits_for_the_372k_catalog_lifecycle() {
+    fn codex_home_writer_waits_for_the_model_context_rules_catalog_lifecycle() {
         let env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
@@ -3140,7 +3238,7 @@ mod tests {
         );
         assert!(
             done_rx.try_recv().is_err(),
-            "home writer must not commit while a 372K catalog transaction owns the lifecycle"
+            "home writer must not commit while a rules catalog transaction owns the lifecycle"
         );
         let blocked = settings::read(&handle).expect("settings while home writer is blocked");
         assert_eq!(blocked.codex_home_mode, previous.codex_home_mode);
@@ -3251,17 +3349,14 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_372k_toggle_applies_and_restores_direct_user_catalog() {
+    fn dedicated_model_context_rules_apply_and_restore_direct_user_catalog() {
         let env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        let codex_home = env._home.path().join("codex-372k-toggle");
+        let codex_home = env._home.path().join("codex-context-rules");
         std::fs::create_dir_all(&codex_home).expect("create Codex home");
         let user_catalog = codex_home.join("user-models.json");
-        write_test_codex_catalog(
-            &user_catalog,
-            &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "other"],
-        );
+        write_test_codex_catalog(&user_catalog, &["model-alpha", "model-beta", "other"]);
         let config_path = codex_home.join("config.toml");
         write_test_codex_config(&config_path, &user_catalog);
         settings::update(&handle, |latest| {
@@ -3271,9 +3366,21 @@ mod tests {
         })
         .expect("select test Codex home");
 
-        let enabled =
-            settings_codex_gpt56_372k_context_set_sync(&handle, true).expect("enable 372K context");
-        assert!(enabled.codex_gpt56_372k_context_enabled);
+        let enabled = settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![
+                model_context_rule("model-beta", 180_000, true),
+                model_context_rule("  model-alpha  ", 372_000, true),
+            ],
+        )
+        .expect("apply model context rules");
+        assert_eq!(
+            enabled.codex_model_context_rules,
+            vec![
+                model_context_rule("model-alpha", 372_000, true),
+                model_context_rule("model-beta", 180_000, true),
+            ]
+        );
         let enabled_config = std::fs::read_to_string(&config_path).expect("enabled config");
         let enabled_document = enabled_config
             .parse::<toml_edit::DocumentMut>()
@@ -3288,15 +3395,15 @@ mod tests {
             &std::fs::read(&generated_path).expect("generated catalog bytes"),
         )
         .expect("generated catalog json");
-        for slug in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        for (slug, expected_context) in [("model-alpha", 372_000), ("model-beta", 180_000)] {
             let model = generated["models"]
                 .as_array()
                 .expect("models")
                 .iter()
                 .find(|model| model["slug"].as_str() == Some(slug))
                 .expect("target model");
-            assert_eq!(model["context_window"], 372000);
-            assert_eq!(model["max_context_window"], 372000);
+            assert_eq!(model["context_window"], expected_context);
+            assert_eq!(model["max_context_window"], expected_context);
         }
 
         let structured_patch: crate::codex_config::CodexConfigPatch =
@@ -3304,7 +3411,7 @@ mod tests {
                 .expect("structured Codex patch");
         let structured =
             crate::codex_config::codex_config_set_with_options(&handle, structured_patch, false)
-                .expect("structured save while 372K is active");
+                .expect("structured save while model context rules are active");
         assert_eq!(structured.personality.as_deref(), Some("friendly"));
         let structured_config = std::fs::read_to_string(&config_path).expect("structured config");
         let structured_document = structured_config
@@ -3318,12 +3425,7 @@ mod tests {
         let replacement_catalog = codex_home.join("replacement-models.json");
         write_test_codex_catalog(
             &replacement_catalog,
-            &[
-                "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "replacement",
-            ],
+            &["model-alpha", "model-beta", "replacement"],
         );
         let mut raw_document = structured_document;
         raw_document["model_catalog_json"] =
@@ -3339,9 +3441,21 @@ mod tests {
             Some(generated_path.to_string_lossy().as_ref())
         );
 
-        let disabled = settings_codex_gpt56_372k_context_set_sync(&handle, false)
-            .expect("disable 372K context");
-        assert!(!disabled.codex_gpt56_372k_context_enabled);
+        let disabled = settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![
+                model_context_rule("model-alpha", 372_000, false),
+                model_context_rule("model-beta", 180_000, false),
+            ],
+        )
+        .expect("disable model context rules");
+        assert_eq!(
+            disabled.codex_model_context_rules,
+            vec![
+                model_context_rule("model-alpha", 372_000, false),
+                model_context_rule("model-beta", 180_000, false),
+            ]
+        );
         let disabled_config = std::fs::read_to_string(&config_path).expect("disabled config");
         let disabled_document = disabled_config
             .parse::<toml_edit::DocumentMut>()
@@ -3354,14 +3468,14 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_372k_toggle_does_not_commit_when_user_catalog_is_incomplete() {
+    fn dedicated_model_context_rules_do_not_commit_when_an_enabled_target_is_missing() {
         let env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        let codex_home = env._home.path().join("codex-372k-incomplete");
+        let codex_home = env._home.path().join("codex-context-rules-incomplete");
         std::fs::create_dir_all(&codex_home).expect("create Codex home");
         let user_catalog = codex_home.join("user-models.json");
-        write_test_codex_catalog(&user_catalog, &["gpt-5.6-sol", "gpt-5.6-terra"]);
+        write_test_codex_catalog(&user_catalog, &["model-alpha"]);
         write_test_codex_config(&codex_home.join("config.toml"), &user_catalog);
         settings::update(&handle, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
@@ -3370,29 +3484,31 @@ mod tests {
         })
         .expect("select test Codex home");
 
-        let error = settings_codex_gpt56_372k_context_set_sync(&handle, true)
-            .expect_err("incomplete user catalog must fail closed");
+        let error = settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![
+                model_context_rule("model-alpha", 372_000, true),
+                model_context_rule("missing-model", 200_000, true),
+            ],
+        )
+        .expect_err("a missing enabled target must fail closed");
 
-        assert_eq!(error.code(), "CODEX_GPT56_372K_MODELS_MISSING");
-        assert!(
-            !settings::read(&handle)
-                .expect("canonical after failed toggle")
-                .codex_gpt56_372k_context_enabled
-        );
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULE_TARGET_MISSING");
+        assert!(settings::read(&handle)
+            .expect("canonical after failed update")
+            .codex_model_context_rules
+            .is_empty());
     }
 
     #[test]
-    fn dedicated_372k_toggle_rolls_back_setting_when_apply_fails_after_commit() {
+    fn dedicated_model_context_rules_roll_back_settings_when_apply_fails_after_commit() {
         let env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        let codex_home = env._home.path().join("codex-372k-apply-failure");
+        let codex_home = env._home.path().join("codex-context-rules-apply-failure");
         std::fs::create_dir_all(&codex_home).expect("create Codex home");
         let user_catalog = codex_home.join("user-models.json");
-        write_test_codex_catalog(
-            &user_catalog,
-            &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-        );
+        write_test_codex_catalog(&user_catalog, &["custom-model"]);
         let config_path = codex_home.join("config.toml");
         write_test_codex_config(&config_path, &user_catalog);
         settings::update(&handle, |latest| {
@@ -3402,16 +3518,18 @@ mod tests {
         })
         .expect("select test Codex home");
 
-        FAIL_NEXT_CODEX_GPT56_372K_CATALOG_APPLY.with(|failure| failure.set(true));
-        let error = settings_codex_gpt56_372k_context_set_sync(&handle, true)
-            .expect_err("injected catalog apply failure must roll back the setting");
+        FAIL_NEXT_CODEX_MODEL_CONTEXT_RULES_CATALOG_APPLY.with(|failure| failure.set(true));
+        let error = settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![model_context_rule("custom-model", 640_000, true)],
+        )
+        .expect_err("injected catalog apply failure must roll back the rules");
 
-        assert_eq!(error.code(), "CODEX_GPT56_372K_CONTEXT_TEST_APPLY_FAILED");
-        assert!(
-            !settings::read(&handle)
-                .expect("canonical after apply failure")
-                .codex_gpt56_372k_context_enabled
-        );
+        assert_eq!(error.code(), "CODEX_MODEL_CONTEXT_RULES_TEST_APPLY_FAILED");
+        assert!(settings::read(&handle)
+            .expect("canonical after apply failure")
+            .codex_model_context_rules
+            .is_empty());
         let restored = std::fs::read_to_string(&config_path)
             .expect("read config after apply failure")
             .parse::<toml_edit::DocumentMut>()
@@ -3423,17 +3541,14 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_372k_toggle_apply_failure_restores_every_file_and_preserves_settings_winner() {
+    fn dedicated_rules_apply_failure_preserves_and_reconciles_newer_rules_winner() {
         let env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        let codex_home = env._home.path().join("codex-372k-transaction-failure");
+        let codex_home = env._home.path().join("codex-context-rules-winner");
         std::fs::create_dir_all(&codex_home).expect("create Codex home");
         let user_catalog = codex_home.join("user-models.json");
-        write_test_codex_catalog(
-            &user_catalog,
-            &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-        );
+        write_test_codex_catalog(&user_catalog, &["model-alpha", "model-beta"]);
         let config_path = codex_home.join("config.toml");
         write_test_codex_config(&config_path, &user_catalog);
         settings::update(&handle, |latest| {
@@ -3443,7 +3558,79 @@ mod tests {
         })
         .expect("select test Codex home");
 
-        settings_codex_gpt56_372k_context_set_sync(&handle, true)
+        let requested_rules = vec![model_context_rule("model-alpha", 300_000, true)];
+        let winner_rules = vec![model_context_rule("model-beta", 500_000, true)];
+        let hook_handle = handle.clone();
+        let hook_winner_rules = winner_rules.clone();
+        set_before_codex_model_context_rules_catalog_apply_hook(Box::new(move || {
+            settings::update(&hook_handle, |latest| {
+                latest.codex_model_context_rules = hook_winner_rules.clone();
+                Ok(())
+            })?;
+            Ok(())
+        }));
+
+        let error = settings_codex_model_context_rules_set_sync(&handle, requested_rules)
+            .expect_err("the stale transaction must fail after preserving the winner");
+
+        assert_eq!(error.code(), "SETTINGS_CONCURRENT_UPDATE");
+        assert_eq!(
+            settings::read(&handle)
+                .expect("canonical rules winner")
+                .codex_model_context_rules,
+            winner_rules
+        );
+        let active_config = std::fs::read_to_string(&config_path)
+            .expect("winner config")
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse winner config");
+        let generated_path = std::path::PathBuf::from(
+            active_config["model_catalog_json"]
+                .as_str()
+                .expect("winner generated catalog binding"),
+        );
+        let generated: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(generated_path).expect("winner generated catalog bytes"),
+        )
+        .expect("parse winner generated catalog");
+        let models = generated["models"].as_array().expect("winner models");
+        let alpha = models
+            .iter()
+            .find(|model| model["slug"].as_str() == Some("model-alpha"))
+            .expect("model-alpha");
+        let beta = models
+            .iter()
+            .find(|model| model["slug"].as_str() == Some("model-beta"))
+            .expect("model-beta");
+        assert_eq!(alpha["context_window"], 272_000);
+        assert_eq!(alpha["max_context_window"], 272_000);
+        assert_eq!(beta["context_window"], 500_000);
+        assert_eq!(beta["max_context_window"], 500_000);
+    }
+
+    #[test]
+    fn dedicated_rules_apply_failure_restores_every_file_and_preserves_unrelated_winner() {
+        let env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let codex_home = env
+            ._home
+            .path()
+            .join("codex-context-rules-transaction-failure");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        let user_catalog = codex_home.join("user-models.json");
+        write_test_codex_catalog(&user_catalog, &["custom-model"]);
+        let config_path = codex_home.join("config.toml");
+        write_test_codex_config(&config_path, &user_catalog);
+        settings::update(&handle, |latest| {
+            latest.codex_home_mode = settings::CodexHomeMode::Custom;
+            latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            Ok(())
+        })
+        .expect("select test Codex home");
+
+        let active_rules = vec![model_context_rule("custom-model", 640_000, true)];
+        settings_codex_model_context_rules_set_sync(&handle, active_rules.clone())
             .expect("seed an owned generated catalog");
         let generated_path = crate::app_paths::app_data_dir(&handle)
             .expect("app data dir")
@@ -3492,10 +3679,10 @@ mod tests {
         .expect("change the catalog source fingerprint");
 
         settings::update(&handle, |latest| {
-            latest.codex_gpt56_372k_context_enabled = false;
+            latest.codex_model_context_rules.clear();
             Ok(())
         })
-        .expect("seed an interrupted disabled intent");
+        .expect("seed an interrupted empty rules intent");
         let previous_settings = settings::read(&handle).expect("settings before toggle");
         let concurrent_log_retention = previous_settings.log_retention_days.saturating_add(1);
         let live_before = std::fs::read(&config_path).expect("live config before toggle");
@@ -3507,11 +3694,12 @@ mod tests {
         let hook_blocker = blocker.clone();
         let hook_handle = handle.clone();
         let blocked_config_path = config_path.clone();
-        set_before_codex_gpt56_372k_catalog_apply_hook(Box::new(move || {
+        let hook_rules = active_rules.clone();
+        set_before_codex_model_context_rules_catalog_apply_hook(Box::new(move || {
             let committed = settings::read(&hook_handle)?;
-            assert!(
-                committed.codex_gpt56_372k_context_enabled,
-                "the fault hook must run after the dedicated bit commits"
+            assert_eq!(
+                committed.codex_model_context_rules, hook_rules,
+                "the fault hook must run after the dedicated rules commit"
             );
             settings::update(&hook_handle, |latest| {
                 latest.log_retention_days = concurrent_log_retention;
@@ -3520,7 +3708,7 @@ mod tests {
             *hook_blocker.borrow_mut() = Some(
                 CatalogConfigWriteBlocker::new(&blocked_config_path).map_err(|error| {
                     crate::shared::error::AppError::new(
-                        "CODEX_GPT56_372K_CONTEXT_TEST_BLOCK_FAILED",
+                        "CODEX_MODEL_CONTEXT_RULES_TEST_BLOCK_FAILED",
                         format!("failed to block the final config write: {error}"),
                     )
                 })?,
@@ -3528,13 +3716,13 @@ mod tests {
             Ok(())
         }));
 
-        let result = settings_codex_gpt56_372k_context_set_sync(&handle, true);
+        let result = settings_codex_model_context_rules_set_sync(&handle, active_rules);
         drop(blocker.borrow_mut().take());
         let error = result.expect_err("the real managed catalog apply must fail");
 
         assert_eq!(error.code(), "CODEX_MANAGED_MODEL_CONFIG_WRITE_FAILED");
         let canonical = settings::read(&handle).expect("canonical compensated settings");
-        assert!(!canonical.codex_gpt56_372k_context_enabled);
+        assert!(canonical.codex_model_context_rules.is_empty());
         assert_eq!(canonical.log_retention_days, concurrent_log_retention);
         assert_eq!(std::fs::read(&config_path).unwrap(), live_before);
         assert_eq!(std::fs::read(&generated_path).unwrap(), generated_before);
@@ -3542,17 +3730,17 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_372k_toggle_rolls_back_applied_catalog_when_confirmation_fails() {
+    fn dedicated_rules_roll_back_applied_catalog_when_confirmation_fails() {
         let env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        let codex_home = env._home.path().join("codex-372k-confirmation-failure");
+        let codex_home = env
+            ._home
+            .path()
+            .join("codex-context-rules-confirmation-failure");
         std::fs::create_dir_all(&codex_home).expect("create Codex home");
         let user_catalog = codex_home.join("user-models.json");
-        write_test_codex_catalog(
-            &user_catalog,
-            &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-        );
+        write_test_codex_catalog(&user_catalog, &["custom-model"]);
         let config_path = codex_home.join("config.toml");
         write_test_codex_config(&config_path, &user_catalog);
         settings::update(&handle, |latest| {
@@ -3567,19 +3755,21 @@ mod tests {
             .join("codex")
             .join("managed-model-catalog.json");
 
-        FAIL_NEXT_CODEX_GPT56_372K_CONFIRMATION.with(|failure| failure.set(true));
-        let error = settings_codex_gpt56_372k_context_set_sync(&handle, true)
-            .expect_err("confirmation failure must compensate the applied catalog");
+        FAIL_NEXT_CODEX_MODEL_CONTEXT_RULES_CONFIRMATION.with(|failure| failure.set(true));
+        let error = settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![model_context_rule("custom-model", 640_000, true)],
+        )
+        .expect_err("confirmation failure must compensate the applied catalog");
 
         assert_eq!(
             error.code(),
-            "CODEX_GPT56_372K_CONTEXT_TEST_CONFIRMATION_FAILED"
+            "CODEX_MODEL_CONTEXT_RULES_TEST_CONFIRMATION_FAILED"
         );
-        assert!(
-            !settings::read(&handle)
-                .expect("canonical after confirmation failure")
-                .codex_gpt56_372k_context_enabled
-        );
+        assert!(settings::read(&handle)
+            .expect("canonical after confirmation failure")
+            .codex_model_context_rules
+            .is_empty());
         let restored = std::fs::read_to_string(&config_path)
             .expect("read config after confirmation failure")
             .parse::<toml_edit::DocumentMut>()

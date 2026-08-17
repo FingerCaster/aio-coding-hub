@@ -14,6 +14,8 @@ import {
   type CodexConfigTomlValidationResult as GeneratedCodexConfigTomlValidationResult,
   type CodexModelCatalogState as GeneratedCodexModelCatalogState,
   type CodexModelCapability as GeneratedCodexModelCapability,
+  type CodexModelContextCandidate as GeneratedCodexModelContextCandidate,
+  type CodexModelContextCandidatesState as GeneratedCodexModelContextCandidatesState,
   type CodexReasoningEffortOption as GeneratedCodexReasoningEffortOption,
   type CodexProviderSyncResult as GeneratedCodexProviderSyncResult,
   type GeminiConfigPatch as GeneratedGeminiConfigPatch,
@@ -23,7 +25,12 @@ import {
   type GrokProxyPreferences as GeneratedGrokProxyPreferences,
   type SimpleCliInfo as GeneratedSimpleCliInfo,
 } from "../../generated/bindings";
-import { invokeGeneratedIpc, type GeneratedCommandResult } from "../generatedIpc";
+import {
+  invokeGeneratedIpc,
+  mapGeneratedCommandResponse,
+  type GeneratedCommandResult,
+} from "../generatedIpc";
+import { normalizeCodexModelContextModelId } from "../settings/codexModelContextRules";
 
 export type ClaudeCliInfo = GeneratedClaudeCliInfo;
 export type SimpleCliInfo = GeneratedSimpleCliInfo;
@@ -52,6 +59,145 @@ export type ClaudeEnvSetInput = {
   disableErrorReporting: boolean;
 };
 export type CodexProviderSyncResult = GeneratedCodexProviderSyncResult;
+export type CodexModelContextCandidate = GeneratedCodexModelContextCandidate;
+export type CodexModelContextCandidatesState = GeneratedCodexModelContextCandidatesState;
+
+const CODEX_MODEL_CONTEXT_CANDIDATE_MAX_MODELS = 1_000;
+const CODEX_MODEL_CATALOG_STATUS_VALUES = new Set(["ready", "degraded", "unavailable"]);
+const CODEX_MODEL_CATALOG_ISSUE_VALUES = new Set([
+  "cli_not_found",
+  "app_server_unavailable",
+  "timeout",
+  "protocol_error",
+  "empty_catalog",
+]);
+
+function invalidCandidateResponse(message: string): never {
+  throw new Error(`IPC_INVALID_RESULT: ${message}`);
+}
+
+function requireCandidateRecord(value: unknown, label: string): Record<string, unknown> {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    invalidCandidateResponse(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function candidateHasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function requireCandidateOptionalString(value: unknown, label: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length === 0) {
+    invalidCandidateResponse(`${label} must be a non-empty string or null`);
+  }
+  return value;
+}
+
+function requireCandidateContext(value: unknown, label: string): number | null {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    invalidCandidateResponse(`${label} must be a non-negative safe integer or null`);
+  }
+  return value as number;
+}
+
+function decodeCodexModelContextCandidate(
+  value: unknown,
+  index: number
+): CodexModelContextCandidate {
+  const candidate = requireCandidateRecord(value, `models[${index}]`);
+  let modelId: string;
+  try {
+    modelId = normalizeCodexModelContextModelId(candidate.model_id, index);
+  } catch {
+    invalidCandidateResponse(`models[${index}].model_id is invalid`);
+  }
+  if (candidate.model_id !== modelId) {
+    invalidCandidateResponse(`models[${index}].model_id is not canonical`);
+  }
+  if (typeof candidate.display_name !== "string" || candidate.display_name.trim().length === 0) {
+    invalidCandidateResponse(`models[${index}].display_name must be a non-empty string`);
+  }
+  if (typeof candidate.hidden !== "boolean") {
+    invalidCandidateResponse(`models[${index}].hidden must be a boolean`);
+  }
+  if (
+    !candidateHasOwn(candidate, "base_context_window") ||
+    !candidateHasOwn(candidate, "base_max_context_window")
+  ) {
+    invalidCandidateResponse(`models[${index}] is missing context fields`);
+  }
+
+  return {
+    model_id: modelId,
+    display_name: candidate.display_name,
+    hidden: candidate.hidden,
+    base_context_window: requireCandidateContext(
+      candidate.base_context_window,
+      `models[${index}].base_context_window`
+    ),
+    base_max_context_window: requireCandidateContext(
+      candidate.base_max_context_window,
+      `models[${index}].base_max_context_window`
+    ),
+  };
+}
+
+export function decodeCodexModelContextCandidatesState(
+  value: unknown
+): CodexModelContextCandidatesState {
+  const state = requireCandidateRecord(value, "model context candidates");
+  if (typeof state.status !== "string" || !CODEX_MODEL_CATALOG_STATUS_VALUES.has(state.status)) {
+    invalidCandidateResponse("model context candidates status is invalid");
+  }
+  if (!candidateHasOwn(state, "issue")) {
+    invalidCandidateResponse("model context candidates issue is required");
+  }
+  if (
+    state.issue !== null &&
+    (typeof state.issue !== "string" || !CODEX_MODEL_CATALOG_ISSUE_VALUES.has(state.issue))
+  ) {
+    invalidCandidateResponse("model context candidates issue is invalid");
+  }
+
+  const snapshot = requireCandidateRecord(state.snapshot, "model context candidates snapshot");
+  if (typeof snapshot.config_path !== "string" || snapshot.config_path.length === 0) {
+    invalidCandidateResponse("model context candidates snapshot.config_path is required");
+  }
+  if (!candidateHasOwn(snapshot, "executable_path") || !candidateHasOwn(snapshot, "cli_version")) {
+    invalidCandidateResponse("model context candidates snapshot is incomplete");
+  }
+  if (!Array.isArray(state.models)) {
+    invalidCandidateResponse("model context candidates models must be an array");
+  }
+  if (state.models.length > CODEX_MODEL_CONTEXT_CANDIDATE_MAX_MODELS) {
+    invalidCandidateResponse("model context candidates contains too many models");
+  }
+
+  const models = state.models.map(decodeCodexModelContextCandidate);
+  if (new Set(models.map((model) => model.model_id)).size !== models.length) {
+    invalidCandidateResponse("model context candidates contains duplicate model IDs");
+  }
+
+  return {
+    status: state.status as CodexModelContextCandidatesState["status"],
+    issue: state.issue as CodexModelContextCandidatesState["issue"],
+    snapshot: {
+      config_path: snapshot.config_path,
+      executable_path: requireCandidateOptionalString(
+        snapshot.executable_path,
+        "model context candidates snapshot.executable_path"
+      ),
+      cli_version: requireCandidateOptionalString(
+        snapshot.cli_version,
+        "model context candidates snapshot.cli_version"
+      ),
+    },
+    models,
+  };
+}
 
 const DEFAULT_CODEX_CONFIG_PATCH = {
   model: null,
@@ -180,6 +326,18 @@ export async function cliManagerCodexModelCatalogGet() {
       commands.cliManagerCodexModelCatalogGet() as Promise<
         GeneratedCommandResult<CodexModelCatalogState>
       >,
+  });
+}
+
+export async function cliManagerCodexModelContextCandidatesGet() {
+  return invokeGeneratedIpc<CodexModelContextCandidatesState>({
+    title: "读取 Codex 模型上下文候选失败",
+    cmd: "cli_manager_codex_model_context_candidates_get",
+    invoke: async () =>
+      mapGeneratedCommandResponse(
+        await commands.cliManagerCodexModelContextCandidatesGet(),
+        decodeCodexModelContextCandidatesState
+      ),
   });
 }
 

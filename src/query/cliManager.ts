@@ -12,6 +12,7 @@ import {
   cliManagerCodexProviderSync,
   cliManagerCodexInfoGet,
   cliManagerCodexModelCatalogGet,
+  cliManagerCodexModelContextCandidatesGet,
   cliManagerGeminiConfigGet,
   cliManagerGeminiConfigSet,
   cliManagerGeminiInfoGet,
@@ -27,15 +28,15 @@ import {
   type CodexConfigSetOptions,
   type CodexConfigState,
   type CodexModelCatalogState,
+  type CodexModelContextCandidatesState,
   type GeminiConfigPatch,
   type GeminiConfigState,
   type GrokConfigState,
   type GrokProxyPreferences,
   type SimpleCliInfo,
 } from "../services/cli/cliManager";
-import { cliManagerKeys, cliProxyKeys } from "./keys";
+import { CODEX_CONFIG_MUTATION_SCOPE, cliManagerKeys, cliProxyKeys } from "./keys";
 
-const CODEX_CONFIG_MUTATION_SCOPE = "codex-config";
 const CODEX_MODEL_CATALOG_STALE_TIME = 5 * 60 * 1000;
 
 export type CodexModelCatalogQuerySnapshot = {
@@ -48,10 +49,25 @@ function hasCodexModelCatalogSnapshot(snapshot?: CodexModelCatalogQuerySnapshot)
   return Boolean(snapshot?.configPath && snapshot?.executablePath);
 }
 
+function hasCodexModelContextCandidatesSnapshot(snapshot?: CodexModelCatalogQuerySnapshot) {
+  return Boolean(snapshot?.configPath);
+}
+
 function codexModelCatalogQueryOptions(snapshot?: CodexModelCatalogQuerySnapshot) {
   return {
     queryKey: cliManagerKeys.codexModelCatalog(snapshot),
     queryFn: () => cliManagerCodexModelCatalogGet(),
+    staleTime: CODEX_MODEL_CATALOG_STALE_TIME,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  };
+}
+
+function codexModelContextCandidatesQueryOptions(snapshot?: CodexModelCatalogQuerySnapshot) {
+  return {
+    queryKey: cliManagerKeys.codexModelContextCandidates(snapshot),
+    queryFn: () => cliManagerCodexModelContextCandidatesGet(),
     staleTime: CODEX_MODEL_CATALOG_STALE_TIME,
     retry: false,
     refetchOnWindowFocus: false,
@@ -105,6 +121,34 @@ export function useCliManagerCodexModelCatalogRefresh() {
     if (!hasCodexModelCatalogSnapshot(snapshot)) return;
 
     const queryOptions = codexModelCatalogQueryOptions(snapshot);
+    await queryClient.invalidateQueries({
+      queryKey: queryOptions.queryKey,
+      exact: true,
+      refetchType: "none",
+    });
+    await queryClient.prefetchQuery(queryOptions);
+  };
+}
+
+export function useCliManagerCodexModelContextCandidatesQuery(options?: {
+  enabled?: boolean;
+  snapshot?: CodexModelCatalogQuerySnapshot;
+}) {
+  const snapshot = options?.snapshot;
+  const hasSnapshot = hasCodexModelContextCandidatesSnapshot(snapshot);
+  const enabled = (options?.enabled ?? true) && hasSnapshot;
+  return useQuery<CodexModelContextCandidatesState | null>({
+    ...codexModelContextCandidatesQueryOptions(snapshot),
+    enabled: (query) => enabled && query.state.status !== "error",
+  });
+}
+
+export function useCliManagerCodexModelContextCandidatesRefresh() {
+  const queryClient = useQueryClient();
+  return async (snapshot: CodexModelCatalogQuerySnapshot) => {
+    if (!hasCodexModelContextCandidatesSnapshot(snapshot)) return;
+
+    const queryOptions = codexModelContextCandidatesQueryOptions(snapshot);
     await queryClient.invalidateQueries({
       queryKey: queryOptions.queryKey,
       exact: true,
@@ -202,7 +246,7 @@ export function useCliManagerCodexConfigSetMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    scope: { id: CODEX_CONFIG_MUTATION_SCOPE },
+    scope: CODEX_CONFIG_MUTATION_SCOPE,
     mutationFn: ({ patch, syncHistory }: { patch: CodexConfigPatch } & CodexConfigSetOptions) =>
       cliManagerCodexConfigSet(patch, { syncHistory }),
     onSuccess: (next) => {
@@ -221,7 +265,7 @@ export function useCliManagerCodexConfigTomlSetMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    scope: { id: CODEX_CONFIG_MUTATION_SCOPE },
+    scope: CODEX_CONFIG_MUTATION_SCOPE,
     mutationFn: (input: { toml: string }) => cliManagerCodexConfigTomlSet(input.toml),
     onSuccess: (next) => {
       if (!next) return;

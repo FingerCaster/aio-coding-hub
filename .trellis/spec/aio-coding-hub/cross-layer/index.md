@@ -10,7 +10,8 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Codex managed model route contract](./codex-managed-model-route-contract.md):
   stable provider/model identity, provider-scoped discovery, hash-owned profile
   files and picker catalogs, explicit reasoning/context capabilities, exact
-  readable/legacy alias routing, and wire-vs-observed diagnostics.
+  readable/legacy alias routing, device-local exact-model context rules, and
+  wire-vs-observed diagnostics.
 - [Gateway failover route contract](./gateway-failover-route-contract.md):
   common provider-gate ownership, Ready-provider limits, persisted attempts,
   route hops, and UI count semantics.

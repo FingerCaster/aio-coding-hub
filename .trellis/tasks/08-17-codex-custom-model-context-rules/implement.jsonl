@@ -1,0 +1,14 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "跨 Rust settings/catalog/IPC/query/React 的完整数据流与边界检查"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "复用现有 managed catalog、settings owner 与编辑器模式，避免第二套实现"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "aio-coding-hub 跨层开发前置清单与全量质量门禁"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md", "reason": "Codex 完整目录、aio Profile、owner hash、372K 前身与生命周期权威合同"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md", "reason": "规则专属 writer、普通 settings 非所有权、CAS winner 与严格回读合同"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "structured/raw config、proxy baseline、binding 和安全保存合同"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md", "reason": "设备本地规则导入排除、锁序和跨目标补偿合同"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md", "reason": "启动 fail-closed、可重试恢复和前端状态边界"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/ci-change-scope-contract.md", "reason": "跨层改动的 CI 分类与 final gate 合同"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md", "reason": "Beta high-water、不可变 source、promotion 与 updater pointer 合同"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md", "reason": "origin 发布、资产/签名/source 核验和失败边界"}
+{"file": ".trellis/tasks/08-17-codex-custom-model-context-rules/research/backend-rules-contract.md", "reason": "schema 65、raw 迁移、规则事务、metadata v3 与候选 API 研究"}
+{"file": ".trellis/tasks/08-17-codex-custom-model-context-rules/research/frontend-rule-editor.md", "reason": "整集合草稿 Dialog、canonical 回读、candidate hidden 与测试矩阵"}
+{"file": ".trellis/tasks/08-17-codex-custom-model-context-rules/research/lifecycle-and-recovery.md", "reason": "CLI 升级、startup/home/proxy/import 状态机与恢复矩阵"}

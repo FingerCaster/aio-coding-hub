@@ -5,10 +5,12 @@ import { TAURI_ENDPOINT } from "../tauriEndpoint";
 import type { CliKey, ClaudeModels, ProviderSummary } from "../../services/providers/providers";
 import { CLI_KEYS, isCliKey } from "../../constants/clis";
 import { MODEL_PRICE_ALIASES_VERSION } from "../../constants/modelPriceAliases";
+import { normalizeCodexModelContextRules } from "../../services/settings/codexModelContextRules";
 import {
   buildCliProxySetEnabledResult,
   getAppAboutState,
   getCliProxyStatusAllState,
+  getCodexModelContextCandidatesState,
   getDbDiskUsageState,
   getEnvConflictsState,
   getGatewayStatusState,
@@ -127,11 +129,17 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/settings_codex_session_id_completion_set`, () =>
     HttpResponse.json(getSettingsState())
   ),
-  http.post(`${TAURI_ENDPOINT}/settings_codex_gpt56_372k_context_set`, async ({ request }) => {
-    const payload = await withJson<{ enabled?: boolean }>(request);
-    return HttpResponse.json(
-      mergeSettingsState({ codex_gpt56_372k_context_enabled: payload.enabled === true })
-    );
+  http.post(`${TAURI_ENDPOINT}/settings_codex_model_context_rules_set`, async ({ request }) => {
+    const payload = await withJson<{ rules?: unknown }>(request);
+    try {
+      const rules = normalizeCodexModelContextRules(payload.rules);
+      return HttpResponse.json(mergeSettingsState({ codex_model_context_rules: rules }));
+    } catch (error) {
+      return HttpResponse.json(
+        { error: error instanceof Error ? error.message : "invalid Codex model context rules" },
+        { status: 400 }
+      );
+    }
   }),
 
   // ---- Gateway ----
@@ -558,6 +566,9 @@ export const handlers = [
   // ---- CLI Manager ----
   http.post(`${TAURI_ENDPOINT}/cli_manager_claude_info_get`, () => HttpResponse.json(null)),
   http.post(`${TAURI_ENDPOINT}/cli_manager_codex_info_get`, () => HttpResponse.json(null)),
+  http.post(`${TAURI_ENDPOINT}/cli_manager_codex_model_context_candidates_get`, () =>
+    HttpResponse.json(getCodexModelContextCandidatesState())
+  ),
   http.post(`${TAURI_ENDPOINT}/cli_manager_codex_config_get`, () => HttpResponse.json(null)),
   http.post(`${TAURI_ENDPOINT}/cli_manager_codex_config_set`, () => HttpResponse.json(null)),
   http.post(`${TAURI_ENDPOINT}/cli_manager_codex_config_toml_get`, () => HttpResponse.json(null)),

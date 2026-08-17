@@ -7,7 +7,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 64,
+      schema_version: 65,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -22,7 +22,7 @@ describe("MSW defaults", () => {
       codex_home_mode: "user_home_default",
       codex_home_override: "",
       codex_oauth_compatible_proxy_mode: false,
-      codex_gpt56_372k_context_enabled: false,
+      codex_model_context_rules: [],
       codex_provider_test_model: "gpt-5.4-mini",
       codex_infinite_retry_test_enabled: false,
       codex_infinite_retry_test_interval_ms: 1000,

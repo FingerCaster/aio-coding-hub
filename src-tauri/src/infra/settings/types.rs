@@ -34,6 +34,14 @@ fn default_codex_infinite_retry_test_interval_ms() -> u32 {
     DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(deny_unknown_fields)]
+pub struct CodexModelContextRule {
+    pub model_id: String,
+    pub context_window: i64,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayListenMode {
@@ -577,7 +585,8 @@ pub struct AppSettings {
     // Codex CLI proxy OAuth compatible mode. When enabled, proxy takeover
     // manages config.toml only and leaves auth.json untouched.
     pub codex_oauth_compatible_proxy_mode: bool,
-    pub codex_gpt56_372k_context_enabled: bool,
+    #[serde(default)]
+    pub codex_model_context_rules: Vec<CodexModelContextRule>,
     #[serde(default = "default_codex_provider_test_model")]
     pub codex_provider_test_model: String,
     #[serde(default)]
@@ -692,7 +701,7 @@ impl Default for AppSettings {
             codex_home_mode: CodexHomeMode::default(),
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
-            codex_gpt56_372k_context_enabled: DEFAULT_CODEX_GPT56_372K_CONTEXT_ENABLED,
+            codex_model_context_rules: Vec::new(),
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
             codex_infinite_retry_test_enabled: DEFAULT_CODEX_INFINITE_RETRY_TEST_ENABLED,
             codex_infinite_retry_test_interval_ms: DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,

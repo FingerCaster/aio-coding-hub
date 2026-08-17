@@ -2,6 +2,7 @@
 
 import type { AppAboutInfo } from "../../services/app/appAbout";
 import type { CliProxyResult, CliProxyStatus } from "../../services/cli/cliProxy";
+import type { CodexModelContextCandidatesState } from "../../services/cli/cliManager";
 import type { DbDiskUsage } from "../../services/app/dataManagement";
 import type { EnvConflict } from "../../services/cli/envConflicts";
 import type { GatewayStatus } from "../../services/gateway/gateway";
@@ -26,7 +27,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 64,
+  schema_version: 65,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -41,7 +42,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   codex_home_mode: "user_home_default",
   codex_home_override: "",
   codex_oauth_compatible_proxy_mode: false,
-  codex_gpt56_372k_context_enabled: false,
+  codex_model_context_rules: [],
   codex_provider_test_model: "gpt-5.4-mini",
   codex_infinite_retry_test_enabled: false,
   codex_infinite_retry_test_interval_ms: 1000,
@@ -104,6 +105,25 @@ const DEFAULT_SETTINGS: AppSettings = {
   upstream_proxy_password_configured: false,
 };
 
+const DEFAULT_CODEX_MODEL_CONTEXT_CANDIDATES_STATE: CodexModelContextCandidatesState = {
+  status: "ready",
+  issue: null,
+  snapshot: {
+    config_path: "/tmp/.codex/config.toml",
+    executable_path: "/usr/bin/codex",
+    cli_version: "0.0.0",
+  },
+  models: [
+    {
+      model_id: "gpt-5.6-sol",
+      display_name: "GPT-5.6 Sol",
+      hidden: false,
+      base_context_window: 272_000,
+      base_max_context_window: 272_000,
+    },
+  ],
+};
+
 const DEFAULT_GATEWAY_STATUS: GatewayStatus = {
   running: false,
   port: null,
@@ -151,6 +171,9 @@ let traceCounter = 0;
 let cliProxyStatusAllState: CliProxyStatus[] = structuredClone(DEFAULT_CLI_PROXY_STATUS);
 let envConflictsState: EnvConflict[] = [];
 let settingsState: AppSettings = clone(DEFAULT_SETTINGS);
+let codexModelContextCandidatesState: CodexModelContextCandidatesState = clone(
+  DEFAULT_CODEX_MODEL_CONTEXT_CANDIDATES_STATE
+);
 let gatewayStatusState: GatewayStatus = clone(DEFAULT_GATEWAY_STATUS);
 let providersState: Map<CliKey, ProviderSummary[]> = new Map();
 let usageSummaryState: UsageSummary = clone(DEFAULT_USAGE_SUMMARY);
@@ -175,6 +198,7 @@ export function resetMswState() {
   cliProxyStatusAllState = clone(DEFAULT_CLI_PROXY_STATUS);
   envConflictsState = [];
   settingsState = clone(DEFAULT_SETTINGS);
+  codexModelContextCandidatesState = clone(DEFAULT_CODEX_MODEL_CONTEXT_CANDIDATES_STATE);
   gatewayStatusState = clone(DEFAULT_GATEWAY_STATUS);
   providersState = new Map();
   usageSummaryState = clone(DEFAULT_USAGE_SUMMARY);
@@ -207,6 +231,14 @@ export function getSettingsState(): AppSettings {
 export function mergeSettingsState(partial: Partial<AppSettings>): AppSettings {
   settingsState = { ...settingsState, ...partial };
   return clone(settingsState);
+}
+
+export function getCodexModelContextCandidatesState(): CodexModelContextCandidatesState {
+  return clone(codexModelContextCandidatesState);
+}
+
+export function setCodexModelContextCandidatesState(next: CodexModelContextCandidatesState) {
+  codexModelContextCandidatesState = clone(next);
 }
 
 // -- Gateway --

@@ -17,6 +17,7 @@ import {
   type CodexConfigState,
   type CodexModelCapability,
   type CodexModelCatalogState,
+  type CodexModelContextCandidatesState,
   type CodexConfigTomlState,
   type CodexConfigTomlValidationResult,
   type SimpleCliInfo,
@@ -27,6 +28,7 @@ import type {
   CodexHomeMode,
   UpstreamRetryPolicy,
 } from "../../../services/settings/settings";
+import type { CodexModelContextRule } from "../../../services/settings/codexModelContextRules";
 import { activeRequestLogsSnapshot } from "../../../services/gateway/activeRequests";
 import {
   cloneUpstreamRetryPolicy,
@@ -63,6 +65,10 @@ import {
   type CodexApprovalReviewerPresentation,
 } from "./codexApprovalReviewer";
 import { useCodexModelMigration } from "./useCodexModelMigration";
+import {
+  CodexModelContextRulesSection,
+  type CodexModelContextRulesSaveResult,
+} from "./CodexModelContextRulesSection";
 import {
   AlertTriangle,
   ArrowRight,
@@ -326,10 +332,13 @@ export type CliManagerCodexTabProps = {
   codexProviderSyncing?: boolean;
   codexModelCatalogLoading?: boolean;
   codexModelCatalogError?: boolean;
+  codexModelContextCandidatesLoading?: boolean;
+  codexModelContextCandidatesError?: boolean;
   codexInfo: SimpleCliInfo | null;
   codexConfig: CodexConfigState | null;
   codexConfigToml: CodexConfigTomlState | null;
   codexModelCatalog?: CodexModelCatalogState | null;
+  codexModelContextCandidates?: CodexModelContextCandidatesState | null;
   appSettings?: AppSettings | null;
   commonSettingsSaving?: boolean;
   upstreamRetryPolicy?: UpstreamRetryPolicy;
@@ -337,7 +346,10 @@ export type CliManagerCodexTabProps = {
   streamInternalErrorGuardMs?: number;
   setStreamInternalErrorGuardMs?: (value: number) => void;
   codexHomeSettingsSaving?: boolean;
-  codexGpt56372kContextSaving?: boolean;
+  codexModelContextRulesSaving?: boolean;
+  codexModelContextRulesReadOnly?: boolean;
+  codexModelContextRulesReadErrorMessage?: string | null;
+  codexModelContextRulesAutoOpenRequestKey?: string | null;
   refreshCodex: () => Promise<void> | void;
   openCodexConfigDir: () => Promise<void> | void;
   persistCodexConfig: (
@@ -354,7 +366,11 @@ export type CliManagerCodexTabProps = {
     codexHomeOverride: string
   ) => Promise<boolean> | boolean;
   persistCodexOauthCompatibleProxyMode?: (enabled: boolean) => Promise<boolean> | boolean;
-  persistCodexGpt56372kContext?: (enabled: boolean) => Promise<boolean> | boolean;
+  persistCodexModelContextRules?: (
+    rules: CodexModelContextRule[]
+  ) => Promise<CodexModelContextRulesSaveResult>;
+  retryCodexModelContextCandidates?: () => Promise<unknown> | unknown;
+  retrySettings?: () => Promise<unknown> | unknown;
   pickCodexHomeDirectory?: (initialPath?: string) => Promise<string | null> | string | null;
 };
 
@@ -626,7 +642,7 @@ function CodexConfigLocationSection({
   configLocationError,
   selectingCodexHomeDir,
   configLocationControlsDisabled,
-  codexGpt56372kContextEnabled,
+  codexModelContextRulesActive,
   activeConfigModeBadgeText,
   activeConfigDirPrimaryText,
   activeConfigDirSummaryText,
@@ -650,7 +666,7 @@ function CodexConfigLocationSection({
   configLocationError: string | null;
   selectingCodexHomeDir: boolean;
   configLocationControlsDisabled: boolean;
-  codexGpt56372kContextEnabled: boolean;
+  codexModelContextRulesActive: boolean;
   activeConfigModeBadgeText: string;
   activeConfigDirPrimaryText: string;
   activeConfigDirSummaryText: string;
@@ -680,9 +696,9 @@ function CodexConfigLocationSection({
               仅影响 Windows 本机上的 Codex 用户级 <span className="font-mono">.codex</span>{" "}
               目录，不改写 WSL 内各 distro 的目标路径。
             </div>
-            {codexGpt56372kContextEnabled ? (
+            {codexModelContextRulesActive ? (
               <div className="mt-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
-                GPT-5.6 372K 上下文已开启；请先关闭该开关，再切换 Codex 目录。
+                存在已启用的模型上下文规则；请先停用这些规则，再切换 Codex 目录。
               </div>
             ) : null}
           </div>
@@ -900,45 +916,6 @@ function CodexOauthProxySection({
             checked={appSettings.codex_oauth_compatible_proxy_mode}
             onCheckedChange={(checked) => void persistCodexOauthCompatibleProxyMode?.(checked)}
             disabled={proxyModeControlsDisabled}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CodexGpt56372kContextSection({
-  enabled,
-  disabled,
-  saving,
-  persistCodexGpt56372kContext,
-}: {
-  enabled: boolean;
-  disabled: boolean;
-  saving: boolean;
-  persistCodexGpt56372kContext?: (enabled: boolean) => Promise<boolean> | boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-foreground">GPT-5.6 372K 上下文</div>
-          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            将 Sol、Terra 与 Luna 的名义上下文窗口设为 372,000 tokens；仅新启动的 Codex 会话生效。
-          </div>
-        </div>
-        <div className="flex h-6 shrink-0 items-center gap-2">
-          {saving ? (
-            <RefreshCw
-              aria-label="正在更新 Codex GPT-5.6 372K 上下文"
-              className="h-3.5 w-3.5 animate-spin text-muted-foreground"
-            />
-          ) : null}
-          <Switch
-            aria-label="切换 Codex GPT-5.6 372K 上下文"
-            checked={enabled}
-            onCheckedChange={(checked) => void persistCodexGpt56372kContext?.(checked)}
-            disabled={disabled}
           />
         </div>
       </div>
@@ -1957,7 +1934,8 @@ function useCodexTabController({
   streamInternalErrorGuardMs,
   setStreamInternalErrorGuardMs,
   codexHomeSettingsSaving = false,
-  codexGpt56372kContextSaving = false,
+  codexModelContextRulesSaving = false,
+  codexModelContextRulesReadOnly = false,
   refreshCodex,
   persistCodexConfig,
   persistCodexConfigToml,
@@ -1965,7 +1943,7 @@ function useCodexTabController({
   persistCommonSettings,
   persistCodexHomeSettings,
   persistCodexOauthCompatibleProxyMode,
-  persistCodexGpt56372kContext,
+  persistCodexModelContextRules,
   pickCodexHomeDirectory,
 }: CliManagerCodexTabProps) {
   const customHomeInputId = useId();
@@ -2120,23 +2098,25 @@ function useCodexTabController({
   const tomlBusy = codexConfigSaving || codexConfigTomlLoading || codexConfigTomlSaving;
   const providerSyncControlsDisabled =
     codexConfigSaving || codexConfigTomlSaving || codexProviderSyncing || !syncCodexProvider;
-  const codexGpt56372kContextEnabled = appSettings?.codex_gpt56_372k_context_enabled ?? false;
+  const codexModelContextRulesActive =
+    appSettings?.codex_model_context_rules.some((rule) => rule.enabled) ?? false;
   const configLocationBusy =
-    saving || codexConfigTomlSaving || codexHomeSettingsSaving || codexGpt56372kContextSaving;
+    saving || codexConfigTomlSaving || codexHomeSettingsSaving || codexModelContextRulesSaving;
   const configLocationControlsDisabled =
-    !appSettings || configLocationBusy || selectingCodexHomeDir || codexGpt56372kContextEnabled;
+    !appSettings || configLocationBusy || selectingCodexHomeDir || codexModelContextRulesActive;
   const commonSettingsControlsDisabled =
-    codexHomeSettingsSaving || codexGpt56372kContextSaving || !appSettings;
+    codexHomeSettingsSaving || codexModelContextRulesSaving || !appSettings;
   const providerTestModelControlsDisabled =
     commonSettingsSaving || !appSettings || !persistCommonSettings;
   const proxyModeControlsDisabled =
     commonSettingsControlsDisabled || commonSettingsSaving || !persistCodexOauthCompatibleProxyMode;
-  const codexGpt56372kContextControlsDisabled =
+  const codexModelContextRulesControlsDisabled =
     commonSettingsControlsDisabled ||
     commonSettingsSaving ||
     codexConfigSaving ||
     codexConfigTomlSaving ||
-    !persistCodexGpt56372kContext;
+    codexModelContextRulesReadOnly ||
+    !persistCodexModelContextRules;
   const streamInternalErrorControlsDisabled =
     commonSettingsSaving ||
     codexHomeSettingsSaving ||
@@ -2463,7 +2443,7 @@ function useCodexTabController({
     providerTestModelControlsDisabled,
     streamInternalErrorControlsDisabled,
     configLocationControlsDisabled,
-    codexGpt56372kContextControlsDisabled,
+    codexModelContextRulesControlsDisabled,
     proxyModeControlsDisabled,
     proxyModeSaving: commonSettingsSaving,
     effectiveSandboxMode,
@@ -2575,14 +2555,20 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
         />
       ) : null}
 
-      {appSettings ? (
-        <CodexGpt56372kContextSection
-          enabled={appSettings.codex_gpt56_372k_context_enabled}
-          disabled={controller.codexGpt56372kContextControlsDisabled}
-          saving={props.codexGpt56372kContextSaving ?? false}
-          persistCodexGpt56372kContext={props.persistCodexGpt56372kContext}
-        />
-      ) : null}
+      <CodexModelContextRulesSection
+        rules={appSettings?.codex_model_context_rules ?? null}
+        candidates={props.codexModelContextCandidates ?? null}
+        candidatesLoading={props.codexModelContextCandidatesLoading ?? false}
+        candidatesError={props.codexModelContextCandidatesError ?? false}
+        settingsReadOnly={props.codexModelContextRulesReadOnly ?? false}
+        settingsReadErrorMessage={props.codexModelContextRulesReadErrorMessage ?? null}
+        controlsDisabled={controller.codexModelContextRulesControlsDisabled}
+        saving={props.codexModelContextRulesSaving ?? false}
+        autoOpenRequestKey={props.codexModelContextRulesAutoOpenRequestKey ?? null}
+        retrySettings={props.retrySettings ?? (() => undefined)}
+        retryCandidates={props.retryCodexModelContextCandidates ?? (() => undefined)}
+        persistRules={props.persistCodexModelContextRules}
+      />
 
       {codexConfig ? (
         <div className="space-y-4">
@@ -2594,7 +2580,9 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
             configLocationError={controller.configLocationError}
             selectingCodexHomeDir={controller.selectingCodexHomeDir}
             configLocationControlsDisabled={controller.configLocationControlsDisabled}
-            codexGpt56372kContextEnabled={appSettings?.codex_gpt56_372k_context_enabled ?? false}
+            codexModelContextRulesActive={
+              appSettings?.codex_model_context_rules.some((rule) => rule.enabled) ?? false
+            }
             activeConfigModeBadgeText={controller.activeConfigModeBadgeText}
             activeConfigDirPrimaryText={controller.activeConfigDirPrimaryText}
             activeConfigDirSummaryText={controller.activeConfigDirSummaryText}

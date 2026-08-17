@@ -301,7 +301,13 @@ export const settingsKeys = {
 };
 
 const cliManagerAllKey = ["cliManager"] as const;
+export const CODEX_CONFIG_MUTATION_SCOPE = { id: "codex-config" } as const;
 const codexModelCatalogAllKey = [...cliManagerAllKey, "codex", "modelCatalog"] as const;
+const codexModelContextCandidatesAllKey = [
+  ...cliManagerAllKey,
+  "codex",
+  "modelContextCandidates",
+] as const;
 export const cliManagerKeys = {
   all: cliManagerAllKey,
   claudeInfo: () => [...cliManagerAllKey, "claude", "info"] as const,
@@ -318,6 +324,18 @@ export const cliManagerKeys = {
   }) =>
     [
       ...codexModelCatalogAllKey,
+      snapshot?.configPath ?? null,
+      snapshot?.executablePath ?? null,
+      snapshot?.cliVersion ?? null,
+    ] as const,
+  codexModelContextCandidatesAll: () => codexModelContextCandidatesAllKey,
+  codexModelContextCandidates: (snapshot?: {
+    configPath?: string | null;
+    executablePath?: string | null;
+    cliVersion?: string | null;
+  }) =>
+    [
+      ...codexModelContextCandidatesAllKey,
       snapshot?.configPath ?? null,
       snapshot?.executablePath ?? null,
       snapshot?.cliVersion ?? null,

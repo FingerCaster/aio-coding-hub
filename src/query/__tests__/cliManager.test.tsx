@@ -8,6 +8,7 @@ import {
   type CodexConfigState,
   type CodexConfigTomlState,
   type CodexModelCatalogState,
+  type CodexModelContextCandidatesState,
   type GeminiConfigState,
   type SimpleCliInfo,
   type GrokConfigState,
@@ -22,6 +23,7 @@ import {
   cliManagerCodexConfigTomlSet,
   cliManagerCodexInfoGet,
   cliManagerCodexModelCatalogGet,
+  cliManagerCodexModelContextCandidatesGet,
   cliManagerCodexProviderSync,
   cliManagerGeminiConfigGet,
   cliManagerGeminiConfigSet,
@@ -47,6 +49,8 @@ import {
   useCliManagerCodexInfoQuery,
   useCliManagerCodexModelCatalogQuery,
   useCliManagerCodexModelCatalogRefresh,
+  useCliManagerCodexModelContextCandidatesQuery,
+  useCliManagerCodexModelContextCandidatesRefresh,
   useCliManagerCodexProviderSyncMutation,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
@@ -73,6 +77,7 @@ vi.mock("../../services/cli/cliManager", async () => {
     cliManagerCodexConfigTomlGet: vi.fn(),
     cliManagerCodexConfigTomlSet: vi.fn(),
     cliManagerCodexModelCatalogGet: vi.fn(),
+    cliManagerCodexModelContextCandidatesGet: vi.fn(),
     cliManagerCodexProviderSync: vi.fn(),
     cliManagerGeminiConfigGet: vi.fn(),
     cliManagerGeminiConfigSet: vi.fn(),
@@ -244,6 +249,30 @@ function makeCodexModelCatalogState(
   };
 }
 
+function makeCodexModelContextCandidatesState(
+  overrides: Partial<CodexModelContextCandidatesState> = {}
+): CodexModelContextCandidatesState {
+  return {
+    status: "ready",
+    issue: null,
+    snapshot: {
+      config_path: "/tmp/.codex/config.toml",
+      executable_path: "/usr/bin/codex",
+      cli_version: "0.0.0",
+    },
+    models: [
+      {
+        model_id: "gpt-5.6-sol",
+        display_name: "GPT-5.6 Sol",
+        hidden: false,
+        base_context_window: 272_000,
+        base_max_context_window: 272_000,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 function makeGrokConfigState(overrides: Partial<GrokConfigState> = {}): GrokConfigState {
   return {
     config_path: "/tmp/.grok/config.toml",
@@ -282,6 +311,9 @@ describe("query/cliManager", () => {
     vi.mocked(cliManagerClaudeSettingsGet).mockResolvedValue(makeClaudeSettingsState());
     vi.mocked(cliManagerCodexInfoGet).mockResolvedValue(makeSimpleCliInfo());
     vi.mocked(cliManagerCodexModelCatalogGet).mockResolvedValue(makeCodexModelCatalogState());
+    vi.mocked(cliManagerCodexModelContextCandidatesGet).mockResolvedValue(
+      makeCodexModelContextCandidatesState()
+    );
     vi.mocked(cliManagerCodexConfigGet).mockResolvedValue(makeCodexConfigState());
     vi.mocked(cliManagerCodexConfigTomlGet).mockResolvedValue(makeCodexConfigTomlState());
     vi.mocked(cliManagerCodexProviderSync).mockResolvedValue({
@@ -321,6 +353,17 @@ describe("query/cliManager", () => {
         }),
       { wrapper }
     );
+    renderHook(
+      () =>
+        useCliManagerCodexModelContextCandidatesQuery({
+          snapshot: {
+            configPath: "/tmp/.codex/config.toml",
+            executablePath: "/usr/bin/codex",
+            cliVersion: "0.0.0",
+          },
+        }),
+      { wrapper }
+    );
     renderHook(() => useCliManagerCodexConfigQuery(), { wrapper });
     renderHook(() => useCliManagerCodexConfigTomlQuery(), { wrapper });
     renderHook(() => useCliManagerCodexProviderSyncMutation(), { wrapper });
@@ -335,6 +378,7 @@ describe("query/cliManager", () => {
       expect(cliManagerClaudeSettingsGet).toHaveBeenCalled();
       expect(cliManagerCodexInfoGet).toHaveBeenCalled();
       expect(cliManagerCodexModelCatalogGet).toHaveBeenCalled();
+      expect(cliManagerCodexModelContextCandidatesGet).toHaveBeenCalled();
       expect(cliManagerCodexConfigGet).toHaveBeenCalled();
       expect(cliManagerCodexConfigTomlGet).toHaveBeenCalled();
       expect(cliManagerCodexProviderSync).not.toHaveBeenCalled();
@@ -403,6 +447,67 @@ describe("query/cliManager", () => {
     expect(cliManagerCodexModelCatalogGet).toHaveBeenCalledTimes(1);
   });
 
+  it("useCliManagerCodexModelContextCandidatesQuery fails once without retrying", async () => {
+    setTauriRuntime();
+    vi.mocked(cliManagerCodexModelContextCandidatesGet).mockRejectedValue(
+      new Error("candidate query boom")
+    );
+
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: 2, retryDelay: 0 } },
+    });
+    const wrapper = createQueryWrapper(client);
+    const snapshot = {
+      configPath: "/tmp/.codex/config.toml",
+      executablePath: "/usr/bin/codex",
+      cliVersion: "0.0.0",
+    };
+    const { result, unmount } = renderHook(
+      () => useCliManagerCodexModelContextCandidatesQuery({ snapshot }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(cliManagerCodexModelContextCandidatesGet).toHaveBeenCalledTimes(1);
+
+    unmount();
+    const remounted = renderHook(
+      () => useCliManagerCodexModelContextCandidatesQuery({ snapshot }),
+      { wrapper }
+    );
+    expect(remounted.result.current.isError).toBe(true);
+    expect(cliManagerCodexModelContextCandidatesGet).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads model context candidates from a config snapshot without an installed CLI", async () => {
+    setTauriRuntime();
+    const candidates = makeCodexModelContextCandidatesState({
+      snapshot: {
+        config_path: "/tmp/.codex/config.toml",
+        executable_path: null,
+        cli_version: null,
+      },
+    });
+    vi.mocked(cliManagerCodexModelContextCandidatesGet).mockResolvedValue(candidates);
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(
+      () =>
+        useCliManagerCodexModelContextCandidatesQuery({
+          snapshot: {
+            configPath: "/tmp/.codex/config.toml",
+            executablePath: null,
+            cliVersion: null,
+          },
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.data).toEqual(candidates));
+    expect(cliManagerCodexModelContextCandidatesGet).toHaveBeenCalledTimes(1);
+  });
+
   it("respects options.enabled=false for all cliManager info/config queries", async () => {
     setTauriRuntime();
 
@@ -416,6 +521,18 @@ describe("query/cliManager", () => {
     renderHook(
       () =>
         useCliManagerCodexModelCatalogQuery({
+          enabled: false,
+          snapshot: {
+            configPath: "/tmp/.codex/config.toml",
+            executablePath: "/usr/bin/codex",
+            cliVersion: "0.0.0",
+          },
+        }),
+      { wrapper }
+    );
+    renderHook(
+      () =>
+        useCliManagerCodexModelContextCandidatesQuery({
           enabled: false,
           snapshot: {
             configPath: "/tmp/.codex/config.toml",
@@ -440,6 +557,7 @@ describe("query/cliManager", () => {
     expect(cliManagerClaudeSettingsGet).not.toHaveBeenCalled();
     expect(cliManagerCodexInfoGet).not.toHaveBeenCalled();
     expect(cliManagerCodexModelCatalogGet).not.toHaveBeenCalled();
+    expect(cliManagerCodexModelContextCandidatesGet).not.toHaveBeenCalled();
     expect(cliManagerCodexConfigGet).not.toHaveBeenCalled();
     expect(cliManagerCodexConfigTomlGet).not.toHaveBeenCalled();
     expect(cliManagerCodexProviderSync).not.toHaveBeenCalled();
@@ -708,6 +826,118 @@ describe("query/cliManager", () => {
       await result.current.refresh(nextSnapshot);
     });
     expect(cliManagerCodexModelCatalogGet).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates and refreshes only the requested model context candidate snapshot", async () => {
+    setTauriRuntime();
+
+    const oldSnapshot = {
+      configPath: "/tmp/.codex/config.toml",
+      executablePath: "/usr/bin/codex",
+      cliVersion: "0.0.0",
+    };
+    const nextSnapshot = {
+      configPath: "/tmp/next/.codex/config.toml",
+      executablePath: "/opt/codex/bin/codex",
+      cliVersion: "1.0.0",
+    };
+    const oldCandidates = makeCodexModelContextCandidatesState();
+    const nextCandidates = makeCodexModelContextCandidatesState({
+      snapshot: {
+        config_path: nextSnapshot.configPath,
+        executable_path: nextSnapshot.executablePath,
+        cli_version: nextSnapshot.cliVersion,
+      },
+      models: [
+        {
+          model_id: "next-model",
+          display_name: "Next Model",
+          hidden: false,
+          base_context_window: 400_000,
+          base_max_context_window: null,
+        },
+      ],
+    });
+    vi.mocked(cliManagerCodexModelContextCandidatesGet)
+      .mockResolvedValueOnce(oldCandidates)
+      .mockResolvedValueOnce(nextCandidates);
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result, rerender } = renderHook(
+      ({ snapshot }) => ({
+        candidates: useCliManagerCodexModelContextCandidatesQuery({ snapshot }),
+        refresh: useCliManagerCodexModelContextCandidatesRefresh(),
+      }),
+      { wrapper, initialProps: { snapshot: oldSnapshot } }
+    );
+
+    await waitFor(() => expect(result.current.candidates.isSuccess).toBe(true));
+    vi.mocked(cliManagerCodexModelContextCandidatesGet).mockClear();
+
+    await act(async () => {
+      await result.current.refresh(nextSnapshot);
+    });
+    expect(cliManagerCodexModelContextCandidatesGet).toHaveBeenCalledTimes(1);
+
+    rerender({ snapshot: nextSnapshot });
+    await waitFor(() => expect(result.current.candidates.isSuccess).toBe(true));
+    expect(cliManagerCodexModelContextCandidatesGet).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(cliManagerKeys.codexModelContextCandidates(nextSnapshot))).toEqual(
+      nextCandidates
+    );
+    expect(
+      client.getQueryState(cliManagerKeys.codexModelContextCandidates(oldSnapshot))?.isInvalidated
+    ).toBe(false);
+  });
+
+  it("does not expose the previous candidate snapshot while a new one is loading", async () => {
+    setTauriRuntime();
+
+    const oldSnapshot = {
+      configPath: "/tmp/.codex/config.toml",
+      executablePath: "/usr/bin/codex",
+      cliVersion: "0.0.0",
+    };
+    const nextSnapshot = {
+      configPath: "/tmp/next/.codex/config.toml",
+      executablePath: "/opt/codex/bin/codex",
+      cliVersion: "1.0.0",
+    };
+    const oldCandidates = makeCodexModelContextCandidatesState();
+    const nextCandidates = makeCodexModelContextCandidatesState({
+      snapshot: {
+        config_path: nextSnapshot.configPath,
+        executable_path: nextSnapshot.executablePath,
+        cli_version: nextSnapshot.cliVersion,
+      },
+      models: [],
+    });
+    vi.mocked(cliManagerCodexModelContextCandidatesGet).mockResolvedValueOnce(oldCandidates);
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result, rerender } = renderHook(
+      ({ snapshot }) => useCliManagerCodexModelContextCandidatesQuery({ snapshot }),
+      { wrapper, initialProps: { snapshot: oldSnapshot } }
+    );
+    await waitFor(() => expect(result.current.data).toEqual(oldCandidates));
+
+    let resolveNext!: (value: CodexModelContextCandidatesState) => void;
+    const nextRequest = new Promise<CodexModelContextCandidatesState>((resolve) => {
+      resolveNext = resolve;
+    });
+    vi.mocked(cliManagerCodexModelContextCandidatesGet).mockReset().mockReturnValue(nextRequest);
+
+    rerender({ snapshot: nextSnapshot });
+    await waitFor(() => expect(cliManagerCodexModelContextCandidatesGet).toHaveBeenCalledTimes(1));
+    expect(result.current.data).toBeUndefined();
+
+    await act(async () => {
+      resolveNext(nextCandidates);
+      await nextRequest;
+    });
+    await waitFor(() => expect(result.current.data).toEqual(nextCandidates));
   });
 
   it("does not duplicate a failed target snapshot prefetch when the observer switches keys", async () => {
