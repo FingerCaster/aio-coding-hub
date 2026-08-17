@@ -59,7 +59,7 @@
 - [x] Run focused Vitest suites for services, queries, data model, Codex tab/editor, fixtures and cross-layer constants.
 - [x] Run focused Rust tests for settings, managed catalog, config, proxy, profiles, provider sync, startup and config migration on Windows.
 - [x] Run `pnpm typecheck`, `pnpm lint`, frontend full tests, `pnpm tauri:fmt`, `cargo check --all-targets --locked`, relevant Clippy with `-D warnings`, full Rust library tests, `pnpm check:generated-bindings` and `git diff --check`.
-- [ ] Run the CI-equivalent Linux checks for Unix-only catalog/home tests and confirm no host Codex dependency.
+- [x] Run the CI-equivalent Linux checks for Unix-only catalog/home tests and confirm no host Codex dependency.
 - [x] Perform a full-scope Trellis check against PRD, design, specs, research and cross-layer data flow; fix and rerun until green.
 
 ## 8. Windows MSI
@@ -71,11 +71,11 @@
 ## 9. Origin integration and Beta release
 
 - [x] Re-read `origin/main` and preserve non-conflicting origin changes; do not inspect or operate on `upstream`.
-- [ ] Commit coherent task changes with hook-visible `node`/`pnpm`, push the feature branch to `origin`, and create a PR against `main` using explicit repository selection.
-- [ ] Wait for required CI on the exact final PR head, review the diff/checks, merge, and record the immutable 40-hex merge SHA reachable from `origin/main`.
-- [ ] Re-audit Beta high-water and tag/Release/ref vacancy immediately before dispatch; choose the next strictly higher free Beta.
-- [ ] Dispatch `release.yml` with `release_channel=beta`, the selected canonical tag and exact merge SHA; monitor all jobs to terminal success.
-- [ ] Verify public prerelease flags, exact official asset matrix, signatures, four-platform manifests, source/tag identity and `release-channels` CAS; confirm stable latest and Homebrew did not move.
+- [x] Commit coherent task changes with hook-visible `node`/`pnpm`, push the feature branch to `origin`, and create a PR against `main` using explicit repository selection.
+- [x] Wait for required CI on the exact final PR head, review the diff/checks, merge, and record the immutable 40-hex merge SHA reachable from `origin/main`.
+- [x] Re-audit Beta high-water and tag/Release/ref vacancy immediately before dispatch; choose the next strictly higher free Beta.
+- [x] Dispatch `release.yml` with `release_channel=beta`, the selected canonical tag and exact merge SHA; monitor all jobs to terminal success.
+- [x] Verify public prerelease flags, exact official asset matrix, signatures, four-platform manifests, source/tag identity and `release-channels` CAS; confirm stable latest and Homebrew did not move.
 
 ## Risk And Rollback Points
 

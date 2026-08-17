@@ -9,6 +9,6 @@
 {"file": ".trellis/spec/aio-coding-hub/cross-layer/ci-change-scope-contract.md", "reason": "跨层改动的 CI 分类与 final gate 合同"}
 {"file": ".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md", "reason": "Beta high-water、不可变 source、promotion 与 updater pointer 合同"}
 {"file": ".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md", "reason": "origin 发布、资产/签名/source 核验和失败边界"}
-{"file": ".trellis/tasks/08-17-codex-custom-model-context-rules/research/backend-rules-contract.md", "reason": "schema 65、raw 迁移、规则事务、metadata v3 与候选 API 研究"}
-{"file": ".trellis/tasks/08-17-codex-custom-model-context-rules/research/frontend-rule-editor.md", "reason": "整集合草稿 Dialog、canonical 回读、candidate hidden 与测试矩阵"}
-{"file": ".trellis/tasks/08-17-codex-custom-model-context-rules/research/lifecycle-and-recovery.md", "reason": "CLI 升级、startup/home/proxy/import 状态机与恢复矩阵"}
+{"file": ".trellis/tasks/archive/2026-08/08-17-codex-custom-model-context-rules/research/backend-rules-contract.md", "reason": "schema 65、raw 迁移、规则事务、metadata v3 与候选 API 研究"}
+{"file": ".trellis/tasks/archive/2026-08/08-17-codex-custom-model-context-rules/research/frontend-rule-editor.md", "reason": "整集合草稿 Dialog、canonical 回读、candidate hidden 与测试矩阵"}
+{"file": ".trellis/tasks/archive/2026-08/08-17-codex-custom-model-context-rules/research/lifecycle-and-recovery.md", "reason": "CLI 升级、startup/home/proxy/import 状态机与恢复矩阵"}
