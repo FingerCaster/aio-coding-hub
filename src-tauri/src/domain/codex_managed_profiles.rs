@@ -1731,6 +1731,13 @@ DROP TABLE provider_model_capability_commit_probe;
         .expect("external profile");
 
         std::fs::rename(&codex_home, &original_home).expect("move original Codex home");
+        // Preserve the active catalog binding so this test reaches the stored-home
+        // safety check instead of failing first on unrelated catalog config drift.
+        std::fs::copy(
+            original_home.join("config.toml"),
+            outside_home.path().join("config.toml"),
+        )
+        .expect("copy active Codex config into replacement home");
         symlink(outside_home.path(), &codex_home).expect("replace Codex home with symlink");
 
         let list_error = list(&test_app.db).expect_err("listing replaced home must fail");

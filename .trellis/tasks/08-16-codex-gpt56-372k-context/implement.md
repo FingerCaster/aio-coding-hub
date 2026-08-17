@@ -29,6 +29,7 @@
 - [x] Rust lifecycle tests: proxy on/off, zero/nonzero profiles, bundled/user source restoration, CLI fingerprint rebuild, startup sync, drift and every rollback stage.
 - [x] Settings tests: schema 63 to 64 migration, default false, ordinary writer non-ownership, dedicated command success/failure, conditional rollback, Codex home guard.
 - [x] Frontend tests: default/off/on, pending/error states, exact display value, query invalidation and home-control disabling.
+- [x] Isolate Linux managed-profile fixtures from host Codex availability and preserve the active catalog binding in the unsafe-home replacement test.
 - [x] Run focused tests after each layer, then full relevant quality gates.
 
 ## 5. Verification and packaging

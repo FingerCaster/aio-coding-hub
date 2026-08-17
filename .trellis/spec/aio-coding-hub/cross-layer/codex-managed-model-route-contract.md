@@ -405,6 +405,12 @@ codexManagedProfilesKeys.list()
   profile create/delete cases without an installed Codex CLI (Linux CI is the
   release gate) and assert they never return
   `CODEX_MANAGED_MODEL_CLI_NOT_FOUND` merely because of host setup.
+- Filesystem-safety fixtures that replace an active `$CODEX_HOME` preserve the
+  active `config.toml` binding in the replacement when the intended variable is
+  only the unsafe home layout. If they omit that binding, they are catalog-drift
+  cases and must assert the catalog error instead of expecting
+  `CODEX_MANAGED_PROFILE_HOME_UNSAFE` after an unrelated preflight already
+  failed closed.
 - Catalog recovery tests: a proxy backup bound to the exact AIO generated path
   is sanitized before base selection; a different absolute user path is
   unchanged; forced generated/live write failures restore the original backup,
