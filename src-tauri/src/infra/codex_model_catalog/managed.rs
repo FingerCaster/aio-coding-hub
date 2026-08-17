@@ -543,6 +543,8 @@ fn apply_catalog_config_change(
     }
     record_catalog_apply_stage(CatalogApplyStage::Config);
     injected_catalog_apply_failure(CatalogApplyStage::Config)?;
+    #[cfg(test)]
+    injected_catalog_config_write_failure()?;
     crate::cli_proxy::write_cli_proxy_file_atomic(&config_before.path, config_after).map_err(
         |error| {
             AppError::new(
@@ -604,6 +606,36 @@ thread_local! {
     static CATALOG_POST_APPLY_MUTATION: std::cell::Cell<Option<CatalogApplyStage>> = const {
         std::cell::Cell::new(None)
     };
+    static CATALOG_CONFIG_WRITE_FAILURE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn fail_next_catalog_config_write_for_test() {
+    CATALOG_CONFIG_WRITE_FAILURE.with(|failure| {
+        assert!(
+            !failure.replace(true),
+            "a managed catalog config write failure is already pending"
+        );
+    });
+}
+
+#[cfg(all(test, not(windows)))]
+pub(crate) fn clear_catalog_config_write_failure_for_test() {
+    CATALOG_CONFIG_WRITE_FAILURE.with(|failure| failure.set(false));
+}
+
+#[cfg(test)]
+fn injected_catalog_config_write_failure() -> AppResult<()> {
+    if CATALOG_CONFIG_WRITE_FAILURE.with(std::cell::Cell::take) {
+        Err(AppError::new(
+            "CODEX_MANAGED_MODEL_CONFIG_WRITE_FAILED",
+            "failed to update Codex config.toml",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -4380,6 +4412,7 @@ base_url = "http://127.0.0.1:37123/v1"
 
     fn reset_catalog_transaction_test_state() {
         CATALOG_APPLY_FAILURE.with(|failure| failure.set(None));
+        CATALOG_CONFIG_WRITE_FAILURE.with(|failure| failure.set(false));
         CATALOG_POST_APPLY_MUTATION.with(|mutation| mutation.set(None));
         CATALOG_APPLY_TRACE.with(|trace| trace.borrow_mut().clear());
         CATALOG_ROLLBACK_TRACE.with(|trace| trace.borrow_mut().clear());

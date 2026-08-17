@@ -3289,14 +3289,6 @@ mod tests {
     struct CatalogConfigWriteBlocker {
         #[cfg(windows)]
         _locked: std::fs::File,
-        #[cfg(unix)]
-        parent: std::path::PathBuf,
-        #[cfg(unix)]
-        original_permissions: std::fs::Permissions,
-        #[cfg(not(any(unix, windows)))]
-        path: std::path::PathBuf,
-        #[cfg(not(any(unix, windows)))]
-        original_permissions: std::fs::Permissions,
     }
 
     impl CatalogConfigWriteBlocker {
@@ -3310,41 +3302,18 @@ mod tests {
             Ok(Self { _locked: locked })
         }
 
-        #[cfg(unix)]
-        fn new(path: &std::path::Path) -> std::io::Result<Self> {
-            let parent = path
-                .parent()
-                .ok_or_else(|| std::io::Error::other("Codex config has no parent"))?
-                .to_path_buf();
-            let original_permissions = std::fs::metadata(&parent)?.permissions();
-            let mut blocked_permissions = original_permissions.clone();
-            blocked_permissions.set_readonly(true);
-            std::fs::set_permissions(&parent, blocked_permissions)?;
-            Ok(Self {
-                parent,
-                original_permissions,
-            })
-        }
-
-        #[cfg(not(any(unix, windows)))]
-        fn new(path: &std::path::Path) -> std::io::Result<Self> {
-            let original_permissions = std::fs::metadata(path)?.permissions();
-            let mut blocked_permissions = original_permissions.clone();
-            blocked_permissions.set_readonly(true);
-            std::fs::set_permissions(path, blocked_permissions)?;
-            Ok(Self {
-                path: path.to_path_buf(),
-                original_permissions,
-            })
+        #[cfg(not(windows))]
+        fn new(_path: &std::path::Path) -> std::io::Result<Self> {
+            // Permission bits do not block writes from root-owned Linux CI containers.
+            crate::codex_model_catalog::managed::fail_next_catalog_config_write_for_test();
+            Ok(Self {})
         }
     }
 
     impl Drop for CatalogConfigWriteBlocker {
         fn drop(&mut self) {
-            #[cfg(unix)]
-            let _ = std::fs::set_permissions(&self.parent, self.original_permissions.clone());
-            #[cfg(not(any(unix, windows)))]
-            let _ = std::fs::set_permissions(&self.path, self.original_permissions.clone());
+            #[cfg(not(windows))]
+            crate::codex_model_catalog::managed::clear_catalog_config_write_failure_for_test();
         }
     }
 
