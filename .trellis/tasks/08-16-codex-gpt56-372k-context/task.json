@@ -1,0 +1,28 @@
+{
+  "id": "codex-gpt56-372k-context",
+  "name": "codex-gpt56-372k-context",
+  "title": "为 Codex GPT-5.6 增加 372K 上下文开关、打包 MSI 并发布 Beta",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "cross-layer",
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-16",
+  "completedAt": null,
+  "branch": "FingerCaster/codex-gpt56-372k-context",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "worktree_path": "D:\\OrcaProjects\\aio-coding-hub-fork\\codex-gpt56-372k-context"
+  }
+}

@@ -902,3 +902,149 @@ fn raw_toml_target_provider_accepts_only_managed_targets() {
         "{err}"
     );
 }
+
+fn proxy_backup_rollback_fixture(
+    root: &std::path::Path,
+) -> (PathBuf, PathBuf, CodexCliProxyBackupSnapshot) {
+    let manifest_path = root.join("manifest.json");
+    let backup_path = root.join("proxy-backup.toml");
+    std::fs::write(&manifest_path, b"manifest-committed").expect("write committed manifest");
+    std::fs::write(&backup_path, b"backup-committed").expect("write committed backup");
+
+    let snapshot = CodexCliProxyBackupSnapshot {
+        manifest_path: manifest_path.clone(),
+        manifest_existed: true,
+        manifest_bytes: Some(b"manifest-before".to_vec()),
+        backup_path: backup_path.clone(),
+        backup_existed: true,
+        backup_bytes: Some(b"backup-before".to_vec()),
+        committed_manifest: (true, Some(b"manifest-committed".to_vec())),
+        committed_backup: (true, Some(b"backup-committed".to_vec())),
+    };
+
+    (manifest_path, backup_path, snapshot)
+}
+
+#[test]
+fn proxy_backup_rollback_restores_each_file_with_its_own_committed_token() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (manifest_path, backup_path, snapshot) = proxy_backup_rollback_fixture(temp.path());
+    std::fs::write(&manifest_path, b"external-manifest").expect("create manifest drift");
+
+    let rollback = restore_codex_cli_proxy_backup_snapshot_if_current(&snapshot);
+
+    assert!(!rollback.is_complete());
+    assert!(!rollback.manifest_restored);
+    assert!(rollback.backup_restored);
+    assert!(rollback.errors.is_empty(), "{:?}", rollback.errors);
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("read drifted manifest"),
+        b"external-manifest"
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).expect("read restored backup"),
+        b"backup-before"
+    );
+}
+
+#[test]
+fn proxy_backup_rollback_restores_manifest_when_backup_drifted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (manifest_path, backup_path, snapshot) = proxy_backup_rollback_fixture(temp.path());
+    std::fs::write(&backup_path, b"external-backup").expect("create backup drift");
+
+    let rollback = restore_codex_cli_proxy_backup_snapshot_if_current(&snapshot);
+
+    assert!(!rollback.is_complete());
+    assert!(rollback.manifest_restored);
+    assert!(!rollback.backup_restored);
+    assert!(rollback.errors.is_empty(), "{:?}", rollback.errors);
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("read restored manifest"),
+        b"manifest-before"
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).expect("read drifted backup"),
+        b"external-backup"
+    );
+}
+
+#[test]
+fn live_config_drift_does_not_suppress_owned_proxy_backup_rollback() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.toml");
+    let (manifest_path, backup_path, snapshot) = proxy_backup_rollback_fixture(temp.path());
+    std::fs::write(&config_path, b"external-config").expect("create config drift");
+
+    let failures = rollback_codex_config_and_proxy_backup_if_current(
+        &config_path,
+        Some(&b"config-before"[..]),
+        b"config-committed",
+        Some(&snapshot),
+    );
+
+    assert_eq!(
+        failures,
+        vec!["config changed after this save; rollback was skipped"]
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("read drifted config"),
+        b"external-config"
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).expect("read restored backup"),
+        b"backup-before"
+    );
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("read restored manifest"),
+        b"manifest-before"
+    );
+}
+
+#[test]
+fn proxy_backup_drift_does_not_suppress_owned_live_config_rollback() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_path = temp.path().join("config.toml");
+    let (manifest_path, backup_path, snapshot) = proxy_backup_rollback_fixture(temp.path());
+    std::fs::write(&config_path, b"config-committed").expect("write committed config");
+    std::fs::write(&backup_path, b"external-backup").expect("create backup drift");
+
+    let failures = rollback_codex_config_and_proxy_backup_if_current(
+        &config_path,
+        Some(&b"config-before"[..]),
+        b"config-committed",
+        Some(&snapshot),
+    );
+
+    assert_eq!(
+        failures,
+        vec!["proxy backup changed after this save; rollback was skipped"]
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("read restored config"),
+        b"config-before"
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).expect("read drifted backup"),
+        b"external-backup"
+    );
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("read restored manifest"),
+        b"manifest-before"
+    );
+}
+
+#[test]
+fn managed_catalog_recovery_error_cannot_be_downgraded_to_sync_failed() {
+    let recovery = crate::shared::error::AppError::new(
+        "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+        "generated catalog rollback drifted",
+    );
+    let ordinary = crate::shared::error::AppError::new(
+        "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+        "prepare/apply guard changed",
+    );
+
+    assert!(managed_catalog_sync_requires_recovery(&recovery));
+    assert!(!managed_catalog_sync_requires_recovery(&ordinary));
+}

@@ -4,6 +4,9 @@ use super::resident;
 use crate::{blocking, cli_proxy, settings};
 use tauri::Manager;
 
+pub(super) const CODEX_MODEL_CATALOG_STARTUP_ERROR_CODE: &str =
+    "CODEX_STARTUP_MODEL_CATALOG_RECONCILE_FAILED";
+
 pub(crate) async fn read(
     app_handle: &tauri::AppHandle,
 ) -> Result<crate::settings::AppSettings, String> {
@@ -51,6 +54,26 @@ pub(crate) fn apply_window_state(
     } else {
         resident::show_main_window(app_handle);
     }
+}
+
+pub(crate) async fn reconcile_codex_model_catalog(
+    app_handle: &tauri::AppHandle,
+) -> Result<(), String> {
+    blocking::run("startup_codex_model_catalog_reconcile", {
+        let app_handle = app_handle.clone();
+        move || {
+            let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
+            crate::codex_model_catalog::managed::sync_current_locked(&app_handle)
+        }
+    })
+    .await
+    .map_err(format_codex_model_catalog_startup_error)
+}
+
+pub(super) fn format_codex_model_catalog_startup_error(
+    error: crate::shared::error::AppError,
+) -> String {
+    format!("{CODEX_MODEL_CATALOG_STARTUP_ERROR_CODE}: Codex 模型目录恢复失败：{error}")
 }
 
 async fn repair_cli_proxy_enable_state(app_handle: &tauri::AppHandle) {

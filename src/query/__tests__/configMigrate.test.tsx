@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configExport, configImport } from "../../services/app/configMigrate";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import {
+  cliManagerKeys,
   cliProxyKeys,
   codexManagedProfilesKeys,
   gatewayKeys,
@@ -77,6 +78,7 @@ describe("query/configMigrate", () => {
     client.setQueryData(codexManagedProfilesKeys.list(), [{ providerId: 7 }]);
     const cancelSpy = vi.spyOn(client, "cancelQueries");
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const resetSpy = vi.spyOn(client, "resetQueries");
     const wrapper = createQueryWrapper(client);
     const { result } = renderHook(() => useConfigImportMutation(), { wrapper });
 
@@ -88,7 +90,7 @@ describe("query/configMigrate", () => {
     expect(notifyUpdateChannelImportSucceeded).toHaveBeenCalledTimes(1);
     expect(cancelSpy).toHaveBeenCalledWith({ queryKey: providerModelsKeys.all });
     expect(cancelSpy).toHaveBeenCalledWith({ queryKey: codexManagedProfilesKeys.all });
-    expect(invalidateSpy).toHaveBeenCalledTimes(12);
+    expect(invalidateSpy).toHaveBeenCalledTimes(14);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: settingsKeys.all });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: gatewayKeys.all });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: providersKeys.all });
@@ -101,6 +103,11 @@ describe("query/configMigrate", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: skillsKeys.all });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: wslKeys.all });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.all });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(resetSpy).toHaveBeenCalledWith({
+      queryKey: cliManagerKeys.codexModelCatalogAll(),
+    });
     expect(client.getQueryState(providerModelsKeys.catalog(7, PROVIDER_UUID))?.isInvalidated).toBe(
       true
     );

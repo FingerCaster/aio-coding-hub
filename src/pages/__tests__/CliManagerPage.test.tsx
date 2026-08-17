@@ -12,6 +12,7 @@ import { CliManagerPage } from "../CliManagerPage";
 import { logToConsole } from "../../services/consoleLog";
 import {
   useSettingsCircuitBreakerNoticeSetMutation,
+  useSettingsCodexGpt56372kContextSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
   useSettingsGatewayRectifierSetMutation,
   useSettingsPatchMutation,
@@ -130,6 +131,8 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     persistCodexConfigToml,
     persistCodexHomeSettings,
     persistCodexOauthCompatibleProxyMode,
+    persistCodexGpt56372kContext,
+    codexGpt56372kContextSaving,
     pickCodexHomeDirectory,
     syncCodexProvider,
     persistCommonSettings,
@@ -139,6 +142,7 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     setStreamInternalErrorGuardMs,
   }: any) => {
     const [oauthResult, setOauthResult] = useState<boolean | null>(null);
+    const [longContextResult, setLongContextResult] = useState<boolean | null>(null);
     return (
       <div>
         <div>codex-tab</div>
@@ -179,6 +183,20 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
         <output aria-label="codex-oauth-result">
           {oauthResult == null ? "pending" : String(oauthResult)}
         </output>
+        <button
+          type="button"
+          onClick={() =>
+            void Promise.resolve(persistCodexGpt56372kContext?.(true)).then((result) =>
+              setLongContextResult(result ?? false)
+            )
+          }
+        >
+          enable-codex-372k
+        </button>
+        <output aria-label="codex-372k-result">
+          {longContextResult == null ? "pending" : String(longContextResult)}
+        </output>
+        <output aria-label="codex-372k-saving">{String(codexGpt56372kContextSaving)}</output>
         <button
           type="button"
           onClick={() =>
@@ -244,6 +262,7 @@ vi.mock("../../query/settings", async () => {
     useSettingsQuery: vi.fn(),
     useSettingsGatewayRectifierSetMutation: vi.fn(),
     useSettingsCircuitBreakerNoticeSetMutation: vi.fn(),
+    useSettingsCodexGpt56372kContextSetMutation: vi.fn(),
     useSettingsCodexSessionIdCompletionSetMutation: vi.fn(),
     useSettingsPatchMutation: vi.fn(),
   };
@@ -336,6 +355,10 @@ beforeEach(() => {
     mutateAsync: vi.fn(),
   } as any);
   vi.mocked(useSettingsCodexSessionIdCompletionSetMutation).mockReturnValue({
+    isPending: false,
+    mutateAsync: vi.fn(),
+  } as any);
+  vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue({
     isPending: false,
     mutateAsync: vi.fn(),
   } as any);
@@ -1404,6 +1427,115 @@ describe("pages/CliManagerPage", () => {
     expect(codexTomlRefetch).not.toHaveBeenCalled();
     expect(codexInfoRefetch).not.toHaveBeenCalled();
     expect(toast).not.toHaveBeenCalledWith("Codex 目录已切换");
+  });
+
+  it("uses the dedicated 372K mutation and reports backend-confirmed success", async () => {
+    const contextMutation = {
+      isPending: false,
+      mutateAsync: vi
+        .fn()
+        .mockResolvedValue(createAppSettings({ codex_gpt56_372k_context_enabled: true })),
+    };
+    vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue(contextMutation as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    await screen.findByText("codex-tab");
+    fireEvent.click(screen.getByRole("button", { name: "enable-codex-372k" }));
+
+    await waitFor(() => expect(contextMutation.mutateAsync).toHaveBeenCalledWith(true));
+    expect(await screen.findByLabelText("codex-372k-result")).toHaveTextContent("true");
+    expect(toast).toHaveBeenCalledWith("已开启 Codex GPT-5.6 372K 上下文");
+  });
+
+  it("does not report 372K success when the backend confirms the previous state", async () => {
+    const contextMutation = {
+      isPending: false,
+      mutateAsync: vi
+        .fn()
+        .mockResolvedValue(createAppSettings({ codex_gpt56_372k_context_enabled: false })),
+    };
+    vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue(contextMutation as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    await screen.findByText("codex-tab");
+    fireEvent.click(screen.getByRole("button", { name: "enable-codex-372k" }));
+
+    expect(await screen.findByLabelText("codex-372k-result")).toHaveTextContent("false");
+    expect(toast).toHaveBeenCalledWith("更新 Codex GPT-5.6 372K 上下文失败：后端未确认目标状态");
+    expect(toast).not.toHaveBeenCalledWith("已开启 Codex GPT-5.6 372K 上下文");
+  });
+
+  it.each([
+    ["structured config", true, false],
+    ["raw config", false, true],
+  ] as const)(
+    "guards the 372K handler while %s is saving",
+    async (_label, structuredSaving, rawSaving) => {
+      const contextMutation = {
+        isPending: false,
+        mutateAsync: vi.fn(),
+      };
+      vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue(
+        contextMutation as any
+      );
+      vi.mocked(useCliManagerCodexConfigSetMutation).mockReturnValue({
+        isPending: structuredSaving,
+        mutateAsync: vi.fn(),
+      } as any);
+      vi.mocked(useCliManagerCodexConfigTomlSetMutation).mockReturnValue({
+        isPending: rawSaving,
+        mutateAsync: vi.fn(),
+      } as any);
+
+      renderWithProviders(<CliManagerPage />);
+      fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+      await screen.findByText("codex-tab");
+      fireEvent.click(screen.getByRole("button", { name: "enable-codex-372k" }));
+
+      expect(await screen.findByLabelText("codex-372k-result")).toHaveTextContent("false");
+      expect(contextMutation.mutateAsync).not.toHaveBeenCalled();
+    }
+  );
+
+  it("guards structured and raw config handlers while the 372K mutation is saving", async () => {
+    vi.mocked(useSettingsCodexGpt56372kContextSetMutation).mockReturnValue({
+      isPending: true,
+      mutateAsync: vi.fn(),
+    } as any);
+
+    const structuredMutation = {
+      isPending: false,
+      mutateAsync: vi.fn(),
+    };
+    const rawMutation = {
+      isPending: false,
+      mutateAsync: vi.fn(),
+    };
+    vi.mocked(useCliManagerCodexConfigSetMutation).mockReturnValue(structuredMutation as any);
+    vi.mocked(useCliManagerCodexConfigTomlSetMutation).mockReturnValue(rawMutation as any);
+    vi.mocked(useCliManagerCodexConfigQuery).mockReturnValue({
+      data: { config_dir: "/codex", can_open_config_dir: true },
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerCodexConfigTomlQuery).mockReturnValue({
+      data: { config_path: "/codex/config.toml", exists: true, toml: "" },
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    await screen.findByText("codex-tab");
+
+    expect(screen.getByLabelText("codex-372k-saving")).toHaveTextContent("true");
+    fireEvent.click(screen.getByRole("button", { name: "save-codex" }));
+    fireEvent.click(screen.getByRole("button", { name: "save-codex-toml" }));
+
+    expect(structuredMutation.mutateAsync).not.toHaveBeenCalled();
+    expect(rawMutation.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("returns true for OAuth proxy mode without waiting for Codex model catalog refresh", async () => {

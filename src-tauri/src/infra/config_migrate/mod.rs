@@ -10,7 +10,7 @@ pub(crate) mod skill_fs;
 mod tests;
 
 use crate::resident;
-use crate::shared::error::{db_err, AppResult};
+use crate::shared::error::{db_err, AppError, AppResult};
 use crate::{db, settings};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -405,6 +405,9 @@ pub fn config_export<R: tauri::Runtime>(
     // always serialize the fail-closed stable value.
     let mut app_settings = settings::read(app)?;
     app_settings.update_channel = settings::UpdateChannel::Stable;
+    // Catalog policy is device/home-owned and can only be changed through its
+    // dedicated transaction, so portable bundles carry the fail-closed value.
+    app_settings.codex_gpt56_372k_context_enabled = false;
     let settings_string = serde_json::to_string(&app_settings)
         .map_err(|e| format!("SYSTEM_ERROR: failed to serialize settings: {e}"))?;
 
@@ -613,6 +616,55 @@ pub(crate) struct PreparedConfigImport {
     image_gen_configs: Option<Vec<ImageGenConfigExport>>,
 }
 
+fn config_import_failure(
+    original: AppError,
+    catalog_recovery: Option<AppError>,
+    codex_home_rebind_recovery: Option<AppError>,
+    import_recovery: Option<AppError>,
+) -> AppError {
+    let mut recovery_errors = Vec::new();
+    if let Some(error) = catalog_recovery.as_ref() {
+        recovery_errors.push(error.to_string());
+    }
+    if let Some(error) = codex_home_rebind_recovery.as_ref() {
+        recovery_errors.push(error.to_string());
+    }
+    if let Some(error) = import_recovery.as_ref() {
+        recovery_errors.push(error.to_string());
+    }
+
+    let import_recovery_required = codex_home_rebind_recovery.is_some()
+        || import_recovery.is_some()
+        || original.code() == "CONFIG_IMPORT_RECOVERY_REQUIRED";
+    if import_recovery_required {
+        if recovery_errors.is_empty() {
+            return original;
+        }
+        return AppError::new(
+            "CONFIG_IMPORT_RECOVERY_REQUIRED",
+            format!(
+                "config import failed ({original}); rollback failed: {}",
+                recovery_errors.join("; ")
+            ),
+        );
+    }
+
+    if catalog_recovery.is_some() || original.code() == "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED" {
+        if recovery_errors.is_empty() {
+            return original;
+        }
+        return AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            format!(
+                "config import failed ({original}); managed catalog rollback failed: {}",
+                recovery_errors.join("; ")
+            ),
+        );
+    }
+
+    original
+}
+
 pub fn config_import<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     db: &db::Db,
@@ -651,6 +703,30 @@ pub fn config_import<R: tauri::Runtime>(
     } = prepared;
 
     let previous_settings = settings::read(app)?;
+    settings_to_write.codex_gpt56_372k_context_enabled =
+        previous_settings.codex_gpt56_372k_context_enabled;
+    let codex_home_changed = previous_settings.codex_home_mode != settings_to_write.codex_home_mode
+        || previous_settings.codex_home_override != settings_to_write.codex_home_override;
+    if previous_settings.codex_gpt56_372k_context_enabled && codex_home_changed {
+        return Err(crate::shared::error::AppError::new(
+            "CODEX_GPT56_372K_CONTEXT_HOME_CHANGE_BLOCKED",
+            "disable GPT-5.6 372K context before importing a different Codex home",
+        ));
+    }
+    let prepared_codex_home_rebind = codex_home_changed
+        .then(|| {
+            crate::cli_proxy::prepare_codex_home_rebind_for_config_import(
+                app,
+                &previous_settings,
+                &settings_to_write,
+            )
+        })
+        .transpose()?
+        .flatten();
+    let codex_home_rebind_base_origin = prepared_codex_home_rebind
+        .as_ref()
+        .map(|_| crate::gateway::planned_base_url(&settings_to_write))
+        .transpose()?;
     let update_channel_changed =
         previous_settings.update_channel != settings_to_write.update_channel;
     let runtime_backups = rollback::capture_cli_runtime_backups(app)?;
@@ -749,10 +825,12 @@ pub fn config_import<R: tauri::Runtime>(
             );
             let base =
                 "SETTINGS_CONCURRENT_UPDATE: settings changed during config import".to_string();
-            return Err(match recovery {
-                Ok(()) => base.into(),
-                Err(fs_err) => format!("{base}; {fs_err}").into(),
-            });
+            return Err(config_import_failure(
+                base.into(),
+                None,
+                None,
+                recovery.err(),
+            ));
         }
         WholeSettingsCommitResult::Failed(error) => {
             drop(tx);
@@ -764,10 +842,12 @@ pub fn config_import<R: tauri::Runtime>(
                 runtime_backups,
                 skill_fs_guard.as_mut(),
             );
-            return Err(match recovery {
-                Ok(()) => error.into(),
-                Err(fs_err) => format!("{error}; {fs_err}").into(),
-            });
+            return Err(config_import_failure(
+                error.into(),
+                None,
+                None,
+                recovery.err(),
+            ));
         }
         WholeSettingsCommitResult::CommitNeedsRollback {
             committed,
@@ -785,15 +865,107 @@ pub fn config_import<R: tauri::Runtime>(
                 runtime_backups,
                 skill_fs_guard.as_mut(),
             );
-            return Err(match recovery {
-                Ok(()) => error.into(),
-                Err(fs_err) => format!("{error}; {fs_err}").into(),
-            });
+            return Err(config_import_failure(
+                error.into(),
+                None,
+                None,
+                recovery.err(),
+            ));
         }
     };
     if update_channel_changed {
         settings::mark_update_channel_transition();
     }
+
+    let applied_codex_home_rebind = match (
+        prepared_codex_home_rebind,
+        codex_home_rebind_base_origin.as_deref(),
+    ) {
+        (Some(prepared), Some(base_origin)) => {
+            match crate::cli_proxy::apply_codex_home_rebind_for_config_import_locked(
+                app,
+                prepared,
+                base_origin,
+            ) {
+                Ok(applied) => Some(applied),
+                Err(error) => {
+                    drop(tx);
+                    let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
+                        app,
+                        db,
+                        &previous_settings,
+                        Some(&settings_to_write),
+                        Some(auto_start_token),
+                        runtime_backups,
+                        skill_fs_guard.as_mut(),
+                    );
+                    return Err(config_import_failure(error, None, None, recovery.err()));
+                }
+            }
+        }
+        (None, None) => None,
+        _ => {
+            unreachable!("Codex home rebind preparation and base origin must be paired")
+        }
+    };
+
+    let catalog_plan =
+        match crate::codex_model_catalog::managed::load_profiles(&tx).and_then(|profiles| {
+            crate::codex_model_catalog::managed::prepare_for_profiles_with_policy(
+                app,
+                &profiles,
+                crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_settings(
+                    &settings_to_write,
+                ),
+            )
+        }) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let codex_home_rebind_recovery = applied_codex_home_rebind
+                    .map(|applied| applied.rollback())
+                    .and_then(Result::err);
+                drop(tx);
+                let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
+                    app,
+                    db,
+                    &previous_settings,
+                    Some(&settings_to_write),
+                    Some(auto_start_token),
+                    runtime_backups,
+                    skill_fs_guard.as_mut(),
+                );
+                return Err(config_import_failure(
+                    error,
+                    None,
+                    codex_home_rebind_recovery,
+                    recovery.err(),
+                ));
+            }
+        };
+    let applied_catalog = match catalog_plan.apply(app) {
+        Ok(applied) => applied,
+        Err(error) => {
+            let codex_home_rebind_recovery = applied_codex_home_rebind
+                .map(|applied| applied.rollback())
+                .and_then(Result::err);
+            drop(tx);
+            let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
+                app,
+                db,
+                &previous_settings,
+                Some(&settings_to_write),
+                Some(auto_start_token),
+                runtime_backups,
+                skill_fs_guard.as_mut(),
+            );
+            return Err(config_import_failure(
+                error,
+                None,
+                codex_home_rebind_recovery,
+                recovery.err(),
+            ));
+        }
+    };
 
     let runtime_sync_error = {
         #[cfg(test)]
@@ -808,6 +980,10 @@ pub fn config_import<R: tauri::Runtime>(
         }
     };
     if let Some(err) = runtime_sync_error {
+        let catalog_recovery = applied_catalog.rollback().err();
+        let codex_home_rebind_recovery = applied_codex_home_rebind
+            .map(|applied| applied.rollback())
+            .and_then(Result::err);
         drop(tx);
         let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
             app,
@@ -818,14 +994,20 @@ pub fn config_import<R: tauri::Runtime>(
             runtime_backups,
             skill_fs_guard.as_mut(),
         );
-        return Err(match recovery {
-            Ok(()) => err,
-            Err(fs_err) => format!("{err}; {fs_err}").into(),
-        });
+        return Err(config_import_failure(
+            err,
+            catalog_recovery,
+            codex_home_rebind_recovery,
+            recovery.err(),
+        ));
     }
 
     if let Err(err) = tx.commit() {
         // commit() already consumed the transaction on failure paths.
+        let catalog_recovery = applied_catalog.rollback().err();
+        let codex_home_rebind_recovery = applied_codex_home_rebind
+            .map(|applied| applied.rollback())
+            .and_then(Result::err);
         let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
             app,
             db,
@@ -836,10 +1018,12 @@ pub fn config_import<R: tauri::Runtime>(
             skill_fs_guard.as_mut(),
         );
         let base = format!("failed to commit transaction: {err}");
-        return Err(match recovery {
-            Ok(()) => db_err!("{base}"),
-            Err(fs_err) => format!("{base}; {fs_err}").into(),
-        });
+        return Err(config_import_failure(
+            db_err!("{base}"),
+            catalog_recovery,
+            codex_home_rebind_recovery,
+            recovery.err(),
+        ));
     }
 
     if let Some(guard) = skill_fs_guard.take() {

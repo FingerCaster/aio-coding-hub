@@ -15,14 +15,15 @@ import { openDesktopPath } from "../../services/desktop/opener";
 import { type GatewayRectifierSettingsPatch } from "../../services/settings/settingsGatewayRectifier";
 import type {
   AppSettings,
+  AppSettingsPatch,
   ModelRoutingPolicy,
-  SensitiveStringUpdate,
   UpstreamRetryPolicy,
 } from "../../services/settings/settings";
 import {
   getSettingsReadProtection,
   SETTINGS_READONLY_MESSAGE,
   useSettingsCircuitBreakerNoticeSetMutation,
+  useSettingsCodexGpt56372kContextSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
   useSettingsGatewayRectifierSetMutation,
   useSettingsPatchMutation,
@@ -106,11 +107,13 @@ export function useCliManagerPageDataModel() {
   const rectifierMutation = useSettingsGatewayRectifierSetMutation();
   const circuitBreakerNoticeMutation = useSettingsCircuitBreakerNoticeSetMutation();
   const codexSessionIdCompletionMutation = useSettingsCodexSessionIdCompletionSetMutation();
+  const codexGpt56372kContextMutation = useSettingsCodexGpt56372kContextSetMutation();
   const commonSettingsMutation = useSettingsPatchMutation();
 
   const rectifierSaving = rectifierMutation.isPending;
   const circuitBreakerNoticeSaving = circuitBreakerNoticeMutation.isPending;
   const codexSessionIdCompletionSaving = codexSessionIdCompletionMutation.isPending;
+  const codexGpt56372kContextSaving = codexGpt56372kContextMutation.isPending;
   const commonSettingsSaving = commonSettingsMutation.isPending;
 
   const [rectifier, setRectifier] = useState<GatewayRectifierSettingsPatch>(DEFAULT_RECTIFIER);
@@ -197,7 +200,8 @@ export function useCliManagerPageDataModel() {
   const codexConfigTomlLoading = codexConfigTomlQuery.isFetching;
   const codexConfigTomlSaving = codexConfigTomlSetMutation.isPending;
   const codexProviderSyncing = codexProviderSyncMutation.isPending;
-  const codexConfigWriting = codexConfigSetMutation.isPending || codexConfigTomlSaving;
+  const codexConfigWriting =
+    codexConfigSetMutation.isPending || codexConfigTomlSaving || codexGpt56372kContextSaving;
   const codexConfigSaving = codexConfigWriting;
   const codexModelCatalogLoading = codexModelCatalogQuery.isFetching;
   const codexModelCatalogError = codexModelCatalogQuery.isError;
@@ -391,9 +395,7 @@ export function useCliManagerPageDataModel() {
     } catch {}
   }
 
-  async function persistCommonSettings(
-    patch: Partial<AppSettings> & { upstream_proxy_password?: SensitiveStringUpdate }
-  ): Promise<AppSettings | null> {
+  async function persistCommonSettings(patch: AppSettingsPatch): Promise<AppSettings | null> {
     if (settingsWriteBlocked) {
       blockSettingsWrite();
       return null;
@@ -533,6 +535,35 @@ export function useCliManagerPageDataModel() {
 
     toast(enabled ? "已开启 Codex OAuth 兼容代理模式" : "已关闭 Codex OAuth 兼容代理模式");
     return true;
+  }
+
+  async function persistCodexGpt56372kContext(enabled: boolean) {
+    if (settingsWriteBlocked) {
+      blockSettingsWrite();
+      return false;
+    }
+    if (codexGpt56372kContextSaving || commonSettingsSaving || codexConfigWriting || !appSettings)
+      return false;
+
+    try {
+      const updated = await codexGpt56372kContextMutation.mutateAsync(enabled);
+      if (!updated || updated.codex_gpt56_372k_context_enabled !== enabled) {
+        toast("更新 Codex GPT-5.6 372K 上下文失败：后端未确认目标状态");
+        return false;
+      }
+
+      toast(enabled ? "已开启 Codex GPT-5.6 372K 上下文" : "已关闭 Codex GPT-5.6 372K 上下文");
+      return true;
+    } catch (err) {
+      const formatted = formatActionFailureToast("更新 Codex GPT-5.6 372K 上下文", err);
+      logToConsole("error", "更新 Codex GPT-5.6 372K 上下文失败", {
+        error: formatted.raw,
+        error_code: formatted.error_code ?? undefined,
+        enabled,
+      });
+      toast(formatted.toast);
+      return false;
+    }
   }
 
   async function pickCodexHomeDirectory(initialPath?: string): Promise<string | null> {
@@ -761,7 +792,9 @@ export function useCliManagerPageDataModel() {
       setUpstreamRetryPolicy,
       streamInternalErrorGuardMs,
       setStreamInternalErrorGuardMs,
-      codexHomeSettingsSaving: commonSettingsSaving || settingsWriteBlocked,
+      codexHomeSettingsSaving:
+        commonSettingsSaving || codexGpt56372kContextSaving || settingsWriteBlocked,
+      codexGpt56372kContextSaving,
       refreshCodex,
       openCodexConfigDir,
       persistCodexConfig,
@@ -770,6 +803,7 @@ export function useCliManagerPageDataModel() {
       persistCommonSettings,
       persistCodexHomeSettings,
       persistCodexOauthCompatibleProxyMode,
+      persistCodexGpt56372kContext,
       pickCodexHomeDirectory,
     },
     cx2ccTabProps: {

@@ -121,14 +121,14 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
 ) -> AppResult<CodexProviderSyncResult> {
     let home = crate::codex_paths::codex_home_dir(app)?;
     let target_provider = resolve_target_provider(&context.target_provider)?;
-    if context.sync_history && codex_app_is_running()? {
-        return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
+    if context.sync_history {
+        codex_provider_sync_history_preflight()?;
     }
     let lock_path = home.join(PROVIDER_SYNC_LOCK_FILE);
     let _lock_guard = acquire_lock(&lock_path)?;
 
-    if context.sync_history && codex_app_is_running()? {
-        return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
+    if context.sync_history {
+        codex_provider_sync_history_preflight()?;
     }
 
     let config_path = crate::codex_paths::codex_config_toml_path(app)?;
@@ -230,6 +230,33 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
             Err(err)
         }
     }
+}
+
+pub(crate) fn codex_provider_sync_history_preflight() -> AppResult<()> {
+    if codex_app_is_running()? {
+        return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn codex_provider_sync_history_only<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    trigger: impl Into<String>,
+    source_provider: &str,
+    target_provider: &str,
+) -> AppResult<CodexProviderSyncResult> {
+    let _ = resolve_target_provider(source_provider)?;
+    // History sync is a canonicalization pass: every persisted non-target
+    // provider must converge in one transaction, regardless of config source.
+    codex_provider_sync(
+        app,
+        CodexProviderSyncContext {
+            trigger: trigger.into(),
+            target_provider: target_provider.to_string(),
+            config_bytes: None,
+            sync_history: true,
+        },
+    )
 }
 
 pub fn codex_provider_sync_current<R: tauri::Runtime>(

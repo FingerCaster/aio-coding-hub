@@ -46,6 +46,40 @@ pub(crate) struct CodexCliProxyBackupSnapshot {
     backup_path: PathBuf,
     backup_existed: bool,
     backup_bytes: Option<Vec<u8>>,
+    committed_manifest: (bool, Option<Vec<u8>>),
+    committed_backup: (bool, Option<Vec<u8>>),
+}
+
+#[derive(Debug, Default)]
+struct CodexCliProxyBackupRollback {
+    manifest_restored: bool,
+    backup_restored: bool,
+    errors: Vec<String>,
+}
+
+impl CodexCliProxyBackupRollback {
+    fn complete() -> Self {
+        Self {
+            manifest_restored: true,
+            backup_restored: true,
+            errors: Vec::new(),
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.manifest_restored && self.backup_restored && self.errors.is_empty()
+    }
+
+    fn append_failures(&self, failures: &mut Vec<String>) {
+        if !self.backup_restored {
+            failures.push("proxy backup changed after this save; rollback was skipped".to_string());
+        }
+        if !self.manifest_restored {
+            failures
+                .push("proxy manifest changed after this save; rollback was skipped".to_string());
+        }
+        failures.extend(self.errors.iter().cloned());
+    }
 }
 
 pub(crate) fn sync_codex_cli_proxy_backup_if_enabled<R: tauri::Runtime>(
@@ -63,19 +97,43 @@ pub(crate) fn sync_codex_cli_proxy_backup_if_enabled<R: tauri::Runtime>(
         "codex",
         "codex_config_toml",
         "config.toml",
-    )
-    .inspect_err(|_err| {
-        let _ = restore_optional_file(&manifest_path, &manifest_snapshot);
-    })?
+    )?
     else {
         return Ok(None);
     };
 
+    let committed_manifest = snapshot_optional_file(&manifest_path).map_err(|error| {
+        crate::shared::error::AppError::new(
+            "CODEX_CONFIG_BACKUP_RECOVERY_REQUIRED",
+            format!(
+                "the proxy manifest may have changed but its committed state could not be captured: {error}"
+            ),
+        )
+    })?;
+
     let backup_snapshot = match snapshot_optional_file(&backup_path) {
         Ok(snapshot) => snapshot,
         Err(err) => {
-            let _ = restore_optional_file(&manifest_path, &manifest_snapshot);
-            return Err(format!("CODEX_CONFIG_BACKUP_REFRESH_FAILED: {err}").into());
+            let manifest_restored = restore_optional_file_if_current(
+                &manifest_path,
+                &manifest_snapshot,
+                &committed_manifest,
+            );
+            return match manifest_restored {
+                Ok(true) => Err(format!("CODEX_CONFIG_BACKUP_REFRESH_FAILED: {err}").into()),
+                Ok(false) => Err(crate::shared::error::AppError::new(
+                    "CODEX_CONFIG_BACKUP_RECOVERY_REQUIRED",
+                    format!(
+                        "proxy backup inspection failed ({err}); the proxy manifest changed concurrently"
+                    ),
+                )),
+                Err(rollback_error) => Err(crate::shared::error::AppError::new(
+                    "CODEX_CONFIG_BACKUP_RECOVERY_REQUIRED",
+                    format!(
+                        "proxy backup inspection failed ({err}); manifest rollback failed: {rollback_error}"
+                    ),
+                )),
+            };
         }
     };
     let snapshot = CodexCliProxyBackupSnapshot {
@@ -85,13 +143,24 @@ pub(crate) fn sync_codex_cli_proxy_backup_if_enabled<R: tauri::Runtime>(
         backup_path,
         backup_existed: backup_snapshot.0,
         backup_bytes: backup_snapshot.1,
+        committed_manifest,
+        committed_backup: (true, Some(next_bytes.to_vec())),
     };
 
     if let Err(err) = write_file_atomic_if_changed(&snapshot.backup_path, next_bytes)
         .map_err(|err| format!("CODEX_CONFIG_BACKUP_REFRESH_FAILED: {err}"))
     {
-        let _ = restore_codex_cli_proxy_backup_snapshot(&snapshot);
-        return Err(err.into());
+        let rollback = restore_codex_cli_proxy_backup_snapshot_if_current(&snapshot);
+        return if rollback.is_complete() {
+            Err(err.into())
+        } else {
+            let mut failures = Vec::new();
+            rollback.append_failures(&mut failures);
+            Err(crate::shared::error::AppError::new(
+                "CODEX_CONFIG_BACKUP_RECOVERY_REQUIRED",
+                format!("{err}; {}", failures.join("; ")),
+            ))
+        };
     }
 
     Ok(Some(snapshot))
@@ -131,18 +200,94 @@ fn restore_optional_file(
     Ok(())
 }
 
-pub(crate) fn restore_codex_cli_proxy_backup_snapshot(
+fn restore_optional_file_if_current(
+    path: &Path,
+    before: &(bool, Option<Vec<u8>>),
+    committed: &(bool, Option<Vec<u8>>),
+) -> crate::shared::error::AppResult<bool> {
+    let current = snapshot_optional_file(path)?;
+    if current == *before {
+        return Ok(true);
+    }
+    if current != *committed {
+        return Ok(false);
+    }
+    restore_optional_file(path, before)?;
+    Ok(true)
+}
+
+fn restore_codex_config_if_current(
+    path: &Path,
+    before: Option<&[u8]>,
+    committed: &[u8],
+) -> crate::shared::error::AppResult<bool> {
+    let current = read_optional_codex_config_file(path)?;
+    if current.as_deref() == before {
+        return Ok(true);
+    }
+    if current.as_deref() != Some(committed) {
+        return Ok(false);
+    }
+
+    match before {
+        Some(bytes) => {
+            let _ = write_file_atomic_if_changed(path, bytes)?;
+        }
+        None => remove_path_if_exists(path)?,
+    }
+    Ok(true)
+}
+
+fn restore_codex_cli_proxy_backup_snapshot_if_current(
     snapshot: &CodexCliProxyBackupSnapshot,
-) -> crate::shared::error::AppResult<()> {
-    restore_optional_file(
+) -> CodexCliProxyBackupRollback {
+    let mut rollback = CodexCliProxyBackupRollback::default();
+    match restore_optional_file_if_current(
         &snapshot.backup_path,
         &(snapshot.backup_existed, snapshot.backup_bytes.clone()),
-    )?;
-    restore_optional_file(
+        &snapshot.committed_backup,
+    ) {
+        Ok(restored) => rollback.backup_restored = restored,
+        Err(error) => rollback
+            .errors
+            .push(format!("proxy backup rollback failed: {error}")),
+    }
+    match restore_optional_file_if_current(
         &snapshot.manifest_path,
         &(snapshot.manifest_existed, snapshot.manifest_bytes.clone()),
-    )?;
-    Ok(())
+        &snapshot.committed_manifest,
+    ) {
+        Ok(restored) => rollback.manifest_restored = restored,
+        Err(error) => rollback
+            .errors
+            .push(format!("proxy manifest rollback failed: {error}")),
+    }
+    rollback
+}
+
+fn rollback_codex_config_and_proxy_backup_if_current(
+    path: &Path,
+    config_before: Option<&[u8]>,
+    config_committed: &[u8],
+    backup_snapshot: Option<&CodexCliProxyBackupSnapshot>,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    // These files have separate committed tokens. Always attempt both restores
+    // so drift or an I/O failure on one side cannot strand the other side.
+    match restore_codex_config_if_current(path, config_before, config_committed) {
+        Ok(true) => {}
+        Ok(false) => {
+            failures.push("config changed after this save; rollback was skipped".to_string())
+        }
+        Err(error) => failures.push(format!("config rollback failed: {error}")),
+    }
+
+    let backup_rollback = backup_snapshot
+        .map(restore_codex_cli_proxy_backup_snapshot_if_current)
+        .unwrap_or_else(CodexCliProxyBackupRollback::complete);
+    backup_rollback.append_failures(&mut failures);
+    failures
 }
 
 fn remove_path_if_exists(path: &Path) -> crate::shared::error::AppResult<()> {
@@ -157,6 +302,118 @@ fn remove_path_if_exists(path: &Path) -> crate::shared::error::AppResult<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(format!("failed to inspect path {}: {err}", path.display()).into()),
     }
+}
+
+fn apply_managed_catalog_for_config_save<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    path: &Path,
+    previous: Option<&[u8]>,
+    proposed: &[u8],
+    backup_snapshot: Option<&CodexCliProxyBackupSnapshot>,
+) -> crate::shared::error::AppResult<crate::codex_model_catalog::managed::AppliedManagedCatalog> {
+    let sync_error =
+        match crate::codex_model_catalog::managed::sync_current_after_config_save_locked(
+            app, previous, proposed,
+        ) {
+            Ok(applied) => return Ok(applied),
+            Err(error) => error,
+        };
+
+    let mut recovery_errors = rollback_codex_config_and_proxy_backup_if_current(
+        path,
+        previous,
+        proposed,
+        backup_snapshot,
+    );
+
+    if recovery_errors.is_empty() && !managed_catalog_sync_requires_recovery(&sync_error) {
+        return Err(crate::shared::error::AppError::new(
+            "CODEX_CONFIG_MANAGED_CATALOG_SYNC_FAILED",
+            format!(
+                "Codex config remained unchanged after catalog preparation failed: {sync_error}"
+            ),
+        ));
+    }
+
+    if managed_catalog_sync_requires_recovery(&sync_error) {
+        recovery_errors.push(format!("managed catalog rollback failed: {sync_error}"));
+    }
+    Err(crate::shared::error::AppError::new(
+        "CODEX_CONFIG_MANAGED_CATALOG_RECOVERY_REQUIRED",
+        format!(
+            "catalog reconciliation failed ({sync_error}); {}",
+            recovery_errors.join("; ")
+        ),
+    ))
+}
+
+fn managed_catalog_sync_requires_recovery(error: &crate::shared::error::AppError) -> bool {
+    error.code() == "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED"
+}
+
+fn rollback_config_after_post_catalog_failure(
+    path: &Path,
+    previous: Option<&[u8]>,
+    committed: &[u8],
+    backup_snapshot: Option<&CodexCliProxyBackupSnapshot>,
+    catalog_commit: crate::codex_model_catalog::managed::AppliedManagedCatalog,
+    original: crate::shared::error::AppError,
+) -> crate::shared::error::AppError {
+    let mut recovery_errors = Vec::new();
+    if original.code() == "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED" {
+        recovery_errors.push(format!("history rollback failed: {original}"));
+    }
+    if let Err(error) = catalog_commit.rollback() {
+        recovery_errors.push(format!("catalog rollback failed: {error}"));
+    }
+    recovery_errors.extend(rollback_codex_config_and_proxy_backup_if_current(
+        path,
+        previous,
+        committed,
+        backup_snapshot,
+    ));
+
+    if recovery_errors.is_empty() {
+        original
+    } else {
+        crate::shared::error::AppError::new(
+            "CODEX_CONFIG_MANAGED_CATALOG_RECOVERY_REQUIRED",
+            format!(
+                "post-catalog Codex config operation failed ({original}); {}",
+                recovery_errors.join("; ")
+            ),
+        )
+    }
+}
+
+#[cfg(not(test))]
+fn injected_post_catalog_failure() -> crate::shared::error::AppResult<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_POST_CATALOG_CONFIRMATION: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+}
+
+#[cfg(test)]
+fn injected_post_catalog_failure() -> crate::shared::error::AppResult<()> {
+    let should_fail = FAIL_NEXT_POST_CATALOG_CONFIRMATION.with(|failure| failure.replace(false));
+    if should_fail {
+        Err(crate::shared::error::AppError::new(
+            "CODEX_CONFIG_TEST_POST_CATALOG_FAILURE",
+            "injected post-catalog Codex config failure",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_post_catalog_confirmation_for_test() {
+    FAIL_NEXT_POST_CATALOG_CONFIRMATION.with(|failure| failure.set(true));
 }
 
 pub(crate) fn codex_config_next_bytes(
@@ -307,7 +564,7 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     let bytes = codex_config_normalize_raw_toml(toml)?;
     let current = read_optional_codex_config_file(&path)?;
     let baseline = super::cli_proxy::codex_enabled_proxy_baseline(app)?;
-    let (backup_bytes, next, requires_provider_sync) = match baseline.as_ref() {
+    let (backup_bytes, next) = match baseline.as_ref() {
         Some(baseline) => {
             let baseline_before = baseline.config_bytes.as_deref().unwrap_or_default();
             let previous_base_url = format!("{}/v1", baseline.base_origin.trim_end_matches('/'));
@@ -340,7 +597,7 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
                 &baseline.base_origin,
                 Some(&previous_base_url),
             )?;
-            (backup_bytes, next, requires_provider_sync)
+            (backup_bytes, next)
         }
         None => {
             let previous_provider = provider_projection::desired_provider_key_from_config(
@@ -353,36 +610,30 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
             } else {
                 bytes
             };
-            (next.clone(), next, requires_provider_sync)
+            (next.clone(), next)
         }
     };
     ensure_codex_config_len(&backup_bytes, "codex config backup")?;
     ensure_codex_config_len(&next, "codex config.toml")?;
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, &backup_bytes)?;
-    let write_result = if requires_provider_sync {
-        let next_text = String::from_utf8(next.clone())
-            .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
-        let target_provider = codex_config_patch_target_provider(&next_text)?;
-        crate::infra::codex_provider_sync::codex_provider_sync(
-            app,
-            crate::infra::codex_provider_sync::CodexProviderSyncContext {
-                trigger: "codex_config_toml_set_raw".to_string(),
-                target_provider,
-                config_bytes: Some(next),
-                sync_history: false,
-            },
-        )
-        .map(|_| ())
-    } else {
-        write_file_atomic_if_changed(&path, &next).map(|_| ())
-    };
-    if let Err(err) = write_result {
-        if let Some(snapshot) = backup_snapshot.as_ref() {
-            restore_codex_cli_proxy_backup_snapshot(snapshot)?;
-        }
-        return Err(err);
+    let catalog_commit = apply_managed_catalog_for_config_save(
+        app,
+        &path,
+        current.as_deref(),
+        &next,
+        backup_snapshot.as_ref(),
+    )?;
+    match injected_post_catalog_failure().and_then(|()| codex_config_get(app)) {
+        Ok(state) => Ok(state),
+        Err(error) => Err(rollback_config_after_post_catalog_failure(
+            &path,
+            current.as_deref(),
+            &next,
+            backup_snapshot.as_ref(),
+            catalog_commit,
+            error,
+        )),
     }
-    codex_config_get(app)
 }
 
 pub fn codex_config_set_with_options<R: tauri::Runtime>(
@@ -403,6 +654,18 @@ pub fn codex_config_set_with_options<R: tauri::Runtime>(
     let current = read_optional_codex_config_file(&path)?;
     let baseline = super::cli_proxy::codex_enabled_proxy_baseline(app)?;
     let requires_provider_sync = patch_requires_provider_sync(&patch);
+    let history_source_provider = if requires_provider_sync && sync_history {
+        let source = baseline
+            .as_ref()
+            .and_then(|baseline| baseline.config_bytes.as_deref())
+            .or(current.as_deref())
+            .unwrap_or_default();
+        let source = std::str::from_utf8(source)
+            .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
+        Some(codex_config_patch_target_provider(source)?)
+    } else {
+        None
+    };
     let backup_bytes = match baseline.as_ref() {
         Some(baseline) => {
             let baseline_before = baseline.config_bytes.as_deref().unwrap_or_default();
@@ -439,34 +702,78 @@ pub fn codex_config_set_with_options<R: tauri::Runtime>(
     };
     ensure_codex_config_len(&backup_bytes, "codex config backup")?;
     ensure_codex_config_len(&next, "codex config.toml")?;
+    let target_provider = if requires_provider_sync {
+        let next_text = std::str::from_utf8(&next)
+            .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
+        Some(codex_config_patch_target_provider(next_text)?)
+    } else {
+        None
+    };
+    if requires_provider_sync && sync_history {
+        crate::infra::codex_provider_sync::codex_provider_sync_history_preflight()?;
+    }
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, &backup_bytes)?;
 
-    if requires_provider_sync {
-        let next_text = String::from_utf8(next.clone())
-            .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
-        let target_provider = codex_config_patch_target_provider(&next_text)?;
-        if let Err(err) = crate::infra::codex_provider_sync::codex_provider_sync(
-            app,
-            crate::infra::codex_provider_sync::CodexProviderSyncContext {
-                trigger: "codex_config_set".to_string(),
+    let catalog_commit = apply_managed_catalog_for_config_save(
+        app,
+        &path,
+        current.as_deref(),
+        &next,
+        backup_snapshot.as_ref(),
+    )?;
+
+    let confirmed = match injected_post_catalog_failure().and_then(|()| codex_config_get(app)) {
+        Ok(confirmed) => confirmed,
+        Err(error) => {
+            return Err(rollback_config_after_post_catalog_failure(
+                &path,
+                current.as_deref(),
+                &next,
+                backup_snapshot.as_ref(),
+                catalog_commit,
+                error,
+            ));
+        }
+    };
+
+    if requires_provider_sync && sync_history {
+        let source_provider = history_source_provider
+            .as_deref()
+            .expect("history source must exist when history sync is required");
+        let target_provider = target_provider
+            .as_deref()
+            .expect("provider target must exist when history sync is required");
+        let history_result = if source_provider == target_provider {
+            crate::infra::codex_provider_sync::codex_provider_sync(
+                app,
+                crate::infra::codex_provider_sync::CodexProviderSyncContext {
+                    trigger: "codex_config_set_history".to_string(),
+                    target_provider: target_provider.to_string(),
+                    config_bytes: None,
+                    sync_history: true,
+                },
+            )
+        } else {
+            crate::infra::codex_provider_sync::codex_provider_sync_history_only(
+                app,
+                "codex_config_set_history",
+                source_provider,
                 target_provider,
-                config_bytes: Some(next),
-                sync_history,
-            },
-        ) {
-            if let Some(snapshot) = backup_snapshot.as_ref() {
-                restore_codex_cli_proxy_backup_snapshot(snapshot)?;
-            }
-            return Err(err);
+            )
+        };
+        if let Err(error) = history_result {
+            return Err(rollback_config_after_post_catalog_failure(
+                &path,
+                current.as_deref(),
+                &next,
+                backup_snapshot.as_ref(),
+                catalog_commit,
+                error,
+            ));
         }
-    } else if let Err(err) = write_file_atomic_if_changed(&path, &next) {
-        if let Some(snapshot) = backup_snapshot.as_ref() {
-            restore_codex_cli_proxy_backup_snapshot(snapshot)?;
-        }
-        return Err(err);
     }
 
-    codex_config_get(app)
+    Ok(confirmed)
 }
 
 #[cfg(test)]

@@ -1,0 +1,11 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"约束 Codex config.toml 的解析、结构化/原始写入、字段保真、并发和原子回滚。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md","reason":"约束 managed catalog ownership、完整目录生成、provider capability 投影和 aio/* 隔离。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"新增持久开关、专属 writer、schema migration 和跨文件补偿必须遵守 settings 字段所有权。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"任务跨 Rust settings/catalog/config、Tauri bindings、query/service 和 React UI，需要端到端核对。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"要求复用现有 managed catalog prepare/apply/rollback、settings writer 和 query mutation 模式。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/catalog-and-limits.md","reason":"固定 Codex 0.147.0 原始目录、clamp 机制和 catalog 兼容边界；旧 380928 建议已被最终决策覆盖。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/runtime-dataflow.md","reason":"记录启动加载、双字段改写、95% 语义、生命周期缺口和完整测试矩阵。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/final-context-value-decision.md","reason":"最终数值契约：跟随上游十进制口径，372K 精确为 372000，380928 仅作负向测试。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"约束 Beta tag、不可变 SHA、14 项资产、公开 prerelease 和 release-channels CAS。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"约束 origin-only 集成、CI、tag/source identity 和发布后独立验证。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/beta-release-baseline.md","reason":"记录 Beta.8 高水位、beta.9 候选和发布前必须重新核验的远端事实。"}

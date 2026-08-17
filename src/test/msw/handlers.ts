@@ -127,6 +127,12 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/settings_codex_session_id_completion_set`, () =>
     HttpResponse.json(getSettingsState())
   ),
+  http.post(`${TAURI_ENDPOINT}/settings_codex_gpt56_372k_context_set`, async ({ request }) => {
+    const payload = await withJson<{ enabled?: boolean }>(request);
+    return HttpResponse.json(
+      mergeSettingsState({ codex_gpt56_372k_context_enabled: payload.enabled === true })
+    );
+  }),
 
   // ---- Gateway ----
   http.post(`${TAURI_ENDPOINT}/gateway_status`, () => HttpResponse.json(getGatewayStatusState())),

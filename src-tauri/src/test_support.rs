@@ -5,7 +5,107 @@ use std::path::PathBuf;
 #[cfg(test)]
 use crate::shared::mutex_ext::MutexExt;
 #[cfg(test)]
+use std::path::Path;
+#[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
+
+#[cfg(test)]
+pub(crate) const CODEX_MODEL_CATALOG_FIXTURE_MARKER: &str = "aio-test-user-model-catalog";
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct CodexModelCatalogFixture {
+    pub(crate) catalog_path: PathBuf,
+    pub(crate) config_path: PathBuf,
+}
+
+#[cfg(test)]
+pub(crate) fn install_codex_model_catalog_fixture(codex_home: &Path) -> CodexModelCatalogFixture {
+    assert!(
+        codex_home.is_absolute(),
+        "test Codex home must be absolute: {}",
+        codex_home.display()
+    );
+    std::fs::create_dir_all(codex_home).expect("create test Codex home");
+
+    let catalog_path = codex_home.join("aio-test-model-catalog.json");
+    let catalog: serde_json::Value = serde_json::from_str(
+        r#"{
+            "fixture_marker": "aio-test-user-model-catalog",
+            "future_top_level": {"kept": true},
+            "models": [{
+                "slug": "gpt-base",
+                "display_name": "GPT Base",
+                "description": "base",
+                "default_reasoning_level": "high",
+                "supported_reasoning_levels": [{"effort": "high", "description": "deep"}],
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "supported_in_api": true,
+                "priority": 1,
+                "additional_speed_tiers": [],
+                "service_tiers": [],
+                "default_service_tier": null,
+                "availability_nux": null,
+                "upgrade": null,
+                "base_instructions": "base instructions",
+                "model_messages": null,
+                "include_skills_usage_instructions": false,
+                "supports_reasoning_summaries": false,
+                "default_reasoning_summary": "none",
+                "support_verbosity": false,
+                "default_verbosity": null,
+                "apply_patch_tool_type": null,
+                "web_search_tool_type": "text",
+                "truncation_policy": {"mode": "tokens", "limit": 10000},
+                "supports_parallel_tool_calls": false,
+                "supports_image_detail_original": false,
+                "context_window": 128000,
+                "max_context_window": 128000,
+                "auto_compact_token_limit": 100000,
+                "comp_hash": null,
+                "effective_context_window_percent": 95,
+                "experimental_supported_tools": [],
+                "input_modalities": ["text"],
+                "supports_search_tool": false,
+                "use_responses_lite": false,
+                "auto_review_model_override": null,
+                "tool_mode": null,
+                "multi_agent_version": null,
+                "future_required_field": {"kept": true}
+            }]
+        }"#,
+    )
+    .expect("parse test Codex model catalog");
+    assert_eq!(
+        catalog["fixture_marker"],
+        CODEX_MODEL_CATALOG_FIXTURE_MARKER
+    );
+    let mut catalog_bytes =
+        serde_json::to_vec_pretty(&catalog).expect("serialize test Codex model catalog");
+    catalog_bytes.push(b'\n');
+    std::fs::write(&catalog_path, catalog_bytes).expect("write test Codex model catalog");
+
+    let config_path = codex_home.join("config.toml");
+    let mut config = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse existing test Codex config"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(error) => panic!("read existing test Codex config: {error}"),
+    };
+    config["model_catalog_json"] = toml_edit::value(
+        catalog_path
+            .to_str()
+            .expect("test Codex catalog path must be UTF-8"),
+    );
+    std::fs::write(&config_path, config.to_string()).expect("write test Codex config");
+
+    CodexModelCatalogFixture {
+        catalog_path,
+        config_path,
+    }
+}
 
 pub fn clear_settings_cache() {
     crate::settings::clear_cache();
@@ -550,6 +650,15 @@ pub fn settings_get_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<serde_json::Value> {
     let settings = crate::settings::read(app)?;
+    serialize_json(settings)
+}
+
+pub fn settings_codex_gpt56_372k_context_set_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    enabled: bool,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let settings =
+        crate::app::settings_service::settings_codex_gpt56_372k_context_set_sync(app, enabled)?;
     serialize_json(settings)
 }
 

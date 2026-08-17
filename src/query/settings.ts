@@ -10,6 +10,7 @@ import {
 } from "../services/settings/settings";
 import { settingsCircuitBreakerNoticeSet } from "../services/settings/settingsCircuitBreakerNotice";
 import { settingsCodexSessionIdCompletionSet } from "../services/settings/settingsCodexSessionIdCompletion";
+import { settingsCodexGpt56372kContextSet } from "../services/settings/settingsCodexGpt56372kContext";
 import {
   settingsGatewayRectifierSet,
   type GatewayRectifierSettingsPatch,
@@ -153,6 +154,26 @@ export function useSettingsCodexSessionIdCompletionSetMutation() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: settingsKeys.get() });
+    },
+  });
+}
+
+export function useSettingsCodexGpt56372kContextSetMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (enabled: boolean) => settingsCodexGpt56372kContextSet(enabled),
+    onSuccess: (updated) => {
+      if (!updated) return;
+      queryClient.setQueryData<AppSettings | null>(settingsKeys.get(), updated);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: settingsKeys.get() });
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      // Catalog queries self-disable after an error; reset lets active snapshots retry.
+      queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelCatalogAll() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }

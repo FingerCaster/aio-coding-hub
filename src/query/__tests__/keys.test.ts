@@ -157,6 +157,7 @@ describe("query/keys", () => {
     expect(cliManagerKeys.claudeSettings()).toEqual(["cliManager", "claude", "settings"]);
     expect(cliManagerKeys.codexInfo()).toEqual(["cliManager", "codex", "info"]);
     expect(cliManagerKeys.codexConfig()).toEqual(["cliManager", "codex", "config"]);
+    expect(cliManagerKeys.codexModelCatalogAll()).toEqual(["cliManager", "codex", "modelCatalog"]);
     expect(
       cliManagerKeys.codexModelCatalog({
         configPath: "/tmp/.codex/config.toml",

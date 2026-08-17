@@ -1,0 +1,15 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"检查 raw/structured config 保存、未知字段和用户手工值未回归。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md","reason":"检查完整目录、aio/* 能力所有权、绑定恢复和生命周期事件。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"检查 schema、普通 writer 非所有权、专属事务和条件回滚。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md","reason":"检查启动恢复失败的可重试状态、错误边界和无部分运行时启动。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"执行跨层数据流、生成绑定、错误投影和端到端一致性复核。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查 372000 常量、catalog 生命周期与补偿 helper 没有漂移或重复实现。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/prd.md","reason":"逐项验证 R1-R14 与 MSI 验收，不把 380928 或 95% 后预算误作目标值。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/catalog-and-limits.md","reason":"复核 Codex 0.147.0 clamp、原始目录与兼容风险。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/runtime-dataflow.md","reason":"复核启动加载、rollback、proxy/profile/home 边界和测试矩阵。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/final-context-value-decision.md","reason":"检查所有实现、UI 与测试统一使用精确目标 372000。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md","reason":"检查 Beta Release flags、14 资产、签名、manifest、pointer/state 和 stable 隔离。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"检查 immutable source、origin/main 可达性、CI 和发布后验证。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/beta-release-baseline.md","reason":"发布前对照并刷新 Beta 高水位与候选 tag。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/implementation-followups.md","reason":"确认三项最终实现修复及其文件所有权、回归测试均已收口。"}
+{"file":".trellis/tasks/08-16-codex-gpt56-372k-context/research/full-scope-check-brief.md","reason":"执行最终 Phase 2.2 全范围审查、直接修复并报告残余风险。"}
