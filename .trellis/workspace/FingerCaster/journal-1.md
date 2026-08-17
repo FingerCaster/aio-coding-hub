@@ -1418,3 +1418,25 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 42: Codex 自定义模型上下文规则与 Beta 10 发布
+
+**Date**: 2026-08-17
+**Task**: Codex 自定义模型上下文规则与 Beta 10 发布
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/codex-custom-model-context-rules-archive`
+
+### Summary
+
+将 GPT-5.6 372K 专用开关扩展为精确模型 ID 的通用上下文规则，完成跨平台验证、MSI 打包、PR #44 合并并发布 Beta 10。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6718b174b0dcecd5fabdb5e968b7c2aa8af5a616` | (see git log) |
+
+### Status
+
+[OK] **Completed**
