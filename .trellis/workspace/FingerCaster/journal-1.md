@@ -1393,3 +1393,28 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 41: Codex GPT-5.6 372K 上下文与 Beta 9 发布
+
+**Date**: 2026-08-17
+**Task**: Codex GPT-5.6 372K 上下文与 Beta 9 发布
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/archive-codex-gpt56-372k-context`
+
+### Summary
+
+为 gpt-5.6-sol、terra、luna 增加默认关闭的 372,000 名义上下文目录策略与完整事务恢复；PR #42 合并后从精确 merge SHA 发布 0.60.41-beta.9，四平台、14 资产、签名、Beta CAS 指针和 stable 隔离均验收通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b350eeeba478f1d983aa46a9a5ccbab8dd32a618` | (see git log) |
+| `3efc43198a92ea59b5be9c19177698d59d983392` | (see git log) |
+| `738d74011eb27179098e653bfa051aae520ef0a4` | (see git log) |
+| `77f96e53b6bbc7918e2703ce7ee7d81449225b2b` | (see git log) |
+
+### Status
+
+[OK] **Completed**
