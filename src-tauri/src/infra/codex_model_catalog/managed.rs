@@ -1541,7 +1541,7 @@ fn normalized_codex_home_key(home: &Path) -> AppResult<String> {
         ));
     }
     let resolved = canonicalize_allow_missing(home);
-    let mut key = resolved
+    let key = resolved
         .to_str()
         .filter(|value| !value.is_empty() && !value.chars().any(char::is_control))
         .ok_or_else(|| {
@@ -1552,10 +1552,12 @@ fn normalized_codex_home_key(home: &Path) -> AppResult<String> {
         })?
         .to_string();
     #[cfg(windows)]
-    {
+    let key = {
+        let mut key = key;
         key = key.replace('\\', "/");
         key.make_ascii_lowercase();
-    }
+        key
+    };
     Ok(key)
 }
 
