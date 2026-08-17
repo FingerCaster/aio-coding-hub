@@ -248,6 +248,12 @@ impl ManagedCatalogPlan {
                 "the Codex home changed while preparing the managed model catalog",
             ));
         }
+        if managed_catalog_path(app)? != generated_before.path {
+            return Err(AppError::new(
+                "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+                "the managed Codex catalog path changed while preparing the catalog",
+            ));
+        }
         if catalog_ownership_context(app)? != ownership {
             return Err(AppError::new(
                 "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
@@ -2716,14 +2722,12 @@ fn validate_owned_catalog(bytes: &[u8]) -> AppResult<OwnedCatalogMetadata> {
         .get("codex_home_key")
         .and_then(Value::as_str)
         .filter(|value| {
-            !value.is_empty()
-                && value.len() <= 4_096
-                && !value.contains('\\')
-                && !value.chars().any(char::is_control)
+            !value.is_empty() && value.len() <= 4_096 && !value.chars().any(char::is_control)
         })
         .ok_or_else(modified_catalog_error)?;
     #[cfg(windows)]
-    if codex_home_key.bytes().any(|byte| byte.is_ascii_uppercase()) {
+    if codex_home_key.contains('\\') || codex_home_key.bytes().any(|byte| byte.is_ascii_uppercase())
+    {
         return Err(modified_catalog_error());
     }
     let original_catalog_path = metadata_original_catalog_path(metadata)?;
@@ -3813,6 +3817,51 @@ mod tests {
         assert!(!app_data.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn catalog_apply_rejects_managed_parent_symlink_drift() {
+        use std::os::unix::fs::symlink;
+
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home");
+        let outside = tempfile::tempdir().expect("outside");
+        let _home_restore = EnvRestore::set("AIO_CODING_HUB_TEST_HOME", home.path());
+        let _dotdir_restore = EnvRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-managed-parent-drift-test",
+        );
+        crate::settings::clear_cache();
+
+        let codex_home = home.path().join(".codex");
+        std::fs::create_dir_all(&codex_home).expect("Codex home");
+        let base_path = codex_home.join("user-models.json");
+        std::fs::write(&base_path, rule_base_catalog()).expect("base catalog");
+        std::fs::write(
+            codex_home.join("config.toml"),
+            config_with_catalog(Some(&base_path)),
+        )
+        .expect("Codex config");
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let plan = prepare_for_profiles_with_policy(
+            &handle,
+            &[],
+            policy(vec![context_rule("model-alpha", 372_000, true)]),
+        )
+        .expect("prepare catalog plan");
+        let app_data = crate::app_paths::app_data_dir(&handle).expect("app data");
+        let cli_proxy = app_data.join("cli-proxy");
+        assert!(!cli_proxy.exists());
+        symlink(outside.path(), &cli_proxy).expect("replace managed parent with symlink");
+
+        let error = plan
+            .apply(&handle)
+            .expect_err("managed parent drift must fail before writes");
+        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_CONFIG_DRIFT");
+        assert!(!outside.path().join("codex").exists());
+    }
+
     #[test]
     fn catalog_apply_rechecks_codex_home_identity_before_writing() {
         let _env_lock = crate::test_support::test_env_lock();
@@ -3904,6 +3953,31 @@ mod tests {
         assert_ne!(
             normalized_codex_home_key(&literal_backslash).expect("literal-backslash key"),
             normalized_codex_home_key(&nested).expect("nested key")
+        );
+
+        let literal_key =
+            normalized_codex_home_key(&literal_backslash).expect("literal-backslash key");
+        let policy = empty_policy();
+        let policy_projection =
+            model_context_policy_projection(&policy).expect("policy projection");
+        let output = generate_catalog(
+            &base_catalog(),
+            &[profile()],
+            &CatalogGenerationContext {
+                profile_set_sha256: &"a".repeat(64),
+                base_source_fingerprint: &"b".repeat(64),
+                policy: &policy,
+                policy_projection: &policy_projection,
+                original_catalog_path: None,
+                codex_home_key: &literal_key,
+            },
+        )
+        .expect("generate catalog for literal-backslash home");
+        let metadata =
+            validate_owned_catalog(&output).expect("validate catalog for literal-backslash home");
+        assert_eq!(
+            metadata.codex_home_key.as_deref(),
+            Some(literal_key.as_str())
         );
     }
 

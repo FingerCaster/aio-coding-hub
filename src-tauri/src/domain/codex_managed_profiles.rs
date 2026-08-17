@@ -1742,9 +1742,13 @@ DROP TABLE provider_model_capability_commit_probe;
 
         let list_error = list(&test_app.db).expect_err("listing replaced home must fail");
         assert_eq!(list_error.code(), "CODEX_MANAGED_PROFILE_HOME_UNSAFE");
+        // Delete prepares the managed catalog before touching the profile file.
+        // Once the active Codex home changes, that catalog owner check is the
+        // first safety boundary and must fail closed with the catalog drift
+        // contract rather than reaching the profile-path validator.
         let delete_error = delete(&app, &test_app.db, &profile.profile_uuid)
             .expect_err("deleting through replaced home must fail");
-        assert_eq!(delete_error.code(), "CODEX_MANAGED_PROFILE_HOME_UNSAFE");
+        assert_eq!(delete_error.code(), "CODEX_MODEL_CONTEXT_RULES_HOME_DRIFT");
         assert!(outside_home
             .path()
             .join("home-replaced.config.toml")
