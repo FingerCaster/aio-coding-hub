@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 41
+- **Total Sessions**: 42
 - **Last Active**: 2026-08-17
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1420 | Active |
+| `journal-1.md` | ~1442 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 42 | 2026-08-17 | Codex 自定义模型上下文规则与 Beta 10 发布 | `6718b174b0dcecd5fabdb5e968b7c2aa8af5a616` | `FingerCaster/codex-custom-model-context-rules-archive` |
 | 41 | 2026-08-17 | Codex GPT-5.6 372K 上下文与 Beta 9 发布 | `b350eeeba478f1d983aa46a9a5ccbab8dd32a618`, `3efc43198a92ea59b5be9c19177698d59d983392`, `738d74011eb27179098e653bfa051aae520ef0a4`, `77f96e53b6bbc7918e2703ce7ee7d81449225b2b` | `FingerCaster/archive-codex-gpt56-372k-context` |
 | 40 | 2026-08-14 | CX2CC 思考强度映射与本地网关委托修复 | `b8236504` | `FingerCaster/cx2cc-effort-map-loopback-fix` |
 | 39 | 2026-08-14 | 修正 CX2CC Sol 默认与模型上下文 | `fcf21657`, `7e99cc6f` | `FingerCaster/gpt56-sol-context-beta6` |
