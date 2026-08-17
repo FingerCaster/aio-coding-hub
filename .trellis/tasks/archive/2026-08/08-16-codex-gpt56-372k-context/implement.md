@@ -50,11 +50,15 @@
 
 - [x] Re-read `origin/main`, inspect branch drift, and preserve non-conflicting origin changes without touching `upstream`.
 - [x] Commit the initial task changes with hook-visible `node` and `pnpm`, push the feature branch to `origin`, and create PR #42 against `main`.
-- [ ] Push the Linux fixture follow-up and wait for required checks on the exact final head.
-- [ ] Review and merge the PR, then record the immutable 40-hex merge SHA and confirm it is reachable from `origin/main`.
-- [ ] Re-read the Beta promotion high-water and confirm the selected tag/Release do not exist; expected candidate is `aio-coding-hub-v0.60.41-beta.9`.
-- [ ] Dispatch `release.yml` from `main` with `release_channel=beta`, the selected tag, and the exact merge SHA; monitor every job to terminal success.
-- [ ] Verify the public prerelease flags, exact 14-asset matrix, signatures, four-platform `latest.json`, source/tag identity, and `release-channels` manifest/state CAS. Confirm stable latest and Homebrew are unchanged.
+- [x] Push the Linux fixture follow-up and wait for required checks on the exact final head.
+- [x] Review and merge the PR, then record the immutable 40-hex merge SHA and confirm it is reachable from `origin/main`.
+  - Merge/source SHA: `77f96e53b6bbc7918e2703ce7ee7d81449225b2b`.
+- [x] Re-read the Beta promotion high-water and confirm the selected tag/Release do not exist; selected `aio-coding-hub-v0.60.41-beta.9` above `0.60.41-beta.8`.
+- [x] Dispatch `release.yml` from `main` with `release_channel=beta`, the selected tag, and the exact merge SHA; monitor every job to terminal success.
+  - Release run: `31986566448` (`completed/success`).
+- [x] Verify the public prerelease flags, exact 14-asset matrix, signatures, four-platform `latest.json`, source/tag identity, and `release-channels` manifest/state CAS. Confirm stable latest and Homebrew are unchanged.
+  - Manifest SHA-256: `7069c18c9f05a22f617785eccd2751aa470c4bf16df8ce8899f03d8825a4798d`.
+  - Official Beta MSI: `17,731,584` bytes; SHA-256 `aa495a2f59723bfef6a71914f265f85ab4c536eb3791cfee1dc9c9d96a95fc26`.
 
 ## Risk and Rollback Points
 
