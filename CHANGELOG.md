@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.60.41](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.40...aio-coding-hub-v0.60.41) (2026-08-18)
+
+
+### Features
+
+* **codex:** add custom model context rules ([#44](https://github.com/FingerCaster/aio-coding-hub/issues/44)) ([6718b17](https://github.com/FingerCaster/aio-coding-hub/commit/6718b174b0dcecd5fabdb5e968b7c2aa8af5a616))
+* **codex:** add GPT-5.6 372K context mode ([#42](https://github.com/FingerCaster/aio-coding-hub/issues/42)) ([77f96e5](https://github.com/FingerCaster/aio-coding-hub/commit/77f96e53b6bbc7918e2703ce7ee7d81449225b2b))
+* **cx2cc:** add configurable effort mappings and fix local gateway timeout ([#39](https://github.com/FingerCaster/aio-coding-hub/issues/39)) ([7f8c829](https://github.com/FingerCaster/aio-coding-hub/commit/7f8c8295536152dea44991647787ff80957bc5ca))
+* **gateway:** add Codex infinite retry test mode ([0512eac](https://github.com/FingerCaster/aio-coding-hub/commit/0512eac42306e38e90bdaea54d1060dfc7238346))
+* **gateway:** add Codex stream terminal firewall ([48ddd91](https://github.com/FingerCaster/aio-coding-hub/commit/48ddd915016931b9746d243558de2fdbb19faf09))
+* **gateway:** disable provider failback strategy ([8133210](https://github.com/FingerCaster/aio-coding-hub/commit/81332107b4b447a35487d84d1dd9d34495693993))
+* **release:** add beta release channel ([f743e28](https://github.com/FingerCaster/aio-coding-hub/commit/f743e28c3790dd2a411e97eca8d929ed480aaa47))
+* show reasoning effort in request logs ([#37](https://github.com/FingerCaster/aio-coding-hub/issues/37)) ([a62869c](https://github.com/FingerCaster/aio-coding-hub/commit/a62869c7020006c61f342b69a6bebddbe9382fce))
+* **ui:** add beta participation flow ([67a3ed3](https://github.com/FingerCaster/aio-coding-hub/commit/67a3ed37654b31724a9652d2bce8df571f4286fc))
+* **updater:** add beta channel core contract ([bdf2438](https://github.com/FingerCaster/aio-coding-hub/commit/bdf2438848e2ab7d1eb6a3e944041aeceec53e80))
+
+
+### Bug Fixes
+
+* **beta:** address independent audit findings ([84db134](https://github.com/FingerCaster/aio-coding-hub/commit/84db134484e094498476e8636ca5ffbab968b954))
+* **beta:** close final integration audit findings ([7a0ba2f](https://github.com/FingerCaster/aio-coding-hub/commit/7a0ba2f4fbe2e5e6a97bede09161e70324e91563))
+* **beta:** harden final release audit contracts ([3415825](https://github.com/FingerCaster/aio-coding-hub/commit/3415825ce354d58e0fb02f012a6438a37fe5db93))
+* correct CX2CC Sol defaults and context projection ([#38](https://github.com/FingerCaster/aio-coding-hub/issues/38)) ([08520c4](https://github.com/FingerCaster/aio-coding-hub/commit/08520c40a309e904b2b9dc8583e3774cc4aa881e))
+* **deps:** patch nanoid advisory ([#36](https://github.com/FingerCaster/aio-coding-hub/issues/36)) ([39394c6](https://github.com/FingerCaster/aio-coding-hub/commit/39394c60b2ec84e2a52242e971aef50768b20e29))
+* **gateway:** accept clean Codex response EOF ([835c0ea](https://github.com/FingerCaster/aio-coding-hub/commit/835c0ea40c1fd49f7a27666d077b82d2191f2406))
+* **gateway:** address beta integration review findings ([bef0d8f](https://github.com/FingerCaster/aio-coding-hub/commit/bef0d8f526a281d824b7d79de8b78a6b318be38f))
+* **gateway:** harden CX2CC routing and usage accounting ([#40](https://github.com/FingerCaster/aio-coding-hub/issues/40)) ([c56f589](https://github.com/FingerCaster/aio-coding-hub/commit/c56f589e74115a10cc82392f0cc325a87d5a7158))
+* **gateway:** pass through cyber stream errors by default ([92a5ede](https://github.com/FingerCaster/aio-coding-hub/commit/92a5eded179b83397a4035be9eafb2f323c11766))
+* **gateway:** preserve explicit capacity messages ([c1bddfc](https://github.com/FingerCaster/aio-coding-hub/commit/c1bddfc1244bd5b80405a98f7ffde9df10c7a29f))
+* **gateway:** preserve strict terminal validation errors ([abe6a14](https://github.com/FingerCaster/aio-coding-hub/commit/abe6a14c9e5020863d8ecbbc482d07b0462330ad))
+* integrate balance refresh and Beta updater ([#34](https://github.com/FingerCaster/aio-coding-hub/issues/34)) ([e58786e](https://github.com/FingerCaster/aio-coding-hub/commit/e58786ee4a665c6ec2150f3797b2f5925118da3c))
+* **release:** accept canonical millisecond timestamps ([4b62a50](https://github.com/FingerCaster/aio-coding-hub/commit/4b62a50c2448f946fb32ebda4a25771bfc29ead0))
+* **release:** add beta pointer recovery mode ([a17b7da](https://github.com/FingerCaster/aio-coding-hub/commit/a17b7dabffab4ca17668c2d986662307e3967e30))
+* **release:** encode beta version for MSI ([99956fd](https://github.com/FingerCaster/aio-coding-hub/commit/99956fd2c4581449e8c5c337234e3b6b8bc2db6b))
+* **release:** make beta pointer publication retryable ([e8dfb71](https://github.com/FingerCaster/aio-coding-hub/commit/e8dfb7182b1e9533b06a8800626a346e9f31fb45))
+* repair CX2CC routing and GPT-5.6 support ([#35](https://github.com/FingerCaster/aio-coding-hub/issues/35)) ([0820524](https://github.com/FingerCaster/aio-coding-hub/commit/08205248bf245fa42deab9e1a968678a94436e1d))
+* **settings:** restore Cyber passthrough default ([#32](https://github.com/FingerCaster/aio-coding-hub/issues/32)) ([d295ef5](https://github.com/FingerCaster/aio-coding-hub/commit/d295ef53dafb63adde1892613523d65cde967b8b))
+* **updater:** harden beta channel integration ([bc0b1cb](https://github.com/FingerCaster/aio-coding-hub/commit/bc0b1cb2f24cc6e77c8c910e8079d9cfd3ab3ce7))
+
 ## [0.60.40](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.39...aio-coding-hub-v0.60.40) (2026-08-09)
 
 
