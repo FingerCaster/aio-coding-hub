@@ -1,0 +1,32 @@
+{
+  "id": "stable-0-60-41-release",
+  "name": "stable-0-60-41-release",
+  "title": "发布 aio-coding-hub 0.60.41 正式版",
+  "description": "将已验证的 0.60.41-beta.10 功能线通过标准两阶段 release-please 流程发布为 0.60.41 稳定版，并核验正式资产、更新渠道与 Homebrew。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "release",
+  "package": "aio-coding-hub",
+  "priority": "P0",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-17",
+  "completedAt": "2026-08-18",
+  "branch": "FingerCaster/stable-0-60-41-release",
+  "base_branch": "main",
+  "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/stable-0-60-41-release",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".github/workflows/release.yml",
+    ".release-please-manifest.json",
+    "release-please-config.json",
+    ".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md",
+    ".trellis/spec/aio-coding-hub/cross-layer/beta-release-update-channel-contract.md"
+  ],
+  "notes": "",
+  "meta": {}
+}

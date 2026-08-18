@@ -1440,3 +1440,25 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 43: 发布 aio-coding-hub 0.60.41 正式版
+
+**Date**: 2026-08-18
+**Task**: 发布 aio-coding-hub 0.60.41 正式版
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/stable-0-60-41-release`
+
+### Summary
+
+完成 0.60.41 稳定版两阶段发布、frontend 定向重跑、14 项资产与更新渠道核验，并归档发布审计任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `710a45895fd00683e5a9385f9b005e8dd6692b27` | (see git log) |
+
+### Status
+
+[OK] **Completed**
