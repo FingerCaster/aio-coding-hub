@@ -18,34 +18,13 @@ pub(crate) struct InfiniteRetryRequestConfig {
     pub(crate) retry_interval_ms: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CodexResponsesPathContract {
-    pub(crate) path: &'static str,
-    pub(crate) min_enabled_ttfb_secs: u32,
-}
-
-// The eligibility gate and buffered final-wire deadline assertion both consume
-// this list, so supported-path changes cannot bypass the measured TTFB floor.
-pub(crate) const CODEX_RESPONSES_PATH_CONTRACTS: &[CodexResponsesPathContract] = &[
-    CodexResponsesPathContract {
-        path: "/v1/responses",
-        min_enabled_ttfb_secs: 1,
-    },
-    CodexResponsesPathContract {
-        path: "/responses",
-        min_enabled_ttfb_secs: 1,
-    },
-    CodexResponsesPathContract {
-        path: "/v1/codex/responses",
-        min_enabled_ttfb_secs: 1,
-    },
-];
+// Eligibility and event-stream handling share one supported-path list.
+pub(crate) const CODEX_RESPONSES_PATHS: &[&str] =
+    &["/v1/responses", "/responses", "/v1/codex/responses"];
 
 pub(crate) fn is_supported_codex_responses_path(path: &str) -> bool {
     let path = path.trim_end_matches('/');
-    CODEX_RESPONSES_PATH_CONTRACTS
-        .iter()
-        .any(|contract| path == contract.path)
+    CODEX_RESPONSES_PATHS.contains(&path)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -830,12 +809,9 @@ mod tests {
     #[test]
     fn eligibility_is_fail_closed_and_excludes_system_turns() {
         let method = axum::http::Method::POST;
-        for contract in CODEX_RESPONSES_PATH_CONTRACTS {
-            assert!(request_config(true, 1_000, facts(&method, contract.path)).is_some());
-            assert!(
-                request_config(true, 1_000, facts(&method, &format!("{}/", contract.path)))
-                    .is_some()
-            );
+        for path in CODEX_RESPONSES_PATHS {
+            assert!(request_config(true, 1_000, facts(&method, path)).is_some());
+            assert!(request_config(true, 1_000, facts(&method, &format!("{path}/"))).is_some());
         }
         let mut system = facts(&method, "/v1/responses");
         system.is_system_request = true;
