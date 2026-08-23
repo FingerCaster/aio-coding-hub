@@ -1,5 +1,5 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"定义无限重试 final-wire 提交前收集、stream idle timeout、严格终态校验与普通路径兼容边界。"}
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"验证删除隐藏总时限不会改变 Provider-local attempt budget、首字节 timeout、retry 或 circuit 语义。"}
 {"file":".trellis/tasks/08-10-codex-infinite-retry-test-switch/prd.md","reason":"原始 R13-R16/AC13-AC16 是完整缓冲、20 MiB、既有 timeout 和取消边界的需求来源。"}
-{"file":".trellis/tasks/08-23-fix-codex-infinite-retry-stream-cap/research/root-cause.md","reason":"记录稳定版运行时失败规模、500 ms 时间关联、代码锚点与规范漂移。"}
+{"file": ".trellis/tasks/archive/2026-08/08-23-fix-codex-infinite-retry-stream-cap/research/root-cause.md", "reason": "记录稳定版运行时失败规模、500 ms 时间关联、代码锚点与规范漂移。"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"要求继续复用共享 path、strict validator、idle timeout 与既有 collector，而非新增平行实现。"}
