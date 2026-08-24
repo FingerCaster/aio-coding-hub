@@ -175,11 +175,43 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   back to the default policy. The direct `UpstreamRetryPolicy` decoder used by
   Provider overrides and strict share/import wire formats remains strict;
   global forward compatibility must not weaken those boundaries.
-- Final response rewriting considers only the terminal upstream HTTP 4xx/5xx
+- Final response rewriting considers the terminal upstream HTTP 4xx/5xx
   candidate after retry, failover, quota, cooldown, and circuit decisions use
-  the real upstream facts. HTTP 200 stream errors and transport errors never
-  enter rewrite matching. Any read, match, or envelope-construction failure
-  fails open to the existing terminal response.
+  the real upstream facts. It also considers gateway-synthesized stream
+  terminal failures, matched on the synthesized status rather than the real
+  upstream status: `GW_STREAM_ERROR` matches as 502 and
+  `GW_STREAM_IDLE_TIMEOUT` as 524, which is the status the UI shows and the
+  operator configures. Only those two codes are synthesizable; every other
+  code, client aborts included, stays out of rewrite matching. Because a
+  truncated stream carries no upstream error body, matching runs against a
+  stack-only pseudo body describing the gateway failure, so keyword rules
+  match the gateway's own failure description and never upstream content, and
+  `Passthrough` message behavior yields fixed gateway text instead of leaking
+  a `GW_*` code. The pseudo body is never persisted or sent verbatim. Any
+  read, match, or envelope-construction failure fails open to the existing
+  terminal response.
+- Where a synthesized stream failure is rewritten depends on the downstream
+  commit boundary. Before commit, the matched rewrite rides on the attempt
+  outcome and `all_providers_failed` builds the full envelope, so status and
+  message both follow the rule and retry/failover decisions stay untouched.
+  After commit the status line is already on the wire and immutable: the
+  gateway appends one protocol-legal error event to the stream tail carrying
+  the rule's message, then ends the body with a clean EOF instead of a
+  transport error. Bytes already sent are never altered or retracted, and the
+  HTTP status stays 200. A gateway-authored tail frame is not upstream
+  content, so it bypasses the Codex terminal firewall, which exists to police
+  upstream frames. Attempt status keeps recording the synthesized code
+  (502 / 524) as it already did, and the request is still classified as a
+  failure — rewriting changes what the client sees, not the gateway's own
+  accounting. Rewrite audit records mark these entries with
+  `syntheticErrorCode` and `upstreamStatusSynthetic` so a synthesized status
+  is never mistaken for one the upstream actually returned, and with
+  `scope: "stream_tail"` plus `clientStatusApplied: false` so a rule's status
+  behavior is never reported as applied when the committed status could not
+  change. Tail-frame shape follows the wire protocol of the request path, not
+  the CLI key: a Responses-protocol stream (Codex or Grok on `/v1/responses`)
+  gets an `event:`-tagged frame, `/chat/completions` and Gemini get a data-only
+  frame.
 - Rewrite matching supports priority, Any/All, status codes,
   case-insensitive literal keywords, CLI and Provider scope, enablement, and
   independent passthrough/override behavior for status and message. Build a
@@ -191,7 +223,9 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   preserve unknown/deleted IDs until the user explicitly removes them.
 - Request-log status is client-visible; attempt status remains the real
   upstream status. Rewrite audit metadata contains only bounded rule identity,
-  Provider identity, before/after status, and behavior modes. Stream evidence
+  Provider identity, before/after status, and behavior modes. When a rewrite
+  only appended a stream tail, the audit says so and the UI must not present
+  the rule's status as delivered. Stream evidence
   contains bounded/redacted event, type, code, message, classification,
   matched keyword, disposition, and truncation state. Never persist response
   bodies, raw SSE, rule keywords, rewrite messages, Bearer values, API keys, or
@@ -208,7 +242,7 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 | --- | --- |
 | HTTP failure matches retry and later succeeds | Return success; no rewrite audit |
 | Final HTTP 4xx/5xx matches rewrite | Rewrite only the client envelope/status; keep upstream attempt status |
-| Transport failure or HTTP 200 SSE error | Never evaluate final HTTP rewrite rules |
+| Transport failure or HTTP 200 SSE error | Evaluate rewrite rules only for `GW_STREAM_ERROR` (as 502) and `GW_STREAM_IDLE_TIMEOUT` (as 524); full envelope before commit, appended tail event after commit |
 | Master switch disabled; any terminal class | Return the original bytes unchanged; no stream retry, Provider switch, rewrite, or drop |
 | Transient/capacity before commit; master enabled | Discard buffer and use shared retry/backoff/circuit/failover state |
 | Hard or unknown before commit; master enabled | Return sanitized `502/GW_FAKE_200`; passthrough words do not apply and no fake SSE, retry, or Provider switch |
