@@ -910,6 +910,52 @@ mod tests {
         (format!("http://{addr}"), task)
     }
 
+    /// Upstream that commits a 200 SSE response, sends one chunk, waits long enough for the
+    /// gateway to leave its pre-commit buffering window and flush that chunk downstream, then
+    /// drops the connection without the terminating `0\r\n\r\n`. That is a real transport-layer
+    /// truncation, so the body stream surfaces a `reqwest::Error` — the post-commit
+    /// `GW_STREAM_ERROR` shape users hit in production (TTFB early, break seconds later).
+    /// `reqwest::Error` has no public constructor, so this is the only way to reach that branch.
+    async fn spawn_truncating_chunked_sse_upstream(
+        first_chunk: &'static str,
+        commit_delay: Duration,
+        partial_tail: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind truncating sse upstream stub");
+        let addr = listener.local_addr().expect("truncating sse upstream addr");
+        let task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let headers = concat!(
+                    "HTTP/1.1 200 OK\r\n",
+                    "content-type: text/event-stream; charset=utf-8\r\n",
+                    "transfer-encoding: chunked\r\n",
+                    "connection: close\r\n",
+                    "\r\n"
+                );
+                let _ = socket.write_all(headers.as_bytes()).await;
+                let first = format!("{:X}\r\n{}\r\n", first_chunk.len(), first_chunk);
+                let _ = socket.write_all(first.as_bytes()).await;
+                tokio::time::sleep(commit_delay).await;
+                if !partial_tail.is_empty() {
+                    // An SSE frame cut off before its blank-line boundary: what a real TCP break
+                    // usually leaves behind, and what makes the Codex terminal firewall fail
+                    // closed on `finish()`.
+                    let partial = format!("{:X}\r\n{}\r\n", partial_tail.len(), partial_tail);
+                    let _ = socket.write_all(partial.as_bytes()).await;
+                }
+                // No terminating chunk: drop mid-body.
+                let _ = socket.shutdown().await;
+                drop(socket);
+            }
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
     async fn spawn_delayed_chunked_sse_upstream(
         first_chunk: &'static str,
         second_chunk: &'static str,
@@ -6626,6 +6672,436 @@ INSERT INTO codex_managed_profiles(
             .expect("response rule special settings");
         assert!(!special_settings_json.contains("service temporarily unavailable"));
         assert!(!special_settings_json.contains("raw provider failure"));
+    }
+
+    /// What a truncated-stream route run produced, from the client's point of view.
+    struct TruncatedStreamOutcome {
+        trace_id: String,
+        delivered: Vec<u8>,
+        /// `true` when the body ended with a normal EOF, `false` when a transport error ended it.
+        ///
+        /// This is the distinction design §3.2 turns on: appending the rule's error event is only
+        /// worth anything if the body then ends *cleanly*. A tail frame followed by a broken
+        /// chunked body would still look like a cut-off stream to the client, and the delivered
+        /// bytes alone cannot tell the two apart.
+        ended_cleanly: bool,
+        db: db::Db,
+    }
+
+    /// The scenario users report: upstream commits HTTP 200, SSE starts flowing, then the stream
+    /// truncates mid-flight. The gateway synthesizes 502 (`GW_STREAM_ERROR`) for its own records,
+    /// but before this fix the codex client just got a silently cut-off stream — the configured
+    /// 502 rule could never apply because rewrite matching only ever saw the real upstream 200.
+    async fn run_truncated_codex_stream_route(
+        rule: Option<settings::UpstreamErrorResponseRule>,
+        partial_tail: &'static str,
+    ) -> TruncatedStreamOutcome {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.upstream_error_response_rules = rule.into_iter().collect();
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-truncated-stream-rule.sqlite"),
+        )
+        .expect("init test db");
+        let first_chunk = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+        );
+        let (sse_base_url, sse_task) = spawn_truncating_chunked_sse_upstream(
+            first_chunk,
+            Duration::from_millis(700),
+            partial_tail,
+        )
+        .await;
+        insert_codex_provider_with_priority(&db, "Truncating Stream Stub", sse_base_url, 0);
+
+        let (log_tx, writer_task) =
+            request_logs::start_buffered_writer(app_handle.clone(), db.clone());
+        let router = build_router(gateway_state(app_handle, db.clone(), log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-route-truncated","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        // Headers are already committed: the status cannot change post-commit (PRD R3).
+        assert_eq!(response.status(), StatusCode::OK);
+        let trace_id = response
+            .headers()
+            .get("x-trace-id")
+            .and_then(|value| value.to_str().ok())
+            .expect("trace header")
+            .to_string();
+
+        let mut body_stream = Box::pin(response.into_body().into_data_stream());
+        let mut delivered: Vec<u8> = Vec::new();
+        let mut ended_cleanly = true;
+        loop {
+            let item = tokio::time::timeout(
+                Duration::from_secs(5),
+                std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
+            )
+            .await
+            .expect("body stream should not stall");
+            match item {
+                Some(Ok(chunk)) => delivered.extend_from_slice(chunk.as_ref()),
+                // A transport error ends the body; record that it was *not* a clean end.
+                Some(Err(_)) => {
+                    ended_cleanly = false;
+                    break;
+                }
+                None => break,
+            }
+        }
+        drop(body_stream);
+
+        tokio::time::timeout(Duration::from_secs(5), writer_task)
+            .await
+            .expect("writer drain timeout")
+            .expect("writer task joins");
+        sse_task.abort();
+
+        TruncatedStreamOutcome {
+            trace_id,
+            delivered,
+            ended_cleanly,
+            db,
+        }
+    }
+
+    /// Shared body for both truncation shapes: `partial_tail` decides whether the upstream breaks
+    /// on a frame boundary or in the middle of a frame. The client-visible outcome must not depend
+    /// on that difference.
+    async fn assert_truncated_codex_stream_carries_the_rule_tail(partial_tail: &'static str) {
+        let TruncatedStreamOutcome {
+            trace_id,
+            delivered,
+            ended_cleanly,
+            db,
+        } = run_truncated_codex_stream_route(
+            Some(test_upstream_error_response_rule(
+                502,
+                settings::UpstreamErrorStatusBehavior::Override { status_code: 503 },
+                settings::UpstreamErrorMessageBehavior::Override {
+                    message: "上游连接不稳定，请重试".to_string(),
+                },
+            )),
+            partial_tail,
+        )
+        .await;
+
+        let delivered = String::from_utf8(delivered).expect("utf8 body");
+        // The prefix already sent stays byte-for-byte intact (PRD R3).
+        assert!(delivered.contains("response.output_text.delta"));
+        assert!(delivered.contains("hello"));
+        // And the tail now carries the operator's message as a protocol-legal codex event.
+        assert!(
+            delivered.contains("event: response.failed"),
+            "tail frame missing from body: {delivered}"
+        );
+        assert!(delivered.contains("上游连接不稳定，请重试"));
+        // Internal identifiers must never reach the client.
+        assert!(!delivered.contains("GW_STREAM_ERROR"));
+        // The whole point of appending a frame instead of forwarding the transport error: the body
+        // must then end normally (design §3.2). Delivered bytes alone cannot show this.
+        assert!(
+            ended_cleanly,
+            "body must end with a clean EOF, not a transport error"
+        );
+        if !partial_tail.is_empty() {
+            // Proof the mid-frame variant really is mid-frame: the firewall withheld the half
+            // frame. Without this, "fixing" the stub to end on `\n\n` would silently turn this
+            // case into a duplicate of the frame-aligned one and still pass.
+            assert!(
+                !delivered.contains("\"delta\":\"wor"),
+                "the firewall must withhold the partial upstream frame: {delivered}"
+            );
+        }
+
+        let detail = request_logs::get_by_trace_id(&db, &trace_id)
+            .expect("query request log")
+            .expect("persisted request log");
+        // Injection changes what the client sees, not how the attempt is classified.
+        assert_eq!(
+            detail.error_code.as_deref(),
+            Some(crate::gateway::proxy::GatewayErrorCode::StreamError.as_str())
+        );
+        assert_eq!(detail.status, Some(502));
+
+        // Regression guard for a guarantee that already held before this task: the persisted log
+        // records the terminal origin for post-commit stream failures, written by
+        // `streams/request_end.rs`'s `terminal_details_json`. PRD R10 claimed this was missing;
+        // it was not (see prd.md R10's correction note). Kept so the guarantee stays covered.
+        let activity_details = detail
+            .activity_details_json
+            .as_deref()
+            .expect("activity details json");
+        assert!(
+            activity_details.contains("\"terminal_origin\""),
+            "terminal origin missing: {activity_details}"
+        );
+        assert!(activity_details.contains("upstream_read_error"));
+
+        // Attempt status records the gateway's synthesized 502, not the real upstream 200. This
+        // is pre-existing behavior kept deliberately (PRD R8): the operator-facing view of a
+        // truncated stream is 502, and the rewrite does not change the gateway's own accounting.
+        let attempts: Value = serde_json::from_str(&detail.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0]["status"].as_u64(), Some(502));
+        assert_eq!(
+            attempts[0]["error_code"].as_str(),
+            Some(crate::gateway::proxy::GatewayErrorCode::StreamError.as_str())
+        );
+        assert_eq!(attempts[0]["decision"].as_str(), Some("abort"));
+
+        let special_settings: Value = serde_json::from_str(
+            detail
+                .special_settings_json
+                .as_deref()
+                .expect("special settings json"),
+        )
+        .expect("special settings json parses");
+        let audit = special_settings
+            .as_array()
+            .expect("special settings array")
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("upstream_error_response_rule")
+            })
+            .expect("rewrite audit entry");
+        assert_eq!(
+            audit.get("syntheticErrorCode").and_then(Value::as_str),
+            Some(crate::gateway::proxy::GatewayErrorCode::StreamError.as_str())
+        );
+        assert_eq!(
+            audit
+                .get("upstreamStatusSynthetic")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        // Matched on the synthesized 502, not the real upstream 200.
+        assert_eq!(
+            audit.get("upstreamStatus").and_then(Value::as_u64),
+            Some(502)
+        );
+        // Audit must not claim the status was rewritten: post-commit the client keeps 200.
+        assert_eq!(
+            audit.get("scope").and_then(Value::as_str),
+            Some("stream_tail")
+        );
+        assert_eq!(
+            audit.get("clientStatusApplied").and_then(Value::as_bool),
+            Some(false)
+        );
+        // Never persist the rewrite text.
+        assert!(!detail
+            .special_settings_json
+            .as_deref()
+            .expect("special settings json")
+            .contains("上游连接不稳定"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn truncated_codex_stream_appends_rule_error_event_instead_of_cutting_off() {
+        assert_truncated_codex_stream_carries_the_rule_tail("").await;
+    }
+
+    /// The shape a real TCP break usually takes: the connection dies *inside* an SSE frame, so the
+    /// Codex terminal firewall still holds a partial frame and fails closed on `finish()`
+    /// (confirmed empirically: `fail_closed_reason == Some("partial_frame_at_eof")`). The tail
+    /// frame the gateway authored must still be delivered — it is not upstream bytes, so the
+    /// firewall's fail-closed decision does not apply to it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mid_frame_truncated_codex_stream_still_gets_the_rule_error_event() {
+        assert_truncated_codex_stream_carries_the_rule_tail(concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"wor"
+        ))
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mid_frame_truncated_codex_stream_without_a_rule_still_ends_silently() {
+        let partial_tail = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"wor"
+        );
+        let TruncatedStreamOutcome {
+            trace_id,
+            delivered,
+            ended_cleanly,
+            db,
+        } = run_truncated_codex_stream_route(None, partial_tail).await;
+
+        let delivered = String::from_utf8(delivered).expect("utf8 body");
+        assert!(delivered.contains("response.output_text.delta"));
+        assert!(
+            !delivered.contains("event: response.failed"),
+            "no rule configured: nothing may be appended"
+        );
+        // The half-frame the firewall withheld must not leak either.
+        assert!(!delivered.contains("\"delta\":\"wor"));
+        // Pre-existing behavior, and the only observable difference from the frame-aligned case:
+        // once the firewall has failed closed it ends the body itself, so no transport error is
+        // forwarded. Asserted so a future change cannot silently start forwarding one.
+        assert!(
+            ended_cleanly,
+            "firewall fail-closed already ended the body; no transport error may follow"
+        );
+
+        let detail = request_logs::get_by_trace_id(&db, &trace_id)
+            .expect("query request log")
+            .expect("persisted request log");
+        assert_eq!(
+            detail.error_code.as_deref(),
+            Some(crate::gateway::proxy::GatewayErrorCode::StreamError.as_str())
+        );
+        // The firewall's fail-closed audit entry is NOT asserted here on purpose: on the transport
+        // -error path `tee.finalize()` already ran inside `poll_next`, so the relay loop's
+        // `push_special_setting` lands after the log snapshot and is dropped. That ordering is
+        // pre-existing behavior, unrelated to this task, and left alone deliberately.
+        assert!(detail
+            .special_settings_json
+            .as_deref()
+            .map(|json| !json.contains("upstream_error_response_rule"))
+            .unwrap_or(true));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn truncated_codex_stream_without_a_rule_keeps_the_current_truncation() {
+        let TruncatedStreamOutcome {
+            trace_id,
+            delivered,
+            ended_cleanly,
+            db,
+        } = run_truncated_codex_stream_route(None, "").await;
+
+        let delivered = String::from_utf8(delivered).expect("utf8 body");
+        assert!(delivered.contains("response.output_text.delta"));
+        assert!(
+            !delivered.contains("event: response.failed"),
+            "no rule configured: nothing may be appended"
+        );
+        // Pre-existing behavior for a frame-aligned break: the firewall has nothing pending, so the
+        // transport error is forwarded and the client sees a broken body — exactly what a matched
+        // rule replaces. Delivered bytes are identical either way, so only this flag shows it.
+        assert!(
+            !ended_cleanly,
+            "without a rule the raw transport error must still reach the client"
+        );
+
+        let detail = request_logs::get_by_trace_id(&db, &trace_id)
+            .expect("query request log")
+            .expect("persisted request log");
+        assert_eq!(
+            detail.error_code.as_deref(),
+            Some(crate::gateway::proxy::GatewayErrorCode::StreamError.as_str())
+        );
+        assert!(detail
+            .special_settings_json
+            .as_deref()
+            .map(|json| !json.contains("upstream_error_response_rule"))
+            .unwrap_or(true));
+    }
+
+    /// Same truncation, but with no delay: the break lands inside the gateway's pre-commit
+    /// buffering window, so no response headers have been sent yet and the rule must produce a
+    /// **full** rewrite — status line included — rather than a stream tail frame (PRD R2).
+    #[tokio::test(flavor = "current_thread")]
+    async fn precommit_stream_truncation_gets_the_full_rule_rewrite_not_a_tail_frame() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.upstream_error_response_rules = vec![test_upstream_error_response_rule(
+            502,
+            settings::UpstreamErrorStatusBehavior::Override { status_code: 503 },
+            settings::UpstreamErrorMessageBehavior::Override {
+                message: "上游流中断，已按规则改写".to_string(),
+            },
+        )];
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-precommit-truncated-rule.sqlite"),
+        )
+        .expect("init test db");
+        let first_chunk = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+        );
+        let (sse_base_url, sse_task) =
+            spawn_truncating_chunked_sse_upstream(first_chunk, Duration::from_millis(0), "").await;
+        insert_codex_provider_with_priority(&db, "Precommit Truncating Stub", sse_base_url, 0);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-route-precommit-truncated","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        // Nothing was committed, so the whole envelope — status included — is the rule's.
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = serde_json::from_slice::<Value>(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("response JSON");
+        assert_eq!(
+            body["error"]["message"].as_str(),
+            Some("上游流中断，已按规则改写")
+        );
+        // A pre-commit rewrite is a complete response, never an appended SSE frame.
+        assert!(!body.to_string().contains("response.failed"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert!(has_upstream_error_response_rule_marker(&log));
+        let special_settings_json = log
+            .special_settings_json
+            .as_deref()
+            .expect("special settings json");
+        assert!(special_settings_json.contains("\"syntheticErrorCode\":\"GW_STREAM_ERROR\""));
+        assert!(special_settings_json.contains("\"upstreamStatusSynthetic\":true"));
+        assert!(!special_settings_json.contains("上游流中断"));
+        sse_task.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]

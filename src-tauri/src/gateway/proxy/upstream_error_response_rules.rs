@@ -1,5 +1,7 @@
 //! Usage: Match final upstream HTTP errors and build protocol-compatible client responses.
 
+use super::status_override::status_override_for_error_code;
+use super::GatewayErrorCode;
 use crate::settings::{
     UpstreamErrorMessageBehavior, UpstreamErrorResponseMatchMode, UpstreamErrorResponseRule,
     UpstreamErrorStatusBehavior, MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS,
@@ -13,22 +15,34 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
 
 #[derive(Debug, Clone)]
-pub(super) struct UpstreamErrorResponseRewrite {
+pub(in crate::gateway) struct UpstreamErrorResponseRewrite {
     pub(super) rule_id: String,
     pub(super) rule_name: String,
     pub(super) provider_id: i64,
     pub(super) provider_name: String,
     pub(super) upstream_status: u16,
-    pub(super) client_status: StatusCode,
+    pub(in crate::gateway) client_status: StatusCode,
     pub(super) status_mode: &'static str,
     pub(super) message_mode: &'static str,
     message: String,
     retry_after: Option<HeaderValue>,
+    /// Set only for gateway-synthesized stream failures. When present, `upstream_status`
+    /// holds the synthesized code (502 / 524) rather than a code the upstream actually
+    /// returned, so audit records must be able to tell the two apart.
+    synthetic_error_code: Option<&'static str>,
 }
 
 impl UpstreamErrorResponseRewrite {
-    pub(super) fn build_response(&self, cli_key: &str, trace_id: &str) -> Option<Response> {
-        let payload = match cli_key {
+    /// The protocol-shaped error object this rewrite hands the client.
+    ///
+    /// Single source of truth for both delivery forms: [`build_response`] wraps it in a full
+    /// HTTP envelope (pre-commit / non-stream), while the post-commit stream tail wraps it in
+    /// an SSE frame. Returns `None` for CLI keys with no known error shape.
+    pub(in crate::gateway) fn client_error_payload(
+        &self,
+        cli_key: &str,
+    ) -> Option<serde_json::Value> {
+        Some(match cli_key {
             "claude" => serde_json::json!({
                 "type": "error",
                 "error": {
@@ -51,7 +65,15 @@ impl UpstreamErrorResponseRewrite {
                 }
             }),
             _ => return None,
-        };
+        })
+    }
+
+    pub(in crate::gateway) fn build_response(
+        &self,
+        cli_key: &str,
+        trace_id: &str,
+    ) -> Option<Response> {
+        let payload = self.client_error_payload(cli_key)?;
         let body = serde_json::to_vec(&payload).ok()?;
         let trace_header = HeaderValue::from_str(trace_id).ok()?;
         let mut builder = Response::builder()
@@ -67,8 +89,8 @@ impl UpstreamErrorResponseRewrite {
         builder.body(Body::from(body)).ok()
     }
 
-    pub(super) fn special_setting(&self) -> serde_json::Value {
-        serde_json::json!({
+    pub(in crate::gateway) fn special_setting(&self) -> serde_json::Value {
+        let mut value = serde_json::json!({
             "type": "upstream_error_response_rule",
             "scope": "response",
             "ruleId": self.rule_id.as_str(),
@@ -79,7 +101,40 @@ impl UpstreamErrorResponseRewrite {
             "clientStatus": self.client_status.as_u16(),
             "statusMode": self.status_mode,
             "messageMode": self.message_mode,
-        })
+        });
+        if let (Some(code), Some(object)) = (self.synthetic_error_code, value.as_object_mut()) {
+            object.insert(
+                "syntheticErrorCode".to_string(),
+                serde_json::Value::from(code),
+            );
+            object.insert(
+                "upstreamStatusSynthetic".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+        value
+    }
+
+    /// Audit record for the post-commit stream-tail path, where the response headers are already
+    /// on the wire.
+    ///
+    /// `special_setting()` alone would misreport this case: it emits the rule's `clientStatus`,
+    /// but nothing downstream can change a committed status — the client still sees 200. Two
+    /// fields are added rather than rewriting `clientStatus` to 200, because the frontend
+    /// validator (`services/gateway/requestLogSpecialSettings.ts`) fails the whole marker closed
+    /// outside 400..=599, which would erase the audit entry altogether.
+    pub(in crate::gateway) fn special_setting_for_stream_tail(&self) -> serde_json::Value {
+        let mut value = self.special_setting();
+        if let Some(object) = value.as_object_mut() {
+            // Distinguishes "full envelope rewrite" from "error event appended to a live stream".
+            object.insert("scope".to_string(), serde_json::Value::from("stream_tail"));
+            // The rule's status behavior is a no-op here; say so instead of implying it applied.
+            object.insert(
+                "clientStatusApplied".to_string(),
+                serde_json::Value::Bool(false),
+            );
+        }
+        value
     }
 }
 
@@ -167,7 +222,7 @@ fn safe_retry_after(headers: &HeaderMap) -> Option<HeaderValue> {
         .flatten()
 }
 
-pub(super) fn match_response_rule(
+pub(in crate::gateway) fn match_response_rule(
     rules: &[UpstreamErrorResponseRule],
     cli_key: &str,
     provider_id: i64,
@@ -234,10 +289,120 @@ pub(super) fn match_response_rule(
             message_mode,
             message,
             retry_after: safe_retry_after(upstream_headers),
+            synthetic_error_code: None,
         });
     }
 
     None
+}
+
+/// Client-facing text used when a gateway-synthesized stream failure matches a rule whose
+/// message behavior is `Passthrough`. A truncated stream carries no upstream error message
+/// to pass through, so the rule still applies but the text is fixed (design §2.3, S2).
+const STREAM_TRANSPORT_FAILURE_TEXT: &str =
+    "The upstream response stream was interrupted before it completed.";
+const STREAM_IDLE_TIMEOUT_TEXT: &str =
+    "The upstream response stream stalled and timed out before it completed.";
+
+/// Both the allow-list of synthesizable stream failures and their client-facing text.
+/// Codes outside this match never enter rule matching — notably client aborts (499), where
+/// the client is already gone and rewriting would be meaningless.
+fn synthetic_failure_client_text(error_code: GatewayErrorCode) -> Option<&'static str> {
+    match error_code {
+        GatewayErrorCode::StreamError => Some(STREAM_TRANSPORT_FAILURE_TEXT),
+        GatewayErrorCode::StreamIdleTimeout => Some(STREAM_IDLE_TIMEOUT_TEXT),
+        _ => None,
+    }
+}
+
+/// Pseudo body handed to `match_response_rule` so keyword rules have something to match on.
+/// `error.message` is the client-facing text (so `Passthrough` extraction yields it and never
+/// the gateway code), while `code` / `type` expose the gateway identifiers keyword rules need.
+/// Stack-only: never persisted, never sent to the client verbatim (PRD R8).
+fn synthetic_failure_body(error_code: GatewayErrorCode, client_text: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "error": {
+            "message": client_text,
+            "code": error_code.as_str(),
+            "type": "gateway_stream_failure",
+        }
+    }))
+    .unwrap_or_default()
+}
+
+/// Match a gateway-synthesized stream failure against the final-error rewrite rules.
+///
+/// Unlike [`match_response_rule`], the upstream HTTP status here is typically 200 — the
+/// failure is the stream truncating mid-flight. Matching therefore runs against the
+/// synthesized status (`status_override_for_error_code`: 502 for `GW_STREAM_ERROR`, 524 for
+/// `GW_STREAM_IDLE_TIMEOUT`), which is also the status users see in the UI and configure
+/// their rules for (PRD R5). Matching logic itself is not duplicated: it delegates.
+pub(in crate::gateway) fn match_synthetic_failure_rule(
+    rules: &[UpstreamErrorResponseRule],
+    cli_key: &str,
+    provider_id: i64,
+    provider_name: &str,
+    error_code: GatewayErrorCode,
+    upstream_headers: &HeaderMap,
+) -> Option<UpstreamErrorResponseRewrite> {
+    let client_text = synthetic_failure_client_text(error_code)?;
+    let synthetic_status =
+        StatusCode::from_u16(status_override_for_error_code(Some(error_code.as_str()))?).ok()?;
+    let body = synthetic_failure_body(error_code, client_text);
+
+    let mut rewrite = match_response_rule(
+        rules,
+        cli_key,
+        provider_id,
+        provider_name,
+        synthetic_status,
+        Some(body.as_slice()),
+        upstream_headers,
+    )?;
+
+    // Defense in depth for S2: the pseudo body deliberately carries the gateway error code so
+    // keyword rules can match it, but that code must never reach the client. Extraction takes
+    // `error.message` today, which is already the fixed text; if that ever changes, force the
+    // fixed text back rather than leaking `GW_*`. Only `passthrough` is guarded — an operator's
+    // own `override` text is theirs to write, gateway codes included.
+    if rewrite.message_mode == "passthrough" && rewrite.message.contains(error_code.as_str()) {
+        rewrite.message = client_text.to_string();
+    }
+    rewrite.synthetic_error_code = Some(error_code.as_str());
+
+    Some(rewrite)
+}
+
+/// Str-keyed entry point for callers that only carry `&'static str` error codes — notably the
+/// failover attempt recorder, which sees every pre-commit stream failure. Delegates to
+/// [`match_synthetic_failure_rule`], so the allow-list stays in one place.
+pub(in crate::gateway) fn match_synthetic_failure_rule_by_code(
+    rules: &[UpstreamErrorResponseRule],
+    cli_key: &str,
+    provider_id: i64,
+    provider_name: &str,
+    error_code: &str,
+    upstream_headers: &HeaderMap,
+) -> Option<UpstreamErrorResponseRewrite> {
+    match_synthetic_failure_rule(
+        rules,
+        cli_key,
+        provider_id,
+        provider_name,
+        synthetic_failure_code_from_str(error_code)?,
+        upstream_headers,
+    )
+}
+
+/// Recover the enum for a gateway code string, restricted to the synthesizable stream failures.
+/// Derived from `as_str` rather than a second hardcoded list, so the two can never drift.
+fn synthetic_failure_code_from_str(error_code: &str) -> Option<GatewayErrorCode> {
+    [
+        GatewayErrorCode::StreamError,
+        GatewayErrorCode::StreamIdleTimeout,
+    ]
+    .into_iter()
+    .find(|candidate| candidate.as_str() == error_code)
 }
 
 fn rule_applies_to_scope(
@@ -705,5 +870,260 @@ mod tests {
                 assert_eq!(payload["error"]["code"], 503);
             }
         }
+    }
+
+    /// Status-only rule scoped to every CLI and provider, mirroring how an operator would
+    /// configure "intercept 502" after seeing 502 in the failure detail panel.
+    fn status_only_rule(status_code: u16) -> UpstreamErrorResponseRule {
+        let mut candidate = rule();
+        candidate.status_codes = vec![status_code];
+        candidate.keywords.clear();
+        candidate.cli_keys.clear();
+        candidate.provider_ids.clear();
+        candidate.match_mode = UpstreamErrorResponseMatchMode::All;
+        candidate.status_behavior = UpstreamErrorStatusBehavior::Override { status_code: 503 };
+        candidate.message_behavior = UpstreamErrorMessageBehavior::Override {
+            message: "上游流式响应中断，请重试".to_string(),
+        };
+        candidate
+    }
+
+    #[test]
+    fn synthetic_stream_error_matches_status_only_rule_on_the_synthesized_502() {
+        let rewrite = match_synthetic_failure_rule(
+            &[status_only_rule(502)],
+            "codex",
+            7,
+            "provider",
+            GatewayErrorCode::StreamError,
+            &HeaderMap::new(),
+        )
+        .expect("synthesized 502 should match a rule configured for 502");
+
+        assert_eq!(rewrite.upstream_status, 502);
+        assert_eq!(rewrite.client_status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(rewrite.message, "上游流式响应中断，请重试");
+        assert_eq!(
+            rewrite.synthetic_error_code,
+            Some(GatewayErrorCode::StreamError.as_str())
+        );
+    }
+
+    #[test]
+    fn synthetic_idle_timeout_matches_on_524_and_not_on_502() {
+        let rewrite = match_synthetic_failure_rule(
+            &[status_only_rule(524)],
+            "codex",
+            7,
+            "provider",
+            GatewayErrorCode::StreamIdleTimeout,
+            &HeaderMap::new(),
+        )
+        .expect("synthesized 524 should match a rule configured for 524");
+        assert_eq!(rewrite.upstream_status, 524);
+        assert_eq!(
+            rewrite.synthetic_error_code,
+            Some(GatewayErrorCode::StreamIdleTimeout.as_str())
+        );
+
+        assert!(
+            match_synthetic_failure_rule(
+                &[status_only_rule(502)],
+                "codex",
+                7,
+                "provider",
+                GatewayErrorCode::StreamIdleTimeout,
+                &HeaderMap::new(),
+            )
+            .is_none(),
+            "an idle timeout synthesizes 524 and must not match a 502-only rule"
+        );
+    }
+
+    /// The upstream status on a truncated stream is 200. Matching must run on the synthesized
+    /// code instead, and the real 200 must never be what a rule is tested against.
+    #[test]
+    fn real_upstream_200_never_matches_directly() {
+        assert!(
+            match_response_rule(
+                &[status_only_rule(502)],
+                "codex",
+                7,
+                "provider",
+                StatusCode::OK,
+                Some(br#"{"error":{"message":"whatever"}}"#),
+                &HeaderMap::new(),
+            )
+            .is_none(),
+            "match_response_rule must keep rejecting success statuses"
+        );
+
+        assert!(
+            match_synthetic_failure_rule(
+                &[status_only_rule(200)],
+                "codex",
+                7,
+                "provider",
+                GatewayErrorCode::StreamError,
+                &HeaderMap::new(),
+            )
+            .is_none(),
+            "a rule configured for 200 is unsafe and must not match the synthesized failure"
+        );
+    }
+
+    /// Without the pseudo body a keyword rule would return `Unknown` and fail open, which is
+    /// exactly the bug this task fixes. The contrast assertion pins that difference.
+    #[test]
+    fn keyword_rule_matches_through_the_pseudo_body() {
+        let mut candidate = status_only_rule(502);
+        candidate.status_codes.clear();
+        candidate.keywords = vec!["gw_stream_error".to_string()];
+
+        let rewrite = match_synthetic_failure_rule(
+            &[candidate.clone()],
+            "codex",
+            7,
+            "provider",
+            GatewayErrorCode::StreamError,
+            &HeaderMap::new(),
+        )
+        .expect("keyword rule should match the gateway code carried by the pseudo body");
+        assert_eq!(rewrite.client_status, StatusCode::SERVICE_UNAVAILABLE);
+
+        assert!(
+            match_response_rule(
+                &[candidate],
+                "codex",
+                7,
+                "provider",
+                StatusCode::BAD_GATEWAY,
+                None,
+                &HeaderMap::new(),
+            )
+            .is_none(),
+            "same keyword rule without a body fails open — the pseudo body is what fixes it"
+        );
+    }
+
+    #[test]
+    fn passthrough_uses_fixed_text_and_never_leaks_the_gateway_code() {
+        for (error_code, expected) in [
+            (GatewayErrorCode::StreamError, STREAM_TRANSPORT_FAILURE_TEXT),
+            (
+                GatewayErrorCode::StreamIdleTimeout,
+                STREAM_IDLE_TIMEOUT_TEXT,
+            ),
+        ] {
+            let mut candidate = status_only_rule(
+                status_override_for_error_code(Some(error_code.as_str())).expect("synthesized"),
+            );
+            candidate.message_behavior = UpstreamErrorMessageBehavior::Passthrough;
+
+            let rewrite = match_synthetic_failure_rule(
+                &[candidate],
+                "codex",
+                7,
+                "provider",
+                error_code,
+                &HeaderMap::new(),
+            )
+            .expect("passthrough rule should still match");
+
+            assert_eq!(rewrite.message, expected);
+            assert_eq!(rewrite.message_mode, "passthrough");
+            assert!(
+                !rewrite.message.contains("GW_"),
+                "client text must not leak gateway identifiers: {}",
+                rewrite.message
+            );
+            assert!(!rewrite.message.contains("gateway_stream_failure"));
+        }
+    }
+
+    #[test]
+    fn override_message_is_used_verbatim_even_when_it_names_the_gateway_code() {
+        let mut candidate = status_only_rule(502);
+        candidate.message_behavior = UpstreamErrorMessageBehavior::Override {
+            message: "hit GW_STREAM_ERROR, switching provider".to_string(),
+        };
+
+        let rewrite = match_synthetic_failure_rule(
+            &[candidate],
+            "codex",
+            7,
+            "provider",
+            GatewayErrorCode::StreamError,
+            &HeaderMap::new(),
+        )
+        .expect("override rule should match");
+
+        assert_eq!(rewrite.message_mode, "override");
+        assert_eq!(rewrite.message, "hit GW_STREAM_ERROR, switching provider");
+    }
+
+    /// The allow-list is what keeps client aborts (499, client already gone) and every other
+    /// gateway code out of stream-failure rewriting, even though 499 is a 4xx.
+    #[test]
+    fn only_stream_terminal_codes_enter_synthetic_matching() {
+        for error_code in [
+            GatewayErrorCode::RequestAborted,
+            GatewayErrorCode::StreamAborted,
+            GatewayErrorCode::UpstreamTimeout,
+            GatewayErrorCode::Fake200,
+            GatewayErrorCode::EmptyResponse,
+            GatewayErrorCode::InternalError,
+        ] {
+            let synthesized = status_override_for_error_code(Some(error_code.as_str()))
+                .expect("these codes all synthesize a status");
+            assert!(
+                match_synthetic_failure_rule(
+                    &[status_only_rule(synthesized)],
+                    "codex",
+                    7,
+                    "provider",
+                    error_code,
+                    &HeaderMap::new(),
+                )
+                .is_none(),
+                "{} must stay outside stream-failure rewriting",
+                error_code.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn audit_metadata_marks_the_status_as_synthesized() {
+        let synthetic = match_synthetic_failure_rule(
+            &[status_only_rule(502)],
+            "codex",
+            7,
+            "provider",
+            GatewayErrorCode::StreamError,
+            &HeaderMap::new(),
+        )
+        .expect("synthetic rewrite")
+        .special_setting();
+        assert_eq!(synthetic["upstreamStatus"], 502);
+        assert_eq!(synthetic["upstreamStatusSynthetic"], true);
+        assert_eq!(synthetic["syntheticErrorCode"], "GW_STREAM_ERROR");
+
+        let real = match_response_rule(
+            &[status_only_rule(502)],
+            "codex",
+            7,
+            "provider",
+            StatusCode::BAD_GATEWAY,
+            None,
+            &HeaderMap::new(),
+        )
+        .expect("real rewrite")
+        .special_setting();
+        assert_eq!(real["upstreamStatus"], 502);
+        assert!(
+            real.get("upstreamStatusSynthetic").is_none(),
+            "real upstream failures must keep their existing audit shape"
+        );
+        assert!(real.get("syntheticErrorCode").is_none());
     }
 }

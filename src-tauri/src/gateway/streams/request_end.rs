@@ -425,6 +425,7 @@ mod tests {
             provider_cooldown_secs: 0,
             upstream_first_byte_timeout_secs: 300,
             upstream_retry_policy: crate::settings::UpstreamRetryPolicy::default(),
+            upstream_error_response_rules: Vec::new(),
             detect_stream_internal_errors: true,
             provider_id: 1,
             provider_name: "test-provider".to_string(),

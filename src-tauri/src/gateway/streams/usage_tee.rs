@@ -3,6 +3,7 @@
 use crate::gateway::response_fixer;
 use crate::usage;
 use axum::body::{Body, Bytes};
+use axum::http::HeaderMap;
 use futures_core::Stream;
 use std::future::Future;
 use std::pin::Pin;
@@ -14,7 +15,8 @@ use std::time::Duration;
 use super::super::events::{emit_gateway_debug_log, emit_gateway_debug_log_lazy};
 use super::super::model_route_mapping;
 use super::super::proxy::{
-    is_fake_200_non_stream_body, upstream_client_error_rules, GatewayErrorCode,
+    is_fake_200_non_stream_body, upstream_client_error_rules, upstream_error_response_rules,
+    GatewayErrorCode,
 };
 use super::super::util::{
     lossy_utf8_preview, now_unix_millis, now_unix_seconds, MAX_DEBUG_BODY_PREVIEW_BYTES,
@@ -243,6 +245,58 @@ fn is_plugin_stream_error_chunk(chunk: &[u8]) -> bool {
         .any(|window| window == PLUGIN_STREAM_ERROR_MARKER.as_bytes())
 }
 
+/// Does this stream speak the Responses protocol (`event:`-tagged frames dispatched by event
+/// type)? **Both** codex and grok do — see `configured_model_route.rs`'s
+/// `is_supported_inference_request`, where `"grok" => is_responses_path(..) || .."/chat/completions"`.
+/// Framing therefore follows the request path, not the CLI: a grok Responses stream needs the
+/// same `event: response.failed` shape as codex, while grok on `/chat/completions` needs the
+/// data-only shape. Path set kept identical to [`is_codex_responses_path`] on purpose.
+fn is_responses_protocol_stream(cli_key: &str, path: &str) -> bool {
+    if !matches!(cli_key, "codex" | "grok") {
+        return false;
+    }
+    matches!(
+        path.trim_end_matches('/'),
+        "/v1/responses" | "/responses" | "/v1/codex/responses"
+    )
+}
+
+/// Wrap a rewrite's error payload into an SSE frame the target CLI's stream parser accepts.
+///
+/// The payload itself comes from `UpstreamErrorResponseRewrite::client_error_payload`, so a
+/// stream tail and a pre-commit HTTP envelope always carry the same error object. Only the
+/// per-protocol framing differs:
+/// - Responses protocol (codex or grok on `/v1/responses`): `event: response.failed` with the
+///   error under `response.error`
+/// - claude: `event: error`, payload already shaped as the Anthropic error event
+/// - `/v1/chat/completions` (codex or grok), gemini: data-only frame (these streams carry no
+///   `event:` lines, and adding one risks confusing SDKs)
+///
+/// Never uses `data: [DONE]`: `proxy::sse::parse_sse_frame` treats it as a non-event, so an
+/// error carried that way would be invisible.
+fn synthetic_tail_frame(cli_key: &str, path: &str, payload: &serde_json::Value) -> Option<Bytes> {
+    if is_responses_protocol_stream(cli_key, path) {
+        let error = payload.get("error")?.clone();
+        return Some(crate::gateway::proxy::sse::sse_event_frame(
+            "response.failed",
+            &serde_json::json!({
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": error,
+                }
+            }),
+        ));
+    }
+    match cli_key {
+        "claude" => Some(crate::gateway::proxy::sse::sse_event_frame(
+            "error", payload,
+        )),
+        "codex" | "grok" | "gemini" => Some(crate::gateway::proxy::sse::sse_data_frame(payload)),
+        _ => None,
+    }
+}
+
 fn spawn_touch_activity<R: tauri::Runtime>(
     ctx: &StreamFinalizeCtx<R>,
     last_activity_ms: i64,
@@ -287,7 +341,7 @@ async fn next_item<S: Stream + Unpin>(stream: &mut S) -> Option<S::Item> {
 pub(in crate::gateway) struct UsageSseTeeStream<S, B, R = tauri::Wry>
 where
     S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
-    B: AsRef<[u8]>,
+    B: AsRef<[u8]> + From<Bytes>,
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
@@ -300,13 +354,25 @@ where
     finalized: bool,
     defer_terminal_error: bool,
     stop_after_terminal_error: bool,
+    /// Gateway-authored tail frame awaiting delivery by the relay task.
+    ///
+    /// Only used when `relay_owns_tail` is set. The relay must send this straight downstream
+    /// instead of letting it flow back as a stream item, because the relay pipes items through
+    /// `CodexTerminalFirewall`, whose job is policing *upstream* frames — it would classify our
+    /// synthesized `response.failed` as a terminal internal error and drop it after commit,
+    /// silently defeating the injection in exactly the codex case it exists for.
+    pending_tail: Option<Bytes>,
+    relay_owns_tail: bool,
+    /// Set once a tail frame has been produced: the next poll ends the stream with a clean EOF
+    /// rather than the transport `Err`, so downstream sees a normal end of chunked body.
+    stop_after_tail: bool,
     completion_override: Option<bool>,
 }
 
 impl<S, B, R> UsageSseTeeStream<S, B, R>
 where
     S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
-    B: AsRef<[u8]>,
+    B: AsRef<[u8]> + From<Bytes>,
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
@@ -341,6 +407,9 @@ where
             finalized: false,
             defer_terminal_error: false,
             stop_after_terminal_error: false,
+            pending_tail: None,
+            relay_owns_tail: false,
+            stop_after_tail: false,
             completion_override: None,
         }
     }
@@ -350,13 +419,65 @@ where
         self
     }
 
+    /// Hand tail-frame delivery to the relay task (see `pending_tail`).
+    pub(in crate::gateway) fn with_relay_owned_tail(mut self) -> Self {
+        self.relay_owns_tail = true;
+        self
+    }
+
+    fn take_pending_tail(&mut self) -> Option<Bytes> {
+        self.pending_tail.take()
+    }
+
+    /// Match a gateway-synthesized terminal failure against the final-error rewrite rules and,
+    /// on a hit, build the protocol-legal tail frame plus its audit record.
+    ///
+    /// Ordering matters (design §3.4): the audit special setting is pushed here, i.e. before the
+    /// caller's `finalize()` serializes special settings into the request log. Returns `None`
+    /// whenever nothing should change — no rules configured, no rule matched, or no known frame
+    /// shape for this protocol — in which case the caller keeps its current behavior byte for byte.
+    fn build_synthetic_tail(&mut self, error_code: GatewayErrorCode) -> Option<Bytes> {
+        if self.ctx.upstream_error_response_rules.is_empty() {
+            return None;
+        }
+
+        let rewrite = upstream_error_response_rules::match_synthetic_failure_rule(
+            &self.ctx.upstream_error_response_rules,
+            &self.ctx.cli_key,
+            self.ctx.provider_id,
+            &self.ctx.provider_name,
+            error_code,
+            // Post-commit headers are already on the wire, so no upstream header can be
+            // honored here; an empty map keeps `Retry-After` extraction from inventing one.
+            &HeaderMap::new(),
+        )?;
+        let payload = rewrite.client_error_payload(&self.ctx.cli_key)?;
+        let frame = synthetic_tail_frame(&self.ctx.cli_key, &self.ctx.path, &payload)?;
+
+        response_fixer::push_special_setting(
+            &self.ctx.special_settings,
+            rewrite.special_setting_for_stream_tail(),
+        );
+        emit_gateway_debug_log(
+            &self.ctx.app,
+            format!(
+                "[SSE] appending gateway error tail frame — trace_id={} cli_key={} path={} error_code={}",
+                self.ctx.trace_id,
+                self.ctx.cli_key,
+                self.ctx.path,
+                error_code.as_str(),
+            ),
+        );
+        Some(frame)
+    }
+
     fn poll_next_inner(
         &mut self,
         cx: &mut Context<'_>,
         enforce_idle_timeout: bool,
         finalize_terminal: bool,
     ) -> Poll<Option<Result<B, reqwest::Error>>> {
-        if self.stop_after_terminal_error {
+        if self.stop_after_terminal_error || self.stop_after_tail {
             return Poll::Ready(None);
         }
 
@@ -369,6 +490,11 @@ where
                 if enforce_idle_timeout {
                     if let Some(sleep) = self.idle_sleep.as_mut() {
                         if sleep.as_mut().poll(cx).is_ready() {
+                            // This branch ends the stream with a clean EOF and no `Err`, so an
+                            // injection hung only off the `Err` arm would never fire for 524
+                            // (PRD R1).
+                            let tail =
+                                self.build_synthetic_tail(GatewayErrorCode::StreamIdleTimeout);
                             self.finalize(
                                 Some(GatewayErrorCode::StreamIdleTimeout.as_str()),
                                 StreamTerminalEvidence::new(
@@ -379,6 +505,14 @@ where
                                     self.tracker.terminal_error_seen(),
                                 ),
                             );
+                            if let Some(frame) = tail {
+                                self.stop_after_tail = true;
+                                if self.relay_owns_tail {
+                                    self.pending_tail = Some(frame);
+                                    return Poll::Ready(None);
+                                }
+                                return Poll::Ready(Some(Ok(B::from(frame))));
+                            }
                             return Poll::Ready(None);
                         }
                     }
@@ -504,6 +638,15 @@ where
                     }
                     Poll::Ready(None)
                 } else {
+                    // Main injection point: upstream read error mid-stream (GW_STREAM_ERROR).
+                    // Shared by every protocol — the codex relay and the claude/gemini/grok
+                    // direct paths both reach here through `poll_next`.
+                    let tail = if finalize_terminal {
+                        self.build_synthetic_tail(GatewayErrorCode::StreamError)
+                    } else {
+                        // Drain path: the client is already gone, so nothing to inject for.
+                        None
+                    };
                     if finalize_terminal {
                         self.finalize(
                             Some(GatewayErrorCode::StreamError.as_str()),
@@ -516,7 +659,21 @@ where
                             ),
                         );
                     }
-                    Poll::Ready(Some(Err(err)))
+                    match tail {
+                        Some(frame) => {
+                            self.stop_after_tail = true;
+                            if self.relay_owns_tail {
+                                // The relay swaps this `Err` for the tail frame; returning the
+                                // frame here instead would route it through the firewall.
+                                self.pending_tail = Some(frame);
+                                Poll::Ready(Some(Err(err)))
+                            } else {
+                                Poll::Ready(Some(Ok(B::from(frame))))
+                            }
+                        }
+                        // No rule matched: keep the pre-existing transport error verbatim.
+                        None => Poll::Ready(Some(Err(err))),
+                    }
                 }
             }
         }
@@ -550,7 +707,11 @@ where
             spawn_touch_activity(
                 &self.ctx,
                 activity.last_activity_ms(),
-                activity.details_json(terminal_signal),
+                // Post-commit stream failures are ~93% of real stream faults; without the origin
+                // and terminal evidence here their activity record cannot say *how* the stream
+                // ended (PRD R10). `terminal_details_json` only adds fields — `terminal_signal`
+                // keeps its existing meaning and name.
+                activity.terminal_details_json(terminal_signal, terminal_evidence),
             );
         }
 
@@ -622,7 +783,7 @@ where
 impl<S, B, R> Stream for UsageSseTeeStream<S, B, R>
 where
     S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
-    B: AsRef<[u8]>,
+    B: AsRef<[u8]> + From<Bytes>,
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
@@ -637,14 +798,14 @@ where
 struct DrainNextFuture<'a, S, B, R>(&'a mut UsageSseTeeStream<S, B, R>)
 where
     S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
-    B: AsRef<[u8]>,
+    B: AsRef<[u8]> + From<Bytes>,
     R: tauri::Runtime,
     R::Handle: Unpin;
 
 impl<'a, S, B, R> Future for DrainNextFuture<'a, S, B, R>
 where
     S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
-    B: AsRef<[u8]>,
+    B: AsRef<[u8]> + From<Bytes>,
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
@@ -660,7 +821,7 @@ async fn next_drain_item<S, B, R>(
 ) -> Option<Result<B, reqwest::Error>>
 where
     S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
-    B: AsRef<[u8]>,
+    B: AsRef<[u8]> + From<Bytes>,
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
@@ -670,7 +831,7 @@ where
 impl<S, B, R> Drop for UsageSseTeeStream<S, B, R>
 where
     S: Stream<Item = Result<B, reqwest::Error>> + Unpin,
-    B: AsRef<[u8]>,
+    B: AsRef<[u8]> + From<Bytes>,
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
@@ -778,7 +939,8 @@ where
     let body_completion_delivered = Arc::clone(&completion_delivered);
 
     let mut tee = UsageSseTeeStream::new(upstream, ctx, idle_timeout, initial_first_byte_ms)
-        .with_defer_terminal_error();
+        .with_defer_terminal_error()
+        .with_relay_owned_tail();
 
     tokio::spawn(async move {
         let mut forwarded_chunks: i64 = 0;
@@ -902,6 +1064,17 @@ where
                                 );
                             }
                         }
+                        // Idle timeout ends the stream with a clean EOF, so a matched rule's tail
+                        // frame arrives here. Sent after the firewall has finished and without
+                        // passing through it — the frame is gateway-authored, not upstream bytes.
+                        if let Some(frame) = tee.take_pending_tail() {
+                            let _ = tx
+                                .send(DownstreamRelayItem {
+                                    item: Ok(frame),
+                                    completion_seen: visible_completion_seen,
+                                })
+                                .await;
+                        }
                         break;
                     };
 
@@ -975,6 +1148,12 @@ where
                             }
                         }
                         Err(err) => {
+                            // A mid-frame truncation — the common real-world shape — leaves a
+                            // partial frame in the firewall, so `finish()` fails closed here far
+                            // more often than not. The tail frame must still go out: the firewall
+                            // dropped incomplete *upstream* bytes, which is exactly when the
+                            // client most needs to be told the stream failed.
+                            let mut firewall_dropped_tail_bytes = false;
                             if let Some(firewall) = terminal_firewall.as_mut() {
                                 let output = firewall.finish();
                                 visible_completion_seen |= output.completion_seen;
@@ -988,16 +1167,35 @@ where
                                             "reason": reason,
                                         }),
                                     );
-                                    break;
+                                    firewall_dropped_tail_bytes = true;
                                 }
                             }
-                            // 尽力把流错误透传给客户端
-                            let _ = tx
-                                .send(DownstreamRelayItem {
-                                    item: Err(err),
-                                    completion_seen: false,
-                                })
-                                .await;
+                            // A matched rule replaces the raw transport error with a
+                            // protocol-legal error frame plus a clean end of body, so the client
+                            // sees the operator's message instead of a truncated stream.
+                            match tee.take_pending_tail() {
+                                Some(frame) => {
+                                    let _ = tx
+                                        .send(DownstreamRelayItem {
+                                            item: Ok(frame),
+                                            completion_seen: visible_completion_seen,
+                                        })
+                                        .await;
+                                }
+                                // No rule matched: keep the pre-existing behavior exactly — the
+                                // transport error is forwarded, except when the firewall failed
+                                // closed, where it already decided to end the body silently.
+                                None if !firewall_dropped_tail_bytes => {
+                                    // 尽力把流错误透传给客户端
+                                    let _ = tx
+                                        .send(DownstreamRelayItem {
+                                            item: Err(err),
+                                            completion_seen: false,
+                                        })
+                                        .await;
+                                }
+                                None => {}
+                            }
                             break;
                         }
                     }
@@ -1534,6 +1732,7 @@ mod tests {
             provider_cooldown_secs: 0,
             upstream_first_byte_timeout_secs: 300,
             upstream_retry_policy: crate::settings::UpstreamRetryPolicy::default(),
+            upstream_error_response_rules: Vec::new(),
             detect_stream_internal_errors: true,
             provider_id: 1,
             provider_name: "test-provider".to_string(),
@@ -1604,6 +1803,320 @@ mod tests {
             reasoning_effort: None,
             upstream_sent: true,
         }
+    }
+
+    /// Rule that matches purely on the gateway-synthesized status code and overrides the text,
+    /// mirroring what an operator configures in the UI for "intercept 502 / 524".
+    fn synthetic_status_rule(status_code: u16) -> crate::settings::UpstreamErrorResponseRule {
+        crate::settings::UpstreamErrorResponseRule {
+            id: "6d1f0a52-2c74-4a1b-9f6e-1b0d3c8a5e77".to_string(),
+            name: "stream failure".to_string(),
+            description: String::new(),
+            enabled: true,
+            priority: 10,
+            status_codes: vec![status_code],
+            keywords: Vec::new(),
+            match_mode: crate::settings::UpstreamErrorResponseMatchMode::All,
+            cli_keys: Vec::new(),
+            provider_ids: Vec::new(),
+            status_behavior: crate::settings::UpstreamErrorStatusBehavior::Override {
+                status_code: 503,
+            },
+            message_behavior: crate::settings::UpstreamErrorMessageBehavior::Override {
+                message: "上游流式响应中断，请重试".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn synthetic_tail_frame_uses_each_protocols_own_stream_shape() {
+        let payload = serde_json::json!({
+            "error": { "type": "upstream_error", "code": "upstream_error", "message": "boom" }
+        });
+
+        // codex /v1/responses: response.failed carrying the error under `response.error`.
+        let codex = super::synthetic_tail_frame("codex", "/v1/responses", &payload)
+            .expect("codex responses frame");
+        let codex = String::from_utf8(codex.to_vec()).expect("utf8");
+        assert!(codex.starts_with("event: response.failed\ndata: "));
+        assert!(codex.ends_with("\n\n"));
+        let codex_data: serde_json::Value = serde_json::from_str(
+            codex
+                .trim_end()
+                .strip_prefix("event: response.failed\ndata: ")
+                .expect("codex data line"),
+        )
+        .expect("codex json");
+        assert_eq!(codex_data["type"], "response.failed");
+        assert_eq!(codex_data["response"]["status"], "failed");
+        assert_eq!(codex_data["response"]["error"]["message"], "boom");
+
+        // codex on an OpenAI-compatible path has no `event:` lines: data-only frame.
+        let codex_chat = super::synthetic_tail_frame("codex", "/v1/chat/completions", &payload)
+            .expect("codex chat frame");
+        let codex_chat = String::from_utf8(codex_chat.to_vec()).expect("utf8");
+        assert!(codex_chat.starts_with("data: "));
+        assert!(!codex_chat.contains("event:"));
+
+        // grok also speaks the Responses protocol (`configured_model_route.rs`'s
+        // `is_supported_inference_request`), and its Responses SSE really does carry `event:`
+        // lines — see the `mock_runtime_router_grok_responses_sse_is_transparent_and_logged`
+        // fixture. Framing must follow the path, not the CLI, or a grok client gets a bare
+        // `data:` blob with no dispatchable event type and the truncation stays silent.
+        let grok_responses = super::synthetic_tail_frame("grok", "/v1/responses", &payload)
+            .expect("grok responses frame");
+        let grok_responses = String::from_utf8(grok_responses.to_vec()).expect("utf8");
+        assert!(grok_responses.starts_with("event: response.failed\ndata: "));
+        assert!(grok_responses.contains("\"status\":\"failed\""));
+
+        // claude: `event: error`, payload already shaped as the Anthropic error event.
+        let claude_payload = serde_json::json!({
+            "type": "error",
+            "error": { "type": "upstream_error", "message": "boom" }
+        });
+        let claude = super::synthetic_tail_frame("claude", "/v1/messages", &claude_payload)
+            .expect("claude frame");
+        let claude = String::from_utf8(claude.to_vec()).expect("utf8");
+        assert!(claude.starts_with("event: error\ndata: "));
+
+        for cli_key in ["gemini", "grok"] {
+            let frame = super::synthetic_tail_frame(cli_key, "/v1/chat/completions", &payload)
+                .expect("data-only frame");
+            let frame = String::from_utf8(frame.to_vec()).expect("utf8");
+            assert!(frame.starts_with("data: "), "{cli_key} must be data-only");
+            assert!(
+                !frame.contains("event:"),
+                "{cli_key} must have no event line"
+            );
+        }
+
+        // Never `data: [DONE]`: proxy::sse::parse_sse_frame treats it as a non-event, so an
+        // error carried that way would be invisible to every client.
+        for cli_key in ["codex", "claude", "gemini", "grok"] {
+            let frame = super::synthetic_tail_frame(cli_key, "/v1/responses", &payload)
+                .or_else(|| super::synthetic_tail_frame(cli_key, "/v1/responses", &claude_payload))
+                .expect("frame");
+            assert!(!String::from_utf8_lossy(frame.as_ref()).contains("[DONE]"));
+        }
+
+        assert!(
+            super::synthetic_tail_frame("unknown-cli", "/v1/chat/completions", &payload).is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_timeout_appends_rule_frame_then_ends_the_body_cleanly() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-idle-tail-inject.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active_requests);
+        // 524 is the status the gateway synthesizes for GW_STREAM_IDLE_TIMEOUT.
+        ctx.upstream_error_response_rules = vec![synthetic_status_rule(524)];
+        let special_settings = Arc::clone(&ctx.special_settings);
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+
+        let body = spawn_usage_sse_relay_body(
+            RelayBodyStream::new(upstream_rx),
+            ctx,
+            Some(Duration::from_millis(300)),
+            None,
+        );
+        let mut body_stream = body.into_data_stream();
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            )))
+            .await
+            .expect("send output chunk");
+        let first = tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+            .await
+            .expect("output chunk should arrive")
+            .expect("body should yield output chunk")
+            .expect("output chunk should be ok");
+        assert!(first.as_ref().starts_with(b"data:"));
+
+        // Upstream goes silent; the idle timeout fires and the matched rule's frame is appended.
+        let tail = tokio::time::timeout(Duration::from_secs(2), next_item(&mut body_stream))
+            .await
+            .expect("idle timeout should produce the tail frame")
+            .expect("body should yield the tail frame")
+            .expect("tail frame should be ok");
+        let tail = String::from_utf8(tail.to_vec()).expect("utf8 tail frame");
+        assert!(tail.starts_with("event: response.failed\ndata: "));
+        assert!(tail.contains("上游流式响应中断，请重试"));
+        // The gateway's internal code must never reach the client.
+        assert!(!tail.contains("GW_STREAM_IDLE_TIMEOUT"));
+
+        // Then a clean EOF, never a transport error.
+        let end = tokio::time::timeout(Duration::from_secs(2), next_item(&mut body_stream))
+            .await
+            .expect("body stream should end after the tail frame");
+        assert!(end.is_none());
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        // The failure is still recorded as a failure: injection changes what the client sees,
+        // not how the gateway classifies the attempt.
+        assert_eq!(
+            log.error_code,
+            Some(GatewayErrorCode::StreamIdleTimeout.as_str().to_string())
+        );
+
+        // Audit metadata reached the request log's special settings (design §3.4 ordering).
+        let settings = special_settings.lock().expect("special settings");
+        let audit = settings
+            .iter()
+            .find(|value| value["type"] == "upstream_error_response_rule")
+            .expect("rewrite audit entry");
+        assert_eq!(audit["syntheticErrorCode"], "GW_STREAM_IDLE_TIMEOUT");
+        assert_eq!(audit["upstreamStatusSynthetic"], true);
+        assert_eq!(audit["upstreamStatus"], 524);
+        // The rule's configured client status is recorded so the marker still validates in the UI
+        // (`requestLogSpecialSettings.ts` fails anything outside 400..=599 closed), but it was
+        // NOT applied: headers were committed long before, so the client keeps 200.
+        assert_eq!(audit["clientStatus"], 503);
+        assert_eq!(audit["clientStatusApplied"], false);
+        assert_eq!(audit["scope"], "stream_tail");
+        // Never persist the rewrite text itself.
+        assert!(!serde_json::to_string(&*settings)
+            .expect("settings json")
+            .contains("上游流式响应中断"));
+        drop(upstream_tx);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_timeout_without_a_matching_rule_keeps_the_current_silent_eof() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-idle-tail-nomatch.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active_requests);
+        // Configured for 502 only: an idle timeout synthesizes 524 and must not match.
+        ctx.upstream_error_response_rules = vec![synthetic_status_rule(502)];
+        let special_settings = Arc::clone(&ctx.special_settings);
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+
+        let body = spawn_usage_sse_relay_body(
+            RelayBodyStream::new(upstream_rx),
+            ctx,
+            Some(Duration::from_millis(300)),
+            None,
+        );
+        let mut body_stream = body.into_data_stream();
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            )))
+            .await
+            .expect("send output chunk");
+        let first = tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+            .await
+            .expect("output chunk should arrive")
+            .expect("body should yield output chunk")
+            .expect("output chunk should be ok");
+        assert!(first.as_ref().starts_with(b"data:"));
+
+        let end = tokio::time::timeout(Duration::from_secs(2), next_item(&mut body_stream))
+            .await
+            .expect("idle timeout should end the body stream");
+        assert!(end.is_none(), "no rule matched: behavior must be unchanged");
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert_eq!(
+            log.error_code,
+            Some(GatewayErrorCode::StreamIdleTimeout.as_str().to_string())
+        );
+        assert!(!special_settings
+            .lock()
+            .expect("special settings")
+            .iter()
+            .any(|value| value["type"] == "upstream_error_response_rule"));
+        drop(upstream_tx);
+    }
+
+    /// claude / gemini / grok (and codex on OpenAI-compatible paths) do **not** use the relay:
+    /// `use_sse_relay` is `is_codex_responses_event_stream_path`, so they stream straight from
+    /// `UsageSseTeeStream`. That path delivers the tail frame as a stream item instead of going
+    /// through `pending_tail`, and it needs its own coverage (PRD R4).
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_stream_path_delivers_the_tail_frame_as_a_stream_item() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-direct-tail-inject.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active_requests);
+        ctx.cli_key = "claude".to_string();
+        ctx.path = "/v1/messages".to_string();
+        ctx.upstream_error_response_rules = vec![synthetic_status_rule(524)];
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+
+        // No relay: the tee itself is the response body.
+        let mut stream = UsageSseTeeStream::new(
+            RelayBodyStream::new(upstream_rx),
+            ctx,
+            Some(Duration::from_millis(300)),
+            None,
+        );
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n",
+            )))
+            .await
+            .expect("send output chunk");
+        let first = tokio::time::timeout(Duration::from_secs(1), next_item(&mut stream))
+            .await
+            .expect("output chunk should arrive")
+            .expect("stream should yield output chunk")
+            .expect("output chunk should be ok");
+        assert!(first.as_ref().starts_with(b"event: content_block_delta"));
+
+        // Idle timeout fires; the rule's frame arrives as the next item, in Anthropic's shape.
+        let tail = tokio::time::timeout(Duration::from_secs(2), next_item(&mut stream))
+            .await
+            .expect("idle timeout should produce the tail frame")
+            .expect("stream should yield the tail frame")
+            .expect("tail frame should be ok");
+        let tail = String::from_utf8(tail.as_ref().to_vec()).expect("utf8 tail frame");
+        assert!(tail.starts_with("event: error\ndata: "));
+        assert!(tail.contains("上游流式响应中断，请重试"));
+        assert!(!tail.contains("GW_STREAM_IDLE_TIMEOUT"));
+
+        // Then a clean EOF, never a transport error.
+        let end = tokio::time::timeout(Duration::from_secs(2), next_item(&mut stream))
+            .await
+            .expect("stream should end after the tail frame");
+        assert!(end.is_none());
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert_eq!(
+            log.error_code,
+            Some(GatewayErrorCode::StreamIdleTimeout.as_str().to_string())
+        );
+        drop(upstream_tx);
     }
 
     fn arm_probe(ctx: &mut StreamFinalizeCtx<tauri::test::MockRuntime>, now_unix: i64) {

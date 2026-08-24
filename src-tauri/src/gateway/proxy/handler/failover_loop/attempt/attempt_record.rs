@@ -4,6 +4,7 @@ use super::*;
 use crate::circuit_breaker;
 use crate::gateway::events::decision_chain as dc;
 use crate::gateway::proxy::status_override;
+use crate::gateway::proxy::upstream_error_response_rules;
 use crate::gateway::proxy::{is_claude_count_tokens_request, provider_router};
 use std::time::Duration;
 
@@ -203,7 +204,28 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
     )
     .await;
 
-    *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
+    // Pre-commit stream failures (`GW_STREAM_ERROR` / `GW_STREAM_IDLE_TIMEOUT`) are the one
+    // failure class where the upstream returned 200 yet the request still failed, so the final
+    // rewrite rules can only reach them through the gateway's synthesized status (502 / 524).
+    // Attaching the rewrite to the outcome — rather than building a response here — keeps the
+    // decision untouched (PRD R2a: rewriting must not short-circuit retry or failover) and lets
+    // `all_providers_failed` produce the full envelope only if the whole loop ends up failing.
+    // Non-stream codes return `None` from the allow-list, so every other failure is unaffected.
+    //
+    // No upstream headers are passed: a truncated 200 carries no `Retry-After` to honor.
+    let error_response_rewrite =
+        upstream_error_response_rules::match_synthetic_failure_rule_by_code(
+            ctx.upstream_error_response_rules,
+            ctx.cli_key.as_str(),
+            provider_id,
+            provider_name_base.as_str(),
+            error_code,
+            &axum::http::HeaderMap::new(),
+        );
+    *last_outcome = Some(
+        AttemptOutcome::new(category.as_str(), error_code)
+            .with_error_response_rewrite(error_response_rewrite),
+    );
 
     let should_apply_cooldown = matches!(cooldown_policy, CooldownPolicy::Apply)
         && !health_bypass

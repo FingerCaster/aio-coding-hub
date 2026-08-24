@@ -190,6 +190,10 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) provider_cooldown_secs: i64,
     pub(in crate::gateway) upstream_first_byte_timeout_secs: u32,
     pub(in crate::gateway) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,
+    // Final-error rewrite rules, carried so stream terminal failures (GW_STREAM_ERROR /
+    // GW_STREAM_IDLE_TIMEOUT) can be matched against them on the synthesized status code.
+    pub(in crate::gateway) upstream_error_response_rules:
+        Vec<crate::settings::UpstreamErrorResponseRule>,
     pub(in crate::gateway) detect_stream_internal_errors: bool,
     pub(in crate::gateway) provider_id: i64,
     pub(in crate::gateway) provider_name: String,

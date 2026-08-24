@@ -1,6 +1,27 @@
 //! Shared SSE frame helpers for gateway proxy paths.
 
+use bytes::Bytes;
 use serde_json::Value;
+
+/// Build an SSE frame that carries an explicit event name:
+/// `event: <event_type>\ndata: <json>\n\n`.
+///
+/// Used by protocols whose frames include an `event:` line — codex `/v1/responses` and
+/// Anthropic `/v1/messages`. Shared so stream-tail error injection and the Anthropic inbound
+/// bridge build byte-identical frames from one place.
+pub(in crate::gateway) fn sse_event_frame(event_type: &str, payload: &Value) -> Bytes {
+    let data = serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string());
+    Bytes::from(format!("event: {event_type}\ndata: {data}\n\n"))
+}
+
+/// Build a data-only SSE frame: `data: <json>\n\n` (no `event:` line).
+///
+/// Used by OpenAI-compatible protocols that never emit `event:` lines (gemini, grok); adding an
+/// `event:` line there risks confusing SDKs that expect a pure `data:` stream.
+pub(in crate::gateway) fn sse_data_frame(payload: &Value) -> Bytes {
+    let data = serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string());
+    Bytes::from(format!("data: {data}\n\n"))
+}
 
 /// Find the byte offset immediately after the first complete SSE event,
 /// terminated by `\n\n` or `\r\n\r\n`.

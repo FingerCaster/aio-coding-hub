@@ -195,6 +195,7 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) introspection_body: Vec<u8>,
+    pub(super) upstream_error_response_rules: &'a [crate::settings::UpstreamErrorResponseRule],
 }
 
 impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
@@ -231,6 +232,7 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             response_fixer_stream_config: ctx.response_fixer_stream_config,
             response_fixer_non_stream_config: ctx.response_fixer_non_stream_config,
             introspection_body: ctx.introspection_body.to_vec(),
+            upstream_error_response_rules: ctx.upstream_error_response_rules,
         }
     }
 }
@@ -346,6 +348,7 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         provider_cooldown_secs: ctx.provider_cooldown_secs,
         upstream_first_byte_timeout_secs: ctx.upstream_first_byte_timeout_secs,
         upstream_retry_policy: provider_ctx.upstream_retry_policy.clone(),
+        upstream_error_response_rules: ctx.upstream_error_response_rules.to_vec(),
         detect_stream_internal_errors,
         provider_id: provider_ctx.provider_id,
         provider_name: provider_ctx.provider_name_base.clone(),

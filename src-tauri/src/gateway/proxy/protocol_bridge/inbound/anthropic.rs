@@ -374,8 +374,7 @@ fn build_response(ir: &InternalResponse, ctx: &BridgeContext) -> Result<Value, B
 // ---------------------------------------------------------------------------
 
 fn sse_frame(event_type: &str, payload: Value) -> Bytes {
-    let data = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-    Bytes::from(format!("event: {event_type}\ndata: {data}\n\n"))
+    crate::gateway::proxy::sse::sse_event_frame(event_type, &payload)
 }
 
 fn render_chunk(chunk: &IRStreamChunk, ctx: &BridgeContext) -> Result<Vec<Bytes>, BridgeError> {
