@@ -1,0 +1,19 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md", "reason": "核心契约。第 3 节与第 4 节矩阵行当前明确禁止「HTTP 200 流错误与传输错误进入 rewrite 匹配」，本任务必须更新它们；同时第 99 行「A later success clears terminal rewrite candidates」是 last_outcome 修复的语义依据"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md", "reason": "本任务改动 failover 主循环的 run_state 与 all_providers_failed 取值逻辑，须确认不破坏既有 failover 路由语义"}
+{"file": ".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md", "reason": "PRD R2a 要求改写不得短路重试与供应商切换，需遵守既有 attempt 预算与共享重试预算约定"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md", "reason": "流式终止、熔断、cooldown 的可靠性边界；PRD R7 要求熔断计数与 cooldown 行为保持不变"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/provider-deletion-and-attempt-identity-contract.md", "reason": "PRD R8 涉及 attempt status 与供应商身份在日志中的呈现，需保持既有 attempt 身份语义"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "design.md §3.2 明确复用既有注入模式（plugin_stream_error_chunk / BridgeStream::terminate_* / sse_frame helper），须遵循仓库复用规范而非另造实现"}
+{"file": ".trellis/spec/aio-coding-hub/backend/index.md", "reason": "后端层 spec 索引，网关与流式模块的实现约定入口"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "跨层 spec 索引，用于定位其余相关契约"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/tail-injection-points.md", "reason": "步骤 4 的实现依据：P1 注入点位置、6 个可复用机制、必须保持的 6 条不变量表（含 tracker 污染风险与审计 push 时序）"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/downstream-commit-boundary.md", "reason": "commit 判定的三条 break 与不可改项，两侧分治设计的事实基础"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/codex-responses-error-event-format.md", "reason": "步骤 4.3 构造 codex SSE error 帧的字节级样例与仓库固件；含「禁止用 data: [DONE] 承载错误」等约束"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/multi-protocol-stream-error-formats.md", "reason": "claude/gemini/grok 流式 error 帧格式，以及 build_response 非流信封与流式追加的差异对照"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/logging-stats-impact.md", "reason": "步骤 4.4 的硬时序约束：审计元数据必须在 finalize 之前 push，否则不进请求日志"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/last-outcome-rewrite-loss.md", "reason": "步骤 3 的完整依据：6 个实际覆盖点、契约无冲突的论证、方案 A/B/C 权衡，以及第 6 节四条补验结论"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/stream-terminal-origins.md", "reason": "GW_STREAM_ERROR 的终止来源归属与 pre/post commit 划分，步骤 4.5 处理 524 idle timeout 分支的依据"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/sse-forward-path.md", "reason": "SSE 从 reqwest 到 axum Body 的 8 层包装链与 relay/直连分叉条件，理解注入点上下文所需"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/pre-commit-guard-window.md", "reason": "步骤 5 的背景：guard 窗口配置链与缓冲重放机制，确认改写不干扰既有 pre-commit 拦截"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/retry-keyword-mechanism.md", "reason": "证明 stream_internal_errors 与 rewrite 规则两套机制零共享；PRD R7 要求前者行为不变"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/baseline-migration-64f2c6a0.md", "reason": "基线迁移对照表：实现时行号一律以此为准；已重验架构/P1/方案A 均无需变更，并记录 0.5/0.6 两项待确认"}

@@ -1,0 +1,13 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md", "reason": "验证契约已按步骤 7 更新：第 3 节与第 4 节矩阵行不再禁止流式故障进入 rewrite 匹配；新增流式/非流式匹配键差异、已 commit 仅可追加事件、attempt status 记合成码、伪 body 语义四项记录"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md", "reason": "检查 failover 主循环改动未破坏既有路由与重试语义"}
+{"file": ".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md", "reason": "检查 PRD R2a：改写只在 Abort 分支执行，未短路重试与供应商切换，未改变共享预算"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md", "reason": "检查 PRD R7：熔断计数、cooldown、探针语义与既有边界一致"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "检查是否复用既有 SSE 注入与帧构造机制，而非新增第四份重复实现（design.md §3.2、步骤 4.2）"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "本任务跨 Rust 网关层与前端 UI 层，检查跨层一致性与 UI 说明是否与后端语义匹配（步骤 7.4-7.6）"}
+{"file": ".trellis/spec/aio-coding-hub/backend/index.md", "reason": "后端质量约定与检查入口"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "跨层 spec 索引，确认无遗漏的相关契约需同步"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/tail-injection-points.md", "reason": "6 条不变量清单是 check 阶段的核对表：tracker 未摄入注入帧、completion_delivered 未置位、未复用 plugin marker、前缀字节不变、未命中时行为不变"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/logging-stats-impact.md", "reason": "核对审计 push 早于 finalize 的时序是否真正落实，以及请求日志未把该类请求记为成功"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/last-outcome-rewrite-loss.md", "reason": "核对步骤 3 修复：多供应商场景采用前序 rewrite、成功路径仍不使用 rewrite、无 rewrite 时兜底不回归；第 6.4 节说明现有两个测试为单供应商单尝试"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/codex-responses-error-event-format.md", "reason": "核对注入帧格式合法性：帧边界、事件名在仓库认定的终态错误集合内、未使用 data: [DONE]"}
+{"file": ".trellis/tasks/08-23-intercept-stream-error-rules/research/baseline-migration-64f2c6a0.md", "reason": "核对实现是否基于新基线行号；确认 0.5/0.6 两项待确认已在步骤 4 之前解决"}
