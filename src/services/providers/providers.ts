@@ -671,14 +671,20 @@ export async function providerAccountUsageDesktopLeaseHeartbeat(
 
 export async function providerAccountUsageDesktopLeaseRelease(providerId: number): Promise<void> {
   const normalizedProviderId = validateProviderId(providerId);
-  await invokeGeneratedIpc<void>({
+  // The Rust command returns `Result<(), String>`, so a *successful* release resolves as
+  // `{ status: "ok", data: null }`. Without `return_fallback` the null payload is treated as a
+  // missing result and reported as `IPC_NULL_RESULT`, logging a false error on every release even
+  // though the lease was dropped. Real failures still arrive as `status: "error"` and throw.
+  await invokeGeneratedIpc<null, null>({
     title: "停止账户用量刷新失败",
     cmd: "provider_account_usage_desktop_lease_release",
     args: { providerId: normalizedProviderId },
     invoke: () =>
       commands.providerAccountUsageDesktopLeaseRelease(normalizedProviderId) as Promise<
-        GeneratedCommandResult<void>
+        GeneratedCommandResult<null>
       >,
+    nullResultBehavior: "return_fallback",
+    fallback: null,
   });
 }
 

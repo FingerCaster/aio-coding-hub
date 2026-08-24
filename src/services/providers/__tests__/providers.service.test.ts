@@ -10,6 +10,7 @@ import {
   providerDuplicate,
   providerOAuthCancelDeviceFlow,
   providerOAuthDisconnect,
+  providerAccountUsageDesktopLeaseRelease,
   providerAccountUsageFetch,
   providerAccountUsageTestCustomScript,
   providerOAuthFetchLimits,
@@ -57,6 +58,7 @@ vi.mock("../../../generated/bindings", async () => {
       providerOauthStatus: vi.fn(),
       providerAccountUsageSnapshot: vi.fn(),
       providerAccountUsageTestCustomScript: vi.fn(),
+      providerAccountUsageDesktopLeaseRelease: vi.fn(),
       providerOauthFetchLimits: vi.fn(),
       providerOauthResetCodexQuota: vi.fn(),
       providerTestAvailability: vi.fn(),
@@ -917,6 +919,39 @@ describe("services/providers/providers", () => {
     expect(result?.adapter_kind).toBe("custom");
     expect(result?.balance).toBe(9);
     expect(commands.providerAccountUsageTestCustomScript).toHaveBeenCalledWith(53, draft);
+  });
+
+  it("providerAccountUsageDesktopLeaseRelease treats a void ok result as success", async () => {
+    // The Rust command returns `Result<(), String>`, so success arrives as `data: null`. Callers
+    // mock this service function itself, so only a test at this layer can catch the null payload
+    // being misread as a missing result.
+    vi.mocked(commands.providerAccountUsageDesktopLeaseRelease).mockResolvedValueOnce({
+      status: "ok",
+      data: null,
+    });
+
+    await expect(providerAccountUsageDesktopLeaseRelease(20)).resolves.toBeUndefined();
+
+    expect(commands.providerAccountUsageDesktopLeaseRelease).toHaveBeenCalledWith(20);
+    // No `IPC_NULL_RESULT: provider_account_usage_desktop_lease_release` may be logged: the lease
+    // really was released, and a false error here pollutes the in-app console log.
+    expect(logToConsole).not.toHaveBeenCalled();
+  });
+
+  it("providerAccountUsageDesktopLeaseRelease still surfaces a real backend error", async () => {
+    vi.mocked(commands.providerAccountUsageDesktopLeaseRelease).mockResolvedValueOnce({
+      status: "error",
+      error: "SEC_INVALID_INPUT: invalid provider_id=20",
+    });
+
+    await expect(providerAccountUsageDesktopLeaseRelease(20)).rejects.toThrow(
+      "SEC_INVALID_INPUT: invalid provider_id=20"
+    );
+    expect(logToConsole).toHaveBeenCalledWith(
+      "error",
+      "停止账户用量刷新失败",
+      expect.objectContaining({ cmd: "provider_account_usage_desktop_lease_release" })
+    );
   });
 
   it("providerOAuthResetCodexQuota uses risky confirm resource scoped to provider", async () => {
