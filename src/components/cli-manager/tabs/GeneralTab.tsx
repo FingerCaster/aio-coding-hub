@@ -815,7 +815,7 @@ export function CliManagerGeneralTab({
                     ariaLabel="上游错误处理模式"
                     items={[
                       { key: "retry", label: "重试规则" },
-                      { key: "rewrite", label: "最终 HTTP 错误改写" },
+                      { key: "rewrite", label: "最终错误改写" },
                     ]}
                     value={upstreamErrorMode}
                     onChange={setUpstreamErrorMode}
@@ -881,7 +881,7 @@ export function CliManagerGeneralTab({
                 ) : (
                   <div
                     role="tabpanel"
-                    aria-label="最终 HTTP 错误改写"
+                    aria-label="最终错误改写"
                     className="mt-5 border-t border-border pt-5"
                   >
                     <UpstreamErrorResponseRulesCard

@@ -143,8 +143,8 @@ describe("cli-manager/GeneralTab", () => {
 
     expect(screen.getByRole("heading", { name: "上游错误处理" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
-    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
-    expect(screen.getByText("最终 HTTP 错误改写规则")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "最终错误改写" }));
+    expect(screen.getByText("最终错误改写规则")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "新建上游错误响应规则" }));
     expect(screen.getByRole("button", { name: "状态码或关键词" })).toBeInTheDocument();
     expect(screen.getByText(/同一组内的多个状态码/)).toBeInTheDocument();
@@ -167,6 +167,27 @@ describe("cli-manager/GeneralTab", () => {
     });
   });
 
+  // The card used to state the opposite ("不处理网络失败或 HTTP 200 SSE 错误"). Stream failures
+  // are now matched on the gateway's synthesized status, so the copy must say so — otherwise the
+  // UI actively misleads operators into thinking a 502 rule cannot cover a truncated stream.
+  it("explains that stream failures match on the synthesized status and how commit limits rewriting", async () => {
+    renderTab(<CliManagerGeneralTab {...createDefaultTabProps()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "最终错误改写" }));
+    expect(screen.getByText(/流式传输中断（按 502\s匹配）/)).toBeInTheDocument();
+    expect(screen.getByText(/流式空闲超时（按 524\s匹配）/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "新建上游错误响应规则" }));
+    // Keyword rules match the gateway's failure description, not upstream content. No space
+    // inside the Chinese phrase: a loose \s* here would hide a stray one reappearing.
+    expect(screen.getByText(/关键词匹配的是网关的故障描述/)).toBeInTheDocument();
+    // Post-commit the status line is immutable and only a tail event can be appended.
+    expect(screen.getByText(/状态码无法再改（仍为 200）/)).toBeInTheDocument();
+    // Passthrough has no upstream message to extract for a synthesized failure.
+    expect(screen.getByText(/将使用网关的固定说明文案/)).toBeInTheDocument();
+  });
+
   it("filters response-rule providers by CLI and clears incompatible known selections", async () => {
     mockProvidersList.mockImplementation(async (...args: unknown[]) => {
       const cliKey = args[0];
@@ -180,7 +201,7 @@ describe("cli-manager/GeneralTab", () => {
     renderTab(<CliManagerGeneralTab {...createDefaultTabProps({ onPersistCommonSettings })} />);
 
     fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
-    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
+    fireEvent.click(screen.getByRole("tab", { name: "最终错误改写" }));
     fireEvent.click(screen.getByRole("button", { name: "新建上游错误响应规则" }));
     await waitFor(() => {
       expect(mockProvidersList).toHaveBeenCalledWith("codex");
@@ -561,7 +582,7 @@ describe("cli-manager/GeneralTab", () => {
     expect(upstreamErrorSection).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("tab", { name: "重试规则" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("HTTP 规则")).toBeInTheDocument();
-    expect(screen.queryByText("最终 HTTP 错误改写规则")).not.toBeInTheDocument();
+    expect(screen.queryByText("最终错误改写规则")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "保存重试策略" }));
 
@@ -574,13 +595,13 @@ describe("cli-manager/GeneralTab", () => {
     expect(setUpstreamRetryPolicy).toHaveBeenCalledWith(upstreamRetryPolicy);
 
     onPersistCommonSettings.mockClear();
-    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
-    expect(screen.getByRole("tab", { name: "最终 HTTP 错误改写" })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("tab", { name: "最终错误改写" }));
+    expect(screen.getByRole("tab", { name: "最终错误改写" })).toHaveAttribute(
       "aria-selected",
       "true"
     );
     expect(screen.queryByText("HTTP 规则")).not.toBeInTheDocument();
-    expect(screen.getByText("最终 HTTP 错误改写规则")).toBeInTheDocument();
+    expect(screen.getByText("最终错误改写规则")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "停用规则 容量终态" }));
     await waitFor(() =>
@@ -669,7 +690,7 @@ describe("cli-manager/GeneralTab", () => {
     expect(modeTabs).toHaveClass("w-full");
     for (const tab of screen.getAllByRole("tab")) expect(tab).toHaveClass("min-w-0");
 
-    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
+    fireEvent.click(screen.getByRole("tab", { name: "最终错误改写" }));
     const ruleName = screen.getByText(longName);
     expect(ruleName).toHaveClass("truncate");
     expect(ruleName.closest(".min-w-0")).not.toBeNull();

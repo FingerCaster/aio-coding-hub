@@ -254,13 +254,14 @@ export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: P
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h4 className="text-sm font-medium text-foreground">最终 HTTP 错误改写规则</h4>
+              <h4 className="text-sm font-medium text-foreground">最终错误改写规则</h4>
               <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
                 {stableRules.length}
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              仅处理重试与供应商切换结束后的最终 HTTP 4xx/5xx；不处理网络失败或 HTTP 200 SSE 错误。
+              处理重试与供应商切换结束后的最终 HTTP 4xx/5xx，以及流式传输中断（按 502
+              匹配）与流式空闲超时（按 524 匹配）。
             </p>
           </div>
           <Tooltip content="新建规则">
@@ -559,6 +560,10 @@ function RuleEditorDialog({
               />
             </Field>
           </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            流式故障按网关合成的状态码匹配：传输中断为 502、空闲超时为 524（上游此时真实返回的是
+            200）。此类故障没有上游错误内容，关键词匹配的是网关的故障描述，而非上游返回的文本。
+          </p>
         </section>
 
         <section className="border-t border-border pt-4">
@@ -731,6 +736,12 @@ function RuleEditorDialog({
               </Field>
             </div>
           ) : null}
+          <p className="mt-3 text-xs text-muted-foreground">
+            流式故障命中时：若响应头尚未发出，按上述状态码与错误信息构造完整响应；若已开始
+            下发流，则状态码无法再改（仍为 200），网关在流末尾追加一个错误事件承载错误信息，
+            已发送的内容不会改动。“提取并透传上游信息”在流式故障下没有上游信息可提取，
+            将使用网关的固定说明文案。
+          </p>
         </section>
 
         <div className="flex items-center justify-between gap-3 border-t border-border pt-4">

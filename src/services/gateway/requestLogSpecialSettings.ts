@@ -15,6 +15,15 @@ export type UpstreamErrorResponseRuleMarker = {
   clientStatus: number;
   statusMode: "passthrough" | "override";
   messageMode: "passthrough" | "override";
+  /**
+   * Whether the rule's status behavior actually reached the client.
+   *
+   * `false` only for the post-commit stream-tail path, where response headers were already on
+   * the wire: the gateway appends an error event but the client keeps HTTP 200, so `clientStatus`
+   * records what the rule asked for, not what was delivered. Absent in older logs and in every
+   * pre-commit rewrite, which is why missing means `true`.
+   */
+  clientStatusApplied: boolean;
 };
 export type CodexReasoningEffort =
   | "none"
@@ -185,6 +194,8 @@ function normalizeUpstreamErrorResponseRuleMarker(
     clientStatus,
     statusMode,
     messageMode,
+    // Only an explicit `false` means "not applied", so older markers stay unchanged.
+    clientStatusApplied: setting.clientStatusApplied !== false,
   };
 }
 
@@ -202,12 +213,18 @@ export function resolveUpstreamErrorResponseRuleMarker(
 export function formatUpstreamErrorResponseRuleTooltip(
   marker: UpstreamErrorResponseRuleMarker
 ): string {
+  // Post-commit the status line was already sent, so the rule's status behavior could not apply.
+  // Saying "502 → 503" there would be a plain lie about what the client received.
+  const statusLine = marker.clientStatusApplied
+    ? `状态码：${String(marker.upstreamStatus)} → ${String(marker.clientStatus)}`
+    : `状态码：${String(marker.upstreamStatus)} → ${String(marker.clientStatus)}（未生效：流已下发，客户端仍为 200）`;
   return [
     `响应规则：${marker.ruleName}`,
     `供应商：${marker.providerName} (#${String(marker.providerId)})`,
-    `状态码：${String(marker.upstreamStatus)} → ${String(marker.clientStatus)}`,
+    statusLine,
     `状态行为：${marker.statusMode === "override" ? "自定义" : "透传"}`,
     `信息行为：${marker.messageMode === "override" ? "自定义" : "提取并透传"}`,
+    ...(marker.clientStatusApplied ? [] : ["改写方式：在流末尾追加错误事件"]),
   ].join("\n");
 }
 function normalizeCodexReasoningEffort(value: unknown): KnownCodexReasoningEffort | null {

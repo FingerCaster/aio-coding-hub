@@ -164,6 +164,41 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     expect(formatUpstreamErrorResponseRuleTooltip(marker!)).toContain("状态码：429 → 503");
     expect(formatUpstreamErrorResponseRuleTooltip(marker!)).toContain("信息行为：提取并透传");
     expect(marker).not.toHaveProperty("message");
+    // No `clientStatusApplied` in the payload: pre-commit rewrites and older logs must read as
+    // applied, so the tooltip stays exactly as before.
+    expect(marker!.clientStatusApplied).toBe(true);
+    expect(formatUpstreamErrorResponseRuleTooltip(marker!)).not.toContain("未生效");
+  });
+
+  it("marks a post-commit stream-tail rewrite as not having changed the status", () => {
+    const marker = resolveUpstreamErrorResponseRuleMarker(
+      JSON.stringify([
+        {
+          type: "upstream_error_response_rule",
+          scope: "stream_tail",
+          ruleId: "6d1f0a52-2c74-4a1b-9f6e-1b0d3c8a5e77",
+          ruleName: "流中断",
+          providerId: 7,
+          providerName: "中转站",
+          upstreamStatus: 502,
+          clientStatus: 503,
+          statusMode: "override",
+          messageMode: "override",
+          syntheticErrorCode: "GW_STREAM_ERROR",
+          upstreamStatusSynthetic: true,
+          clientStatusApplied: false,
+        },
+      ])
+    );
+
+    // `clientStatus` stays inside 400-599 on purpose: the marker's own guard rejects anything
+    // outside that range, so writing the delivered 200 there would erase the whole audit entry.
+    expect(marker).not.toBeNull();
+    expect(marker!.clientStatus).toBe(503);
+    expect(marker!.clientStatusApplied).toBe(false);
+    const tooltip = formatUpstreamErrorResponseRuleTooltip(marker!);
+    expect(tooltip).toContain("（未生效：流已下发，客户端仍为 200）");
+    expect(tooltip).toContain("改写方式：在流末尾追加错误事件");
   });
 
   it("fails open for malformed or future response-rule markers", () => {
