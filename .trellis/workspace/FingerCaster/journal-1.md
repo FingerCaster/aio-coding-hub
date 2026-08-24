@@ -1462,3 +1462,25 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 44: 修复 Codex 无限重试完整流超时
+
+**Date**: 2026-08-23
+**Task**: 修复 Codex 无限重试完整流超时
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/fix-codex-infinite-retry-stream-cap`
+
+### Summary
+
+定位稳定版无限重试模式将 500ms TTFB 误作完整 SSE deadline；删除隐藏总时限与 TTFB-floor 耦合，保留逐读 idle、20 MiB、严格终态和取消边界，补充长流与 idle 回归并通过全量质量门。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `38576b09` | (see git log) |
+
+### Status
+
+[OK] **Completed**

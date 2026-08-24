@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"检查 final-wire 仍在提交前完整验证，且仅删除错误总时限而保留 idle/size/cancel 边界。"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"检查普通请求、首字节 budget、Provider retry/failover 和 circuit accounting 无回归。"}
+{"file":".trellis/tasks/08-10-codex-infinite-retry-test-switch/prd.md","reason":"按原始 R15/AC15 审核不得引入隐藏 timeout，并保留 R13/R14/R16 安全合同。"}
+{"file": ".trellis/tasks/archive/2026-08/08-23-fix-codex-infinite-retry-stream-cap/research/root-cause.md", "reason": "复核修复是否直接覆盖本机诊断中的 response-header + 500 ms 确定性失败。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查没有复制 final-wire validator、path classifier 或 timeout helper。"}

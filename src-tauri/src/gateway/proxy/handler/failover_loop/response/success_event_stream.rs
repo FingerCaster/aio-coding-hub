@@ -20,26 +20,6 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 const MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES: usize = 1024 * 1024;
-const INFINITE_FINAL_WIRE_WALL_CLOCK_CAP: Duration = Duration::from_millis(500);
-
-const fn minimum_supported_path_ttfb() -> Duration {
-    let mut index = 0;
-    let mut minimum_secs = u32::MAX;
-    while index < crate::gateway::infinite_retry::CODEX_RESPONSES_PATH_CONTRACTS.len() {
-        let timeout_secs = crate::gateway::infinite_retry::CODEX_RESPONSES_PATH_CONTRACTS[index]
-            .min_enabled_ttfb_secs;
-        if timeout_secs < minimum_secs {
-            minimum_secs = timeout_secs;
-        }
-        index += 1;
-    }
-    assert!(minimum_secs != u32::MAX);
-    Duration::from_secs(minimum_secs as u64)
-}
-
-const MIN_SUPPORTED_PATH_TTFB: Duration = minimum_supported_path_ttfb();
-const _: () =
-    assert!(INFINITE_FINAL_WIRE_WALL_CLOCK_CAP.as_millis() < MIN_SUPPORTED_PATH_TTFB.as_millis());
 
 type DecodedEventStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static>>;
@@ -152,7 +132,6 @@ async fn probe_first_event_stream_chunk(
 enum BufferedFinalWireError {
     Read,
     IdleTimeout,
-    WallClockTimeout,
     TooLarge,
 }
 
@@ -160,32 +139,23 @@ async fn collect_bounded_final_wire(
     mut stream: DecodedEventStream,
     idle_timeout: Option<Duration>,
 ) -> Result<Bytes, BufferedFinalWireError> {
-    let collect = async move {
-        let mut output = Vec::new();
-        loop {
-            let next = match idle_timeout {
-                Some(timeout) => {
-                    tokio::time::timeout(timeout, next_event_stream_chunk(&mut stream))
-                        .await
-                        .map_err(|_| BufferedFinalWireError::IdleTimeout)?
-                }
-                None => next_event_stream_chunk(&mut stream).await,
-            }
-            .map_err(|_| BufferedFinalWireError::Read)?;
-            let Some(chunk) = next else {
-                return Ok(Bytes::from(output));
-            };
-            if chunk.len() > MAX_NON_SSE_BODY_BYTES.saturating_sub(output.len()) {
-                output.clear();
-                return Err(BufferedFinalWireError::TooLarge);
-            }
-            output.extend_from_slice(chunk.as_ref());
+    let mut output = Vec::new();
+    loop {
+        let next = match idle_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, next_event_stream_chunk(&mut stream))
+                .await
+                .map_err(|_| BufferedFinalWireError::IdleTimeout)?,
+            None => next_event_stream_chunk(&mut stream).await,
         }
-    };
-
-    match tokio::time::timeout(INFINITE_FINAL_WIRE_WALL_CLOCK_CAP, collect).await {
-        Ok(result) => result,
-        Err(_) => Err(BufferedFinalWireError::WallClockTimeout),
+        .map_err(|_| BufferedFinalWireError::Read)?;
+        let Some(chunk) = next else {
+            return Ok(Bytes::from(output));
+        };
+        if chunk.len() > MAX_NON_SSE_BODY_BYTES.saturating_sub(output.len()) {
+            output.clear();
+            return Err(BufferedFinalWireError::TooLarge);
+        }
+        output.extend_from_slice(chunk.as_ref());
     }
 }
 
@@ -1404,15 +1374,6 @@ where
                     upstream_stream_idle_timeout
                         .map(|value| value.as_secs().min(u64::from(u32::MAX)) as u32),
                 ),
-                BufferedFinalWireError::WallClockTimeout => (
-                    GatewayErrorCode::UpstreamTimeout.as_str(),
-                    "final_wire_wall_clock_timeout",
-                    format!(
-                        "buffered final-wire stream reached its {} ms wall-clock cap",
-                        INFINITE_FINAL_WIRE_WALL_CLOCK_CAP.as_millis()
-                    ),
-                    None,
-                ),
                 BufferedFinalWireError::TooLarge => (
                     GatewayErrorCode::UpstreamBodyReadError.as_str(),
                     "final_wire_too_large",
@@ -2468,20 +2429,18 @@ mod tests {
         probe_first_event_stream_chunk, resolve_effective_stream_idle_timeout,
         resolve_requested_model_for_log, BufferedFinalWireError, BufferedStreamPrefixConfig,
         BufferedStreamPrefixDecision, BufferedStreamPrefixState, DecodedEventStream,
-        FirstChunkProbe, INFINITE_FINAL_WIRE_WALL_CLOCK_CAP, MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
-        MIN_SUPPORTED_PATH_TTFB,
+        FirstChunkProbe, MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
     };
     use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
     use crate::gateway::events::FailoverAttempt;
     use crate::gateway::infinite_retry::{
-        AttemptKey, FailureCategory, InfiniteRetryLedger, UsageSample,
-        CODEX_RESPONSES_PATH_CONTRACTS,
+        AttemptKey, FailureCategory, InfiniteRetryLedger, UsageSample, CODEX_RESPONSES_PATHS,
     };
     use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
     use axum::body::Bytes;
     use axum::http::StatusCode;
     use futures_core::Stream;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
@@ -2505,6 +2464,38 @@ mod tests {
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             match self.get_mut().interval.poll_tick(cx) {
                 Poll::Ready(_) => Poll::Ready(Some(Ok(Bytes::from_static(b"x")))),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    struct FiniteDripStream {
+        interval: tokio::time::Interval,
+        chunks: VecDeque<Bytes>,
+    }
+
+    impl FiniteDripStream {
+        fn new(first_delay: Duration, period: Duration, chunks: Vec<Bytes>) -> Self {
+            Self {
+                interval: tokio::time::interval_at(
+                    tokio::time::Instant::now() + first_delay,
+                    period,
+                ),
+                chunks: chunks.into(),
+            }
+        }
+    }
+
+    impl Stream for FiniteDripStream {
+        type Item = Result<Bytes, reqwest::Error>;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            let this = self.get_mut();
+            if this.chunks.is_empty() {
+                return Poll::Ready(None);
+            }
+            match this.interval.poll_tick(cx) {
+                Poll::Ready(_) => Poll::Ready(this.chunks.pop_front().map(Ok)),
                 Poll::Pending => Poll::Pending,
             }
         }
@@ -3167,22 +3158,48 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn bounded_final_wire_caps_slow_continuous_drip() {
-        let stream: DecodedEventStream = Box::pin(SlowDripStream::new(Duration::from_millis(90)));
+    async fn bounded_final_wire_accepts_valid_progress_beyond_former_cap() {
+        let chunks = vec![
+            Bytes::from_static(b"event: response.created\n"),
+            Bytes::from_static(
+                b"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-slow\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+            ),
+            Bytes::from_static(b": keepalive\n\n"),
+            Bytes::from_static(b"event: response.completed\n"),
+            Bytes::from_static(
+                b"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-slow\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\",\"annotations\":[]}] }]}}\n\n",
+            ),
+            Bytes::from_static(b"data: [DONE]\n\n"),
+        ];
+        let expected = chunks
+            .iter()
+            .flat_map(|chunk| chunk.iter().copied())
+            .collect::<Vec<_>>();
+        let period = Duration::from_millis(100);
+        let stream: DecodedEventStream = Box::pin(FiniteDripStream::new(period, period, chunks));
         let started = tokio::time::Instant::now();
 
         let result = collect_bounded_final_wire(stream, Some(Duration::from_millis(200))).await;
 
-        assert_eq!(result, Err(BufferedFinalWireError::WallClockTimeout));
+        let final_wire = result.expect("progressing final wire should complete");
+        assert_eq!(final_wire.as_ref(), expected.as_slice());
+        assert!(tokio::time::Instant::now().duration_since(started) > Duration::from_millis(500));
         assert_eq!(
-            tokio::time::Instant::now().duration_since(started),
-            INFINITE_FINAL_WIRE_WALL_CLOCK_CAP
+            crate::gateway::streams::validate_complete_codex_sse(final_wire.as_ref(), &[]),
+            Ok(())
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn bounded_final_wire_preserves_idle_timeout_before_wall_clock_cap() {
-        let stream: DecodedEventStream = Box::pin(SlowDripStream::new(Duration::from_millis(300)));
+    async fn bounded_final_wire_times_out_on_inter_chunk_idle_gap() {
+        let stream: DecodedEventStream = Box::pin(FiniteDripStream::new(
+            Duration::ZERO,
+            Duration::from_millis(300),
+            vec![
+                Bytes::from_static(b"event: response.created\n"),
+                Bytes::from_static(b"data: {}\n\n"),
+            ],
+        ));
         let idle_timeout = Duration::from_millis(200);
         let started = tokio::time::Instant::now();
 
@@ -3196,16 +3213,13 @@ mod tests {
     }
 
     #[test]
-    fn final_wire_wall_clock_cap_precedes_every_supported_path_ttfb_floor() {
-        assert_eq!(MIN_SUPPORTED_PATH_TTFB, Duration::from_secs(1));
-        for contract in CODEX_RESPONSES_PATH_CONTRACTS {
-            let path_ttfb = Duration::from_secs(u64::from(contract.min_enabled_ttfb_secs));
-            assert!(
-                INFINITE_FINAL_WIRE_WALL_CLOCK_CAP < path_ttfb,
-                "{} final-wire cap must remain below its minimum enabled TTFB",
-                contract.path
-            );
-            assert!(is_codex_responses_event_stream_path("codex", contract.path));
+    fn shared_supported_paths_drive_event_stream_detection() {
+        for path in CODEX_RESPONSES_PATHS {
+            assert!(is_codex_responses_event_stream_path("codex", path));
+            assert!(is_codex_responses_event_stream_path(
+                "codex",
+                &format!("{path}/")
+            ));
         }
     }
 }

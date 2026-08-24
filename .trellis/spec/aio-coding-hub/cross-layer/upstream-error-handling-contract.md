@@ -28,6 +28,11 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 - Post-commit filter:
   `CodexTerminalFirewall::ingest(&mut self, bytes) -> TerminalFirewallOutput`
   and `finish(&mut self) -> TerminalFirewallOutput`.
+- Infinite-test final-wire collector:
+  `collect_bounded_final_wire(stream, idle_timeout) -> Result<Bytes,
+  BufferedFinalWireError>`, where the error set is read failure, per-read idle
+  timeout, or the shared 20 MiB size limit; it has no hidden whole-response
+  deadline.
 - Sanitized pre-commit terminal failure: HTTP `502` with
   `error_code = "GW_FAKE_200"`; request logs retain bounded, redacted
   `stream_internal_error` evidence.
@@ -133,13 +138,16 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   TTFB accounting, response ID, usage, completion, continuation repair, and
   downstream-abort behavior.
 - The explicit infinite-retry test mode is the only path that buffers the
-  complete transformed final wire before commit. That collector has a 500 ms
-  total wall-clock deadline around the whole collection, independent of the
-  per-read idle timeout. Its supported Codex Responses paths and each path's
-  minimum enabled TTFB are one shared contract consumed by both eligibility and
-  the compile-time deadline assertion; the wall-clock cap must remain strictly
-  below every listed TTFB floor. Ordinary streaming and non-test behavior do not
-  enter this collector.
+  complete transformed final wire before commit. Its collector applies the
+  configured stream-idle timeout independently to each read and keeps the
+  shared 20 MiB response cap, but it must not impose a hidden whole-response
+  wall-clock deadline: TTFB bounds first-byte arrival, not generation
+  completion. A stream that keeps making progress may therefore run longer than
+  500 ms and succeeds only after the strict validator accepts its complete final
+  wire. Client cancellation and gateway shutdown still interrupt the in-flight
+  collection. Eligibility and event-stream routing consume one shared list of
+  supported Codex Responses paths without attaching TTFB-floor metadata.
+  Ordinary streaming and non-test behavior do not enter this collector.
 - Infinite-retry usage accounting keeps client-visible usage on the single
   replayed success while retaining every observed attempt for internal totals,
   Provider quota/cost attribution, and logs. A route attempt without its exact
@@ -258,6 +266,8 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 | Lifecycle snapshot carries non-empty output, or final output mixes text/refusal/function kinds | Fail closed instead of replaying duplicated or mixed visible content |
 | Response snapshot echoes instructions/non-empty input, tools, or metadata | Fail closed; those fields are not part of the selected assistant result |
 | Response usage contains numeric reasoning-token counts in the known usage shape | Preserve it as usage metadata; do not classify token counts as reasoning content |
+| Infinite-retry final wire keeps producing chunks within the configured idle budget and completes after more than 500 ms | Continue collecting, validate the complete wire, then commit the one success; do not synthesize a timeout from elapsed total time |
+| Infinite-retry final wire produces no chunk for the configured idle budget | Fail the current attempt as `final_wire_idle_timeout`; keep Provider/round retry and downstream pre-commit semantics |
 | Infinite-retry attempt lacks an exact key and one Provider usage sample is pending | Consume that exact sample once; never duplicate it in a later keyed projection |
 | Infinite-retry keyless attempt has multiple pending samples for one Provider | Do not guess; record unknown usage and mark attribution incomplete |
 | Normalized bridge emits Codex terminal frame | Apply the same classifier/firewall as native final wire |
@@ -277,6 +287,12 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
 - Bad: a disabled firewall still intercepts capacity, a hard error is upgraded
   by a legacy word, an unknown tail leaks on parse failure, or a normalized
   bridge bypasses the final-wire firewall.
+- Infinite good: transformed chunks continue within the idle budget for several
+  seconds, one valid `response.completed` arrives, and only that complete
+  buffered success reaches the client.
+- Infinite bad: compare whole-stream elapsed time with a TTFB floor or fixed
+  500 ms cap, discard an otherwise progressing HTTP 200 stream, and loop until
+  client cancellation.
 
 ### 6. Tests Required
 
@@ -309,10 +325,12 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   mixed commentary; they must accept a coherent pure `output_text` transcript,
   safe numeric usage details, a classified final-only refusal, and a homogeneous
   coherent final-only function-call payload.
-- Infinite final-wire tests use paused time to prove continuous chunks cannot
-  reset the 500 ms wall-clock deadline, a shorter idle timeout remains
-  distinguishable, and every eligibility-supported path participates in the
-  minimum-enabled-TTFB assertion from the shared path contract.
+- Infinite final-wire tests use paused time to prove a valid segmented SSE can
+  keep making progress beyond the former 500 ms boundary and still pass the
+  strict completion validator. A separate case must prove a real inter-chunk
+  gap still fails exactly at the configured idle timeout. Eligibility tests
+  must cover every path from the shared path list, including trailing-slash
+  normalization, without coupling complete-stream duration to TTFB metadata.
 - Infinite usage-ledger tests cover one unique keyless sample, ambiguous samples,
   later keyed projection without double counting, orphaned pending usage at a
   round boundary, final client usage isolation, and unchanged non-test behavior.
@@ -386,4 +404,16 @@ if KNOWN_RESPONSE_EVENTS.contains(event_name) {
 // content against the final-visible safe subset.
 validate_strict_final_visible_frame(event_name, data)?;
 replay(frame);
+```
+
+```rust
+// Wrong: TTFB is a whole-response deadline, so normal long generations fail.
+timeout(MIN_PATH_TTFB, collect_complete_final_wire(stream)).await?;
+
+// Correct: guard each read for stalled progress and bound retained bytes; a
+// progressing generation may take longer than its first-byte budget.
+loop {
+    let chunk = timeout(stream_idle_timeout, next_chunk(&mut stream)).await??;
+    append_with_20_mib_cap(chunk)?;
+}
 ```
