@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.60.42](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.41...aio-coding-hub-v0.60.42) (2026-09-23)
+
+
+### Features
+
+* **codex:** upgrade the managed model catalog from the installed CLI ([d95b489](https://github.com/FingerCaster/aio-coding-hub/commit/d95b489aad47ccd62387538b3499f42de05d0b23))
+* **gateway:** surface stream-tail rewrites in UI and audit ([127877c](https://github.com/FingerCaster/aio-coding-hub/commit/127877c8dd5032bf6d3cbd0cb3a73f6d8dc3eaa7))
+
+
+### Bug Fixes
+
+* **codex:** box large managed catalog plan variants ([929bc93](https://github.com/FingerCaster/aio-coding-hub/commit/929bc93ce77b9bd0d8b5faaaabc2136f692fe7f9))
+* **deps:** bump rustls to 0.23.45 ([171b7f3](https://github.com/FingerCaster/aio-coding-hub/commit/171b7f347e48becc7cc0f4fd91264fa65b621b8e))
+* **deps:** patch js-yaml to 4.3.2 ([d3ce06c](https://github.com/FingerCaster/aio-coding-hub/commit/d3ce06caf0dcd95d3e3e33cd7535600da266183c))
+* **gateway:** allow progressing infinite-retry streams ([38576b0](https://github.com/FingerCaster/aio-coding-hub/commit/38576b099afbb1704379c1bea5a69886b34063bb))
+* **gateway:** rewrite stream failures with final error rules ([74587f5](https://github.com/FingerCaster/aio-coding-hub/commit/74587f53bc03d3e13217c22248e47d9c96ddc4b4))
+* **providers:** stop reporting a successful lease release as a failure ([6d3154e](https://github.com/FingerCaster/aio-coding-hub/commit/6d3154e1b68ac14cd30b2618308c43ddc0430ef0))
+
 ## [0.60.41](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.40...aio-coding-hub-v0.60.41) (2026-08-18)
 
 
