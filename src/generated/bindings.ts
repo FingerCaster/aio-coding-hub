@@ -353,10 +353,7 @@ export const commands = {
       };
     } catch (e) {
       if (e instanceof Error) throw e;
-      return {
-        status: "error",
-        error: typeof e === "string" ? e : "cli_manager_codex_managed_catalog_upgrade failed",
-      };
+      else return { status: "error", error: e as any };
     }
   },
   async cliManagerCodexConfigGet(): Promise<Result<CodexConfigState, string>> {
