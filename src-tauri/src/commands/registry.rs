@@ -57,6 +57,7 @@ macro_rules! generated_command_registry {
             cli_manager_codex_info_get => crate::commands::cli_manager::cli_manager_codex_info_get,
             cli_manager_codex_model_catalog_get => crate::commands::cli_manager::cli_manager_codex_model_catalog_get,
             cli_manager_codex_model_context_candidates_get => crate::commands::cli_manager::cli_manager_codex_model_context_candidates_get,
+            cli_manager_codex_managed_catalog_upgrade => crate::commands::cli_manager::cli_manager_codex_managed_catalog_upgrade,
             cli_manager_codex_config_get => crate::commands::cli_manager::cli_manager_codex_config_get,
             cli_manager_codex_config_set => crate::commands::cli_manager::cli_manager_codex_config_set,
             cli_manager_codex_config_toml_get => crate::commands::cli_manager::cli_manager_codex_config_toml_get,
@@ -405,6 +406,7 @@ mod tests {
         let commands = generated_command_names();
         assert!(commands.contains(&"settings_codex_model_context_rules_set"));
         assert!(commands.contains(&"cli_manager_codex_model_context_candidates_get"));
+        assert!(commands.contains(&"cli_manager_codex_managed_catalog_upgrade"));
         assert!(!commands.contains(&"settings_codex_gpt56_372k_context_set"));
     }
 

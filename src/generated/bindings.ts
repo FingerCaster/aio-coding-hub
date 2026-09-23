@@ -343,6 +343,22 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async cliManagerCodexManagedCatalogUpgrade(
+    request: CodexManagedCatalogUpgradeRequest
+  ): Promise<Result<CodexManagedCatalogUpgradeResult, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("cli_manager_codex_managed_catalog_upgrade", { request }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      return {
+        status: "error",
+        error: typeof e === "string" ? e : "cli_manager_codex_managed_catalog_upgrade failed",
+      };
+    }
+  },
   async cliManagerCodexConfigGet(): Promise<Result<CodexConfigState, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("cli_manager_codex_config_get") };
@@ -3015,6 +3031,22 @@ export type CodexConfigTomlValidationResult = {
   error: CodexConfigTomlValidationError | null;
 };
 export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom";
+export type CodexManagedCatalogInvalidRule = {
+  model_id: string;
+  context_window: number;
+  code: CodexManagedCatalogInvalidRuleCode;
+};
+export type CodexManagedCatalogInvalidRuleCode = "target_missing" | "invalid_window";
+export type CodexManagedCatalogUpgradeRequest = {
+  disableInvalidRules: boolean;
+  modelIds: string[];
+};
+export type CodexManagedCatalogUpgradeResult = {
+  status: CodexManagedCatalogUpgradeStatus;
+  settings: SettingsView | null;
+  invalidRules: CodexManagedCatalogInvalidRule[];
+};
+export type CodexManagedCatalogUpgradeStatus = "inactive" | "applied" | "blocked";
 export type CodexManagedProfile = {
   profileUuid: string;
   profileName: string;

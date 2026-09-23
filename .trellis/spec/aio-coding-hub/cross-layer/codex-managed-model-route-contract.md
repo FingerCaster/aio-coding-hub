@@ -640,6 +640,17 @@ must never apply it; the whole-collection command is the sole writer.
   live binding, and proxy backup. Startup fails at `ReadingSettings` with a
   retryable outer error and the inner typed catalog/rule error; it never
   partially rebuilds or silently disables the rule.
+- `cli_manager_codex_managed_catalog_upgrade` is the only forced base refresh.
+  It reads the installed Codex `debug models --bundled` catalog even when an
+  absolute user catalog already exists, then merges that user catalog instead
+  of replacing it. Official models and shared fields come from the new Codex
+  catalog. User-only models, user-only fields, and user-only root keys are
+  kept. Context rules and `aio/*` metadata are applied after that merge. The
+  user file itself is not modified, and its path is still restored when the
+  managed catalog is deactivated. A later background reconciliation keeps this
+  merged base while the owned fingerprint still tracks it. Background
+  reconciliation that still matches the user-file fingerprint does not launch
+  Codex.
 - Any enabled rule blocks an actual Codex-home change. Compare the effective
   homes resolved from candidate settings under the settings lock, not raw mode
   or override strings. Equivalent inputs such as a home directory and its

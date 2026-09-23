@@ -1655,6 +1655,127 @@ fn compensate_codex_model_context_rules_failure<R: tauri::Runtime>(
     original
 }
 
+pub(crate) enum CodexManagedCatalogUpgradeMode {
+    Apply,
+    DisableInvalid { model_ids: Vec<String> },
+}
+
+#[derive(Debug)]
+pub(crate) enum CodexManagedCatalogUpgradeOutcome {
+    Inactive,
+    Applied(SettingsView),
+    Blocked(Vec<crate::codex_model_catalog::managed::CodexManagedCatalogInvalidRule>),
+}
+
+pub(crate) fn codex_managed_catalog_upgrade_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    mode: CodexManagedCatalogUpgradeMode,
+) -> crate::shared::error::AppResult<CodexManagedCatalogUpgradeOutcome> {
+    let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
+    let db = crate::db::init(app)?;
+    let conn = db.open_connection()?;
+    let profiles = crate::codex_model_catalog::managed::load_profiles(&conn)?;
+    let settings = settings::read(app)?;
+    let policy =
+        crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_settings(&settings)?;
+    let needs_catalog =
+        !profiles.is_empty() || policy.model_context_rules.iter().any(|rule| rule.enabled);
+
+    match mode {
+        CodexManagedCatalogUpgradeMode::Apply => {
+            if !needs_catalog {
+                return Ok(CodexManagedCatalogUpgradeOutcome::Inactive);
+            }
+            match crate::codex_model_catalog::managed::prepare_forced_catalog_upgrade(
+                app,
+                &profiles,
+                policy.clone(),
+            )? {
+                crate::codex_model_catalog::managed::ForcedCatalogPlan::Blocked(rules) => {
+                    Ok(CodexManagedCatalogUpgradeOutcome::Blocked(rules))
+                }
+                crate::codex_model_catalog::managed::ForcedCatalogPlan::Ready(plan) => {
+                    plan.apply(app)?;
+                    let canonical = settings::read(app)?;
+                    Ok(CodexManagedCatalogUpgradeOutcome::Applied(
+                        SettingsView::from(&canonical),
+                    ))
+                }
+            }
+        }
+        CodexManagedCatalogUpgradeMode::DisableInvalid { model_ids } => {
+            if !needs_catalog {
+                return Err(stale_catalog_upgrade());
+            }
+            let invalid_rules =
+                match crate::codex_model_catalog::managed::prepare_forced_catalog_upgrade(
+                    app,
+                    &profiles,
+                    policy.clone(),
+                )? {
+                    crate::codex_model_catalog::managed::ForcedCatalogPlan::Blocked(rules) => rules,
+                    crate::codex_model_catalog::managed::ForcedCatalogPlan::Ready(_) => {
+                        return Err(stale_catalog_upgrade());
+                    }
+                };
+            if !same_catalog_upgrade_model_ids(&invalid_rules, &model_ids) {
+                return Err(stale_catalog_upgrade());
+            }
+            let mut requested_rules = policy.model_context_rules.clone();
+            for rule in &mut requested_rules {
+                if invalid_rules
+                    .iter()
+                    .any(|invalid| invalid.model_id == rule.model_id)
+                {
+                    rule.enabled = false;
+                }
+            }
+            let next_policy =
+                crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_rules(
+                    requested_rules,
+                )?;
+            let plan = match crate::codex_model_catalog::managed::prepare_forced_catalog_upgrade(
+                app,
+                &profiles,
+                next_policy.clone(),
+            )? {
+                crate::codex_model_catalog::managed::ForcedCatalogPlan::Ready(plan) => plan,
+                crate::codex_model_catalog::managed::ForcedCatalogPlan::Blocked(_) => {
+                    return Err(stale_catalog_upgrade());
+                }
+            };
+            let canonical = commit_prepared_codex_model_context_rules(
+                app,
+                next_policy.model_context_rules,
+                plan,
+            )?;
+            Ok(CodexManagedCatalogUpgradeOutcome::Applied(canonical))
+        }
+    }
+}
+
+fn stale_catalog_upgrade() -> crate::shared::error::AppError {
+    crate::shared::error::AppError::new(
+        "CODEX_MANAGED_CATALOG_UPGRADE_STALE",
+        "the invalid Codex context rules changed before the upgrade was confirmed",
+    )
+}
+
+fn same_catalog_upgrade_model_ids(
+    rules: &[crate::codex_model_catalog::managed::CodexManagedCatalogInvalidRule],
+    model_ids: &[String],
+) -> bool {
+    let mut actual = rules
+        .iter()
+        .map(|rule| rule.model_id.as_str())
+        .collect::<Vec<_>>();
+    let mut requested = model_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    actual.sort_unstable();
+    requested.sort_unstable();
+    requested.dedup();
+    actual == requested
+}
+
 pub(crate) fn settings_codex_model_context_rules_set_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     rules: Vec<settings::CodexModelContextRule>,
@@ -1668,7 +1789,14 @@ pub(crate) fn settings_codex_model_context_rules_set_sync<R: tauri::Runtime>(
     let plan = crate::codex_model_catalog::managed::prepare_for_profiles_with_policy(
         app, &profiles, policy,
     )?;
+    commit_prepared_codex_model_context_rules(app, requested_rules, plan)
+}
 
+fn commit_prepared_codex_model_context_rules<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    requested_rules: Vec<settings::CodexModelContextRule>,
+    plan: crate::codex_model_catalog::managed::ManagedCatalogPlan,
+) -> crate::shared::error::AppResult<SettingsView> {
     let (_, previous_rules) = settings::update(app, |latest| {
         let previous_rules = latest.codex_model_context_rules.clone();
         latest.codex_model_context_rules = requested_rules.clone();
@@ -3467,6 +3595,344 @@ mod tests {
             .expect("canonical after failed update")
             .codex_model_context_rules
             .is_empty());
+    }
+
+    #[test]
+    fn catalog_upgrade_merges_installed_codex_with_user_additions() {
+        let env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let codex_home = env._home.path().join("codex-upgrade-user-base");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        let user_catalog = codex_home.join("user-models.json");
+        write_test_codex_catalog(&user_catalog, &["model-alpha", "user-only"]);
+        write_test_codex_config(&codex_home.join("config.toml"), &user_catalog);
+        select_test_codex_home(&handle, &codex_home);
+        settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![model_context_rule("model-alpha", 372_000, true)],
+        )
+        .expect("enable rule");
+        let user_before = std::fs::read(&user_catalog).expect("read user catalog");
+
+        let _override = BundledCatalogOverrideGuard::new(
+            &env._home.path().join("codex-upgrade-user-base.exe"),
+            catalog_bytes(&["model-alpha", "bundled-new"]),
+        );
+        crate::codex_model_catalog::managed::reset_bundled_catalog_loads_for_test();
+        let upgraded =
+            codex_managed_catalog_upgrade_sync(&handle, CodexManagedCatalogUpgradeMode::Apply)
+                .expect("upgrade managed catalog");
+        assert!(matches!(
+            upgraded,
+            CodexManagedCatalogUpgradeOutcome::Applied(_)
+        ));
+        assert!(crate::codex_model_catalog::managed::bundled_catalog_loads_for_test() >= 1);
+        assert_eq!(
+            std::fs::read(&user_catalog).expect("user catalog"),
+            user_before
+        );
+
+        let generated = read_generated_catalog(&codex_home.join("config.toml"));
+        let models = generated["models"].as_array().expect("models");
+        assert!(models.iter().any(|model| model["slug"] == "bundled-new"));
+        assert!(models.iter().any(|model| model["slug"] == "user-only"));
+        let alpha = models
+            .iter()
+            .find(|model| model["slug"] == "model-alpha")
+            .expect("alpha");
+        assert_eq!(alpha["context_window"], 372_000);
+        assert_eq!(alpha["future_field"]["preserved"], true);
+
+        crate::codex_model_catalog::managed::reset_bundled_catalog_loads_for_test();
+        crate::codex_model_catalog::managed::sync_current_locked(&handle)
+            .expect("background sync keeps the merged catalog");
+        assert_eq!(
+            crate::codex_model_catalog::managed::bundled_catalog_loads_for_test(),
+            0
+        );
+        assert!(
+            read_generated_catalog(&codex_home.join("config.toml"))["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .any(|model| model["slug"] == "user-only")
+        );
+    }
+
+    #[test]
+    fn catalog_upgrade_blocks_invalid_rules_then_disables_only_the_confirmed_set() {
+        let env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let codex_home = env._home.path().join("codex-upgrade-invalid-rules");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        let user_catalog = codex_home.join("user-models.json");
+        let config_path = codex_home.join("config.toml");
+        write_test_codex_catalog(&user_catalog, &["kept", "broken", "removed"]);
+        write_test_codex_config(&config_path, &user_catalog);
+        select_test_codex_home(&handle, &codex_home);
+        settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![
+                model_context_rule("broken", 180_000, true),
+                model_context_rule("kept", 372_000, true),
+                model_context_rule("removed", 200_000, true),
+            ],
+        )
+        .expect("enable rules");
+        let generated_before = read_generated_catalog(&config_path);
+        let mut next_catalog = generated_user_catalog(&["kept", "broken"]);
+        next_catalog["models"]
+            .as_array_mut()
+            .expect("models")
+            .iter_mut()
+            .find(|model| model["slug"] == "broken")
+            .expect("broken model")["context_window"] = serde_json::Value::Null;
+        std::fs::write(
+            &user_catalog,
+            serde_json::to_vec(&next_catalog).expect("serialize changed catalog"),
+        )
+        .expect("replace user catalog");
+        let _override = BundledCatalogOverrideGuard::new(
+            &env._home.path().join("codex-upgrade-invalid-rules.exe"),
+            std::fs::read(&user_catalog).expect("mutated user catalog"),
+        );
+
+        let blocked =
+            codex_managed_catalog_upgrade_sync(&handle, CodexManagedCatalogUpgradeMode::Apply)
+                .expect("blocked upgrade");
+        let CodexManagedCatalogUpgradeOutcome::Blocked(invalid_rules) = blocked else {
+            panic!("expected blocked upgrade");
+        };
+        assert_eq!(
+            invalid_rules
+                .iter()
+                .map(|rule| (rule.model_id.as_str(), rule.code))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "broken",
+                    crate::codex_model_catalog::managed::CodexManagedCatalogInvalidRuleCode::InvalidWindow
+                ),
+                (
+                    "removed",
+                    crate::codex_model_catalog::managed::CodexManagedCatalogInvalidRuleCode::TargetMissing
+                ),
+            ]
+        );
+        assert_eq!(read_generated_catalog(&config_path), generated_before);
+        assert!(settings::read(&handle)
+            .expect("settings")
+            .codex_model_context_rules
+            .iter()
+            .all(|rule| rule.enabled));
+
+        let stale = codex_managed_catalog_upgrade_sync(
+            &handle,
+            CodexManagedCatalogUpgradeMode::DisableInvalid {
+                model_ids: vec!["removed".to_string()],
+            },
+        )
+        .expect_err("partial invalid set must not write");
+        assert_eq!(stale.code(), "CODEX_MANAGED_CATALOG_UPGRADE_STALE");
+        assert_eq!(read_generated_catalog(&config_path), generated_before);
+
+        let applied = codex_managed_catalog_upgrade_sync(
+            &handle,
+            CodexManagedCatalogUpgradeMode::DisableInvalid {
+                model_ids: vec!["removed".to_string(), "broken".to_string()],
+            },
+        )
+        .expect("disable invalid rules and upgrade");
+        let CodexManagedCatalogUpgradeOutcome::Applied(settings) = applied else {
+            panic!("expected applied upgrade");
+        };
+        assert_eq!(
+            settings
+                .codex_model_context_rules
+                .iter()
+                .map(|rule| (rule.model_id.as_str(), rule.enabled, rule.context_window))
+                .collect::<Vec<_>>(),
+            vec![
+                ("broken", false, 180_000),
+                ("kept", true, 372_000),
+                ("removed", false, 200_000),
+            ]
+        );
+        let generated = read_generated_catalog(&config_path);
+        let kept = generated["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .find(|model| model["slug"] == "kept")
+            .expect("kept model");
+        assert_eq!(kept["context_window"], 372_000);
+        assert!(generated["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .all(|model| model["slug"] != "removed"));
+    }
+
+    #[test]
+    fn catalog_upgrade_refreshes_bundled_content_when_the_executable_fingerprint_is_unchanged() {
+        let env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let _override = BundledCatalogOverrideGuard::new(
+            &env._home.path().join("fake-codex.exe"),
+            catalog_bytes(&["model-alpha"]),
+        );
+        let codex_home = env._home.path().join("codex-upgrade-bundled");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        std::fs::write(codex_home.join("config.toml"), b"model = \"gpt-base\"\n")
+            .expect("write config without a user catalog");
+        select_test_codex_home(&handle, &codex_home);
+        settings_codex_model_context_rules_set_sync(
+            &handle,
+            vec![model_context_rule("model-alpha", 372_000, true)],
+        )
+        .expect("enable bundled rule");
+
+        _override.replace_bytes(catalog_bytes(&["model-alpha", "model-gamma"]));
+        crate::codex_model_catalog::managed::reset_bundled_catalog_loads_for_test();
+        crate::codex_model_catalog::managed::sync_current_locked(&handle).expect("background sync");
+        assert_eq!(
+            crate::codex_model_catalog::managed::bundled_catalog_loads_for_test(),
+            0
+        );
+        let config_path = codex_home.join("config.toml");
+        assert!(read_generated_catalog(&config_path)["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .all(|model| model["slug"] != "model-gamma"));
+
+        codex_managed_catalog_upgrade_sync(&handle, CodexManagedCatalogUpgradeMode::Apply)
+            .expect("forced bundled upgrade");
+        assert!(crate::codex_model_catalog::managed::bundled_catalog_loads_for_test() >= 1);
+        let generated = read_generated_catalog(&config_path);
+        assert!(generated["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .any(|model| model["slug"] == "model-gamma"));
+        let alpha = generated["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .find(|model| model["slug"] == "model-alpha")
+            .expect("alpha");
+        assert_eq!(alpha["context_window"], 372_000);
+    }
+
+    #[test]
+    fn catalog_upgrade_is_inactive_without_rules_or_profiles() {
+        let env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let codex_home = env._home.path().join("codex-upgrade-inactive");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        std::fs::write(codex_home.join("config.toml"), b"model = \"gpt-base\"\n")
+            .expect("write config");
+        select_test_codex_home(&handle, &codex_home);
+
+        let outcome =
+            codex_managed_catalog_upgrade_sync(&handle, CodexManagedCatalogUpgradeMode::Apply)
+                .expect("inactive upgrade");
+        assert!(matches!(
+            outcome,
+            CodexManagedCatalogUpgradeOutcome::Inactive
+        ));
+        let config = std::fs::read_to_string(codex_home.join("config.toml")).expect("read config");
+        assert!(!config.contains("model_catalog_json"));
+    }
+
+    fn select_test_codex_home<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        codex_home: &std::path::Path,
+    ) {
+        settings::update(app, |latest| {
+            latest.codex_home_mode = settings::CodexHomeMode::Custom;
+            latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            Ok(())
+        })
+        .expect("select test Codex home");
+    }
+
+    fn catalog_bytes(slugs: &[&str]) -> Vec<u8> {
+        serde_json::to_vec(&generated_user_catalog(slugs)).expect("serialize catalog")
+    }
+
+    fn generated_user_catalog(slugs: &[&str]) -> serde_json::Value {
+        let models = slugs
+            .iter()
+            .map(|slug| {
+                serde_json::json!({
+                    "slug": slug,
+                    "context_window": 272000,
+                    "max_context_window": 272000,
+                    "future_field": {"preserved": true}
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({"models": models})
+    }
+
+    fn read_generated_catalog(config_path: &std::path::Path) -> serde_json::Value {
+        let config = std::fs::read_to_string(config_path).expect("read config");
+        let document = config
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse config");
+        let generated_path = std::path::PathBuf::from(
+            document["model_catalog_json"]
+                .as_str()
+                .expect("generated catalog binding"),
+        );
+        serde_json::from_slice(&std::fs::read(generated_path).expect("read generated catalog"))
+            .expect("parse generated catalog")
+    }
+
+    struct BundledCatalogOverrideGuard {
+        executable: std::path::PathBuf,
+    }
+
+    impl BundledCatalogOverrideGuard {
+        fn new(executable: &std::path::Path, bytes: Vec<u8>) -> Self {
+            if let Some(parent) = executable.parent() {
+                std::fs::create_dir_all(parent).expect("create fake Codex directory");
+            }
+            std::fs::write(executable, b"stable-codex").expect("write fake Codex executable");
+            let launch = crate::cli_manager::CodexLaunchSpec {
+                executable: executable.to_path_buf(),
+                runtime_path: std::ffi::OsString::from("test-runtime"),
+                version: Some("codex-cli test".to_string()),
+            };
+            crate::codex_model_catalog::managed::set_bundled_catalog_override_for_test(
+                launch, bytes,
+            );
+            Self {
+                executable: executable.to_path_buf(),
+            }
+        }
+
+        fn replace_bytes(&self, bytes: Vec<u8>) {
+            let launch = crate::cli_manager::CodexLaunchSpec {
+                executable: self.executable.clone(),
+                runtime_path: std::ffi::OsString::from("test-runtime"),
+                version: Some("codex-cli test".to_string()),
+            };
+            crate::codex_model_catalog::managed::set_bundled_catalog_override_for_test(
+                launch, bytes,
+            );
+        }
+    }
+
+    impl Drop for BundledCatalogOverrideGuard {
+        fn drop(&mut self) {
+            crate::codex_model_catalog::managed::clear_bundled_catalog_override_for_test();
+        }
     }
 
     #[test]

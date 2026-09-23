@@ -1,6 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Plus, RefreshCw, Settings2, Sparkles, Trash2 } from "lucide-react";
-import type { CodexModelContextCandidatesState } from "../../../services/cli/cliManager";
+import type {
+  CodexManagedCatalogInvalidRule,
+  CodexModelContextCandidatesState,
+} from "../../../services/cli/cliManager";
 import type { AppSettings } from "../../../services/settings/settings";
 import {
   MAX_CODEX_MODEL_CONTEXT_RULES,
@@ -89,6 +92,11 @@ export function CodexModelContextRulesSection({
   retrySettings,
   retryCandidates,
   persistRules,
+  catalogUpgradeAvailable = false,
+  catalogUpgradePending = false,
+  catalogUpgradeBlockedRules = null,
+  onUpgradeCatalog,
+  onDisableInvalidCatalogRules,
 }: {
   rules: readonly CodexModelContextRule[] | null;
   candidates: CodexModelContextCandidatesState | null;
@@ -102,6 +110,11 @@ export function CodexModelContextRulesSection({
   retrySettings: () => Promise<unknown> | unknown;
   retryCandidates: () => Promise<unknown> | unknown;
   persistRules?: (rules: CodexModelContextRule[]) => Promise<CodexModelContextRulesSaveResult>;
+  catalogUpgradeAvailable?: boolean;
+  catalogUpgradePending?: boolean;
+  catalogUpgradeBlockedRules?: readonly CodexManagedCatalogInvalidRule[] | null;
+  onUpgradeCatalog?: () => Promise<unknown> | unknown;
+  onDisableInvalidCatalogRules?: () => Promise<unknown> | unknown;
 }) {
   const fieldPrefix = useId();
   const feedbackRef = useRef<HTMLDivElement>(null);
@@ -165,7 +178,7 @@ export function CodexModelContextRulesSection({
 
   const enabledCount = canonicalRules?.filter((rule) => rule.enabled).length ?? 0;
   const totalCount = canonicalRules?.length ?? 0;
-  const busy = saving || submitting;
+  const busy = saving || submitting || catalogUpgradePending;
   const readOnly = settingsReadOnly || canonicalRules == null;
   const editDisabled = readOnly || controlsDisabled || busy || !persistRules;
   const draftDirty = canonicalRules
@@ -313,12 +326,22 @@ export function CodexModelContextRulesSection({
             目录声明不会增加模型或 Provider 的真实能力。
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {busy ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {busy || catalogUpgradePending ? (
             <RefreshCw
               aria-label="正在保存 Codex 模型上下文规则"
               className="h-3.5 w-3.5 animate-spin text-muted-foreground"
             />
+          ) : null}
+          {catalogUpgradeAvailable && onUpgradeCatalog ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void onUpgradeCatalog()}
+              disabled={busy || catalogUpgradePending || controlsDisabled}
+            >
+              升级受管模型目录
+            </Button>
           ) : null}
           <Button size="sm" variant="secondary" onClick={openEditor} disabled={!canonicalRules}>
             <Settings2 className="h-4 w-4" aria-hidden="true" />
@@ -339,6 +362,33 @@ export function CodexModelContextRulesSection({
             <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
             重试
           </Button>
+        </div>
+      ) : null}
+
+      {catalogUpgradeBlockedRules && catalogUpgradeBlockedRules.length > 0 ? (
+        <div className="mt-3 space-y-2 border-t border-amber-200 pt-3 text-xs text-amber-800 dark:border-amber-800 dark:text-amber-200">
+          <p>
+            这些已启用规则无法套用到当前基础目录。确认后只停用它们并升级，其余规则和模型元数据保持不变。新启动的
+            Codex 会话才会读取新目录。
+          </p>
+          <ul className="space-y-1">
+            {catalogUpgradeBlockedRules.map((rule) => (
+              <li key={rule.model_id}>
+                {rule.model_id}：
+                {rule.code === "target_missing" ? "基础目录里没有这个模型" : "上下文字段无效"}
+              </li>
+            ))}
+          </ul>
+          {onDisableInvalidCatalogRules ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void onDisableInvalidCatalogRules()}
+              disabled={busy || catalogUpgradePending || controlsDisabled}
+            >
+              禁用无效规则并升级
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

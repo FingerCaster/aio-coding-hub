@@ -13,6 +13,9 @@ import {
   type CodexConfigTomlValidationError as GeneratedCodexConfigTomlValidationError,
   type CodexConfigTomlValidationResult as GeneratedCodexConfigTomlValidationResult,
   type CodexModelCatalogState as GeneratedCodexModelCatalogState,
+  type CodexManagedCatalogInvalidRule as GeneratedCodexManagedCatalogInvalidRule,
+  type CodexManagedCatalogUpgradeRequest as GeneratedCodexManagedCatalogUpgradeRequest,
+  type CodexManagedCatalogUpgradeResult as GeneratedCodexManagedCatalogUpgradeResult,
   type CodexModelCapability as GeneratedCodexModelCapability,
   type CodexModelContextCandidate as GeneratedCodexModelContextCandidate,
   type CodexModelContextCandidatesState as GeneratedCodexModelContextCandidatesState,
@@ -30,7 +33,11 @@ import {
   mapGeneratedCommandResponse,
   type GeneratedCommandResult,
 } from "../generatedIpc";
-import { normalizeCodexModelContextModelId } from "../settings/codexModelContextRules";
+import {
+  decodeCanonicalCodexModelContextRules,
+  normalizeCodexModelContextModelId,
+} from "../settings/codexModelContextRules";
+import type { AppSettings } from "../settings/settings";
 
 export type ClaudeCliInfo = GeneratedClaudeCliInfo;
 export type SimpleCliInfo = GeneratedSimpleCliInfo;
@@ -61,6 +68,12 @@ export type ClaudeEnvSetInput = {
 export type CodexProviderSyncResult = GeneratedCodexProviderSyncResult;
 export type CodexModelContextCandidate = GeneratedCodexModelContextCandidate;
 export type CodexModelContextCandidatesState = GeneratedCodexModelContextCandidatesState;
+export type CodexManagedCatalogInvalidRule = GeneratedCodexManagedCatalogInvalidRule;
+export type CodexManagedCatalogUpgradeRequest = GeneratedCodexManagedCatalogUpgradeRequest;
+export type CodexManagedCatalogUpgradeResult = Omit<
+  GeneratedCodexManagedCatalogUpgradeResult,
+  "settings"
+> & { settings: AppSettings | null };
 
 const CODEX_MODEL_CONTEXT_CANDIDATE_MAX_MODELS = 1_000;
 const CODEX_MODEL_CATALOG_STATUS_VALUES = new Set(["ready", "degraded", "unavailable"]);
@@ -337,6 +350,92 @@ export async function cliManagerCodexModelContextCandidatesGet() {
       mapGeneratedCommandResponse(
         await commands.cliManagerCodexModelContextCandidatesGet(),
         decodeCodexModelContextCandidatesState
+      ),
+  });
+}
+
+function readCatalogUpgradeStatus(value: unknown): CodexManagedCatalogUpgradeResult["status"] {
+  if (value === "inactive" || value === "applied" || value === "blocked") return value;
+  invalidCandidateResponse("managed catalog upgrade status is invalid");
+}
+
+function readCatalogInvalidRuleCode(
+  value: unknown,
+  index: number
+): CodexManagedCatalogInvalidRule["code"] {
+  if (value === "target_missing" || value === "invalid_window") return value;
+  invalidCandidateResponse(`invalidRules[${index}].code is invalid`);
+}
+
+function decodeCodexManagedCatalogInvalidRule(
+  value: unknown,
+  index: number
+): CodexManagedCatalogInvalidRule {
+  const rule = requireCandidateRecord(value, `invalidRules[${index}]`);
+  if (typeof rule.model_id !== "string" || rule.model_id.length === 0) {
+    invalidCandidateResponse(`invalidRules[${index}].model_id is invalid`);
+  }
+  if (typeof rule.context_window !== "number" || !Number.isInteger(rule.context_window)) {
+    invalidCandidateResponse(`invalidRules[${index}].context_window is invalid`);
+  }
+  return {
+    model_id: rule.model_id,
+    context_window: rule.context_window,
+    code: readCatalogInvalidRuleCode(rule.code, index),
+  };
+}
+
+export function decodeCodexManagedCatalogUpgradeResult(
+  value: unknown
+): CodexManagedCatalogUpgradeResult {
+  const result = requireCandidateRecord(value, "managed catalog upgrade result");
+  const status = readCatalogUpgradeStatus(result.status);
+  if (!Array.isArray(result.invalidRules)) {
+    invalidCandidateResponse("managed catalog upgrade invalidRules is invalid");
+  }
+  const invalidRules = result.invalidRules.map(decodeCodexManagedCatalogInvalidRule);
+  const settings = result.settings;
+  if (status === "applied") {
+    if (settings == null || typeof settings !== "object" || Array.isArray(settings)) {
+      invalidCandidateResponse("managed catalog upgrade settings are missing");
+    }
+  } else if (settings != null) {
+    invalidCandidateResponse("managed catalog upgrade settings must be empty");
+  }
+  if (status === "blocked" && invalidRules.length === 0) {
+    invalidCandidateResponse("managed catalog upgrade blocked without rules");
+  }
+  if (status !== "blocked" && invalidRules.length !== 0) {
+    invalidCandidateResponse("managed catalog upgrade returned unexpected invalid rules");
+  }
+  return {
+    status,
+    settings: status === "applied" ? decodeUpgradeSettings(settings) : null,
+    invalidRules,
+  };
+}
+
+function decodeUpgradeSettings(settings: unknown): AppSettings {
+  const record = requireCandidateRecord(settings, "managed catalog upgrade settings");
+  return {
+    ...(record as AppSettings),
+    codex_model_context_rules: decodeCanonicalCodexModelContextRules(
+      record.codex_model_context_rules
+    ),
+  };
+}
+
+export async function cliManagerCodexManagedCatalogUpgrade(
+  request: CodexManagedCatalogUpgradeRequest
+) {
+  return invokeGeneratedIpc<CodexManagedCatalogUpgradeResult>({
+    title: "升级受管模型目录失败",
+    cmd: "cli_manager_codex_managed_catalog_upgrade",
+    args: { request },
+    invoke: async () =>
+      mapGeneratedCommandResponse(
+        await commands.cliManagerCodexManagedCatalogUpgrade(request),
+        decodeCodexManagedCatalogUpgradeResult
       ),
   });
 }

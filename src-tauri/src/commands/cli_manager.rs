@@ -59,6 +59,78 @@ pub(crate) async fn cli_manager_codex_model_context_candidates_get(
     .map_err(Into::into)
 }
 
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CodexManagedCatalogUpgradeRequest {
+    pub(crate) disable_invalid_rules: bool,
+    pub(crate) model_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CodexManagedCatalogUpgradeStatus {
+    Inactive,
+    Applied,
+    Blocked,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CodexManagedCatalogUpgradeResult {
+    pub(crate) status: CodexManagedCatalogUpgradeStatus,
+    pub(crate) settings: Option<crate::app::settings_service::SettingsView>,
+    pub(crate) invalid_rules:
+        Vec<crate::codex_model_catalog::managed::CodexManagedCatalogInvalidRule>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_manager_codex_managed_catalog_upgrade(
+    app: tauri::AppHandle,
+    request: CodexManagedCatalogUpgradeRequest,
+) -> Result<CodexManagedCatalogUpgradeResult, String> {
+    blocking::run("cli_manager_codex_managed_catalog_upgrade", move || {
+        let mode = if request.disable_invalid_rules {
+            crate::app::settings_service::CodexManagedCatalogUpgradeMode::DisableInvalid {
+                model_ids: request.model_ids,
+            }
+        } else if !request.model_ids.is_empty() {
+            return Err(crate::shared::error::AppError::new(
+                "CODEX_MANAGED_CATALOG_UPGRADE_STALE",
+                "an ordinary catalog upgrade cannot select context rules",
+            ));
+        } else {
+            crate::app::settings_service::CodexManagedCatalogUpgradeMode::Apply
+        };
+        let outcome = crate::app::settings_service::codex_managed_catalog_upgrade_sync(&app, mode)?;
+        Ok(match outcome {
+            crate::app::settings_service::CodexManagedCatalogUpgradeOutcome::Inactive => {
+                CodexManagedCatalogUpgradeResult {
+                    status: CodexManagedCatalogUpgradeStatus::Inactive,
+                    settings: None,
+                    invalid_rules: Vec::new(),
+                }
+            }
+            crate::app::settings_service::CodexManagedCatalogUpgradeOutcome::Applied(settings) => {
+                CodexManagedCatalogUpgradeResult {
+                    status: CodexManagedCatalogUpgradeStatus::Applied,
+                    settings: Some(settings),
+                    invalid_rules: Vec::new(),
+                }
+            }
+            crate::app::settings_service::CodexManagedCatalogUpgradeOutcome::Blocked(
+                invalid_rules,
+            ) => CodexManagedCatalogUpgradeResult {
+                status: CodexManagedCatalogUpgradeStatus::Blocked,
+                settings: None,
+                invalid_rules,
+            },
+        })
+    })
+    .await
+    .map_err(Into::into)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn cli_manager_codex_config_get(

@@ -17,6 +17,7 @@ import {
   type CodexConfigState,
   type CodexModelCapability,
   type CodexModelCatalogState,
+  type CodexManagedCatalogInvalidRule,
   type CodexModelContextCandidatesState,
   type CodexConfigTomlState,
   type CodexConfigTomlValidationResult,
@@ -372,6 +373,11 @@ export type CliManagerCodexTabProps = {
   retryCodexModelContextCandidates?: () => Promise<unknown> | unknown;
   retrySettings?: () => Promise<unknown> | unknown;
   pickCodexHomeDirectory?: (initialPath?: string) => Promise<string | null> | string | null;
+  catalogUpgradeAvailable?: boolean;
+  catalogUpgradePending?: boolean;
+  catalogUpgradeBlockedRules?: readonly CodexManagedCatalogInvalidRule[] | null;
+  onUpgradeCatalog?: () => Promise<unknown> | unknown;
+  onDisableInvalidCatalogRules?: () => Promise<unknown> | unknown;
 };
 
 type PersistConfigLocationResult = "saved" | "validation_failed" | "persist_failed";
@@ -2568,6 +2574,11 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
         retrySettings={props.retrySettings ?? (() => undefined)}
         retryCandidates={props.retryCodexModelContextCandidates ?? (() => undefined)}
         persistRules={props.persistCodexModelContextRules}
+        catalogUpgradeAvailable={props.catalogUpgradeAvailable}
+        catalogUpgradePending={props.catalogUpgradePending}
+        catalogUpgradeBlockedRules={props.catalogUpgradeBlockedRules}
+        onUpgradeCatalog={props.onUpgradeCatalog}
+        onDisableInvalidCatalogRules={props.onDisableInvalidCatalogRules}
       />
 
       {codexConfig ? (

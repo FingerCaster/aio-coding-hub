@@ -1,12 +1,14 @@
 // Usage: Data-model hook for CLI manager page orchestration.
 
-import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
+import { useAppStartupStatus } from "../../app/startupStatusStore";
 import { toast } from "sonner";
 import {
   type ClaudeSettingsPatch,
   type CodexConfigPatch,
   type CodexConfigState,
+  type CodexManagedCatalogInvalidRule,
   type GeminiConfigPatch,
 } from "../../services/cli/cliManager";
 import {
@@ -54,12 +56,14 @@ import {
   useCliManagerCodexInfoQuery,
   useCliManagerCodexModelCatalogQuery,
   useCliManagerCodexModelCatalogRefresh,
+  useCliManagerCodexManagedCatalogUpgradeMutation,
   useCliManagerCodexModelContextCandidatesQuery,
   useCliManagerCodexProviderSyncMutation,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
   useCliManagerGeminiInfoQuery,
 } from "../../query/cliManager";
+import { useCodexManagedProfilesQuery } from "../../query/providerModels";
 import { formatActionFailureToast } from "../../utils/errors";
 import { useGrokTabDataModel } from "../../components/cli-manager/tabs/useGrokTabDataModel";
 import type { CodexModelContextRulesSaveResult } from "../../components/cli-manager/tabs/CodexModelContextRulesSection";
@@ -121,6 +125,13 @@ export function useCliManagerPageDataModel() {
   const circuitBreakerNoticeMutation = useSettingsCircuitBreakerNoticeSetMutation();
   const codexSessionIdCompletionMutation = useSettingsCodexSessionIdCompletionSetMutation();
   const codexModelContextRulesMutation = useSettingsCodexModelContextRulesSetMutation();
+  const catalogUpgradeMutation = useCliManagerCodexManagedCatalogUpgradeMutation();
+  const startupStatus = useAppStartupStatus();
+  const managedProfilesQuery = useCodexManagedProfilesQuery({ enabled: tab === "codex" });
+  const [catalogUpgradeBlockedRules, setCatalogUpgradeBlockedRules] = useState<
+    CodexManagedCatalogInvalidRule[] | null
+  >(null);
+  const startupCatalogUpgradeAttempted = useRef(false);
   const commonSettingsMutation = useSettingsPatchMutation();
 
   const rectifierSaving = rectifierMutation.isPending;
@@ -582,6 +593,7 @@ export function useCliManagerPageDataModel() {
     }
     if (
       codexModelContextRulesSaving ||
+      catalogUpgradeMutation.isPending ||
       commonSettingsSaving ||
       codexConfigSetMutation.isPending ||
       codexConfigTomlSaving ||
@@ -623,6 +635,84 @@ export function useCliManagerPageDataModel() {
     toast("保存 Codex 模型上下文规则失败，且设置回读失败；已进入只读保护");
     return { status: "blocked", settings: reread.data ?? appSettings };
   }
+
+  const catalogUpgradeAvailable =
+    (appSettings?.codex_model_context_rules.some((rule) => rule.enabled) ?? false) ||
+    (managedProfilesQuery.data?.length ?? 0) > 0;
+
+  async function upgradeManagedCatalog(disableInvalidRules: boolean) {
+    if (settingsWriteBlocked) {
+      blockSettingsWrite();
+      return;
+    }
+    try {
+      const result = await catalogUpgradeMutation.mutateAsync({
+        disableInvalidRules,
+        modelIds: disableInvalidRules
+          ? (catalogUpgradeBlockedRules?.map((rule) => rule.model_id) ?? [])
+          : [],
+      });
+      if (result.status === "applied") {
+        setCatalogUpgradeBlockedRules(null);
+        toast("已升级受管模型目录；请新启动 Codex 会话。");
+        return;
+      }
+      if (result.status === "blocked") {
+        setCatalogUpgradeBlockedRules(result.invalidRules);
+        return;
+      }
+      setCatalogUpgradeBlockedRules(null);
+      toast("当前没有受管模型目录。");
+    } catch (error) {
+      const formatted = formatActionFailureToast("升级受管模型目录", error);
+      logToConsole("error", "升级受管模型目录失败", {
+        error: formatted.raw,
+        error_code: formatted.error_code ?? undefined,
+      });
+      toast(formatted.toast);
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== "codex" || startupCatalogUpgradeAttempted.current || settingsWriteBlocked) {
+      return;
+    }
+    if (
+      startupStatus.currentStage !== "failed" ||
+      !startupStatus.errorMessage?.includes("CODEX_MODEL_CONTEXT_RULE_TARGET_")
+    ) {
+      return;
+    }
+    startupCatalogUpgradeAttempted.current = true;
+    void catalogUpgradeMutation
+      .mutateAsync({ disableInvalidRules: false, modelIds: [] })
+      .then((result) => {
+        if (result.status === "applied") {
+          setCatalogUpgradeBlockedRules(null);
+          toast("已升级受管模型目录；请新启动 Codex 会话。");
+          return;
+        }
+        if (result.status === "blocked") {
+          setCatalogUpgradeBlockedRules(result.invalidRules);
+          return;
+        }
+        setCatalogUpgradeBlockedRules(null);
+      })
+      .catch((error: unknown) => {
+        const formatted = formatActionFailureToast("升级受管模型目录", error);
+        logToConsole("error", "升级受管模型目录失败", {
+          error: formatted.raw,
+          error_code: formatted.error_code ?? undefined,
+        });
+        toast(formatted.toast);
+      });
+  }, [
+    catalogUpgradeMutation,
+    settingsWriteBlocked,
+    startupStatus.currentStage,
+    startupStatus.errorMessage,
+    tab,
+  ]);
 
   async function pickCodexHomeDirectory(initialPath?: string): Promise<string | null> {
     try {
@@ -855,7 +945,8 @@ export function useCliManagerPageDataModel() {
       setStreamInternalErrorGuardMs,
       codexHomeSettingsSaving:
         commonSettingsSaving || codexModelContextRulesSaving || settingsWriteBlocked,
-      codexModelContextRulesSaving,
+      codexModelContextRulesSaving:
+        codexModelContextRulesSaving || catalogUpgradeMutation.isPending,
       codexModelContextRulesReadOnly: settingsWriteBlocked,
       codexModelContextRulesReadErrorMessage: settingsReadErrorMessage,
       codexModelContextRulesAutoOpenRequestKey:
@@ -872,6 +963,11 @@ export function useCliManagerPageDataModel() {
       retryCodexModelContextCandidates: () => codexModelContextCandidatesQuery.refetch(),
       retrySettings: () => settingsQuery.refetch(),
       pickCodexHomeDirectory,
+      catalogUpgradeAvailable,
+      catalogUpgradePending: catalogUpgradeMutation.isPending,
+      catalogUpgradeBlockedRules,
+      onUpgradeCatalog: () => upgradeManagedCatalog(false),
+      onDisableInvalidCatalogRules: () => upgradeManagedCatalog(true),
     },
     cx2ccTabProps: {
       appSettings,

@@ -84,6 +84,25 @@ impl ManagedCatalogPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexManagedCatalogInvalidRuleCode {
+    TargetMissing,
+    InvalidWindow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+pub struct CodexManagedCatalogInvalidRule {
+    pub model_id: String,
+    pub context_window: i64,
+    pub code: CodexManagedCatalogInvalidRuleCode,
+}
+
+pub(crate) enum ForcedCatalogPlan {
+    Blocked(Vec<CodexManagedCatalogInvalidRule>),
+    Ready(ManagedCatalogPlan),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnabledModelContextRule {
@@ -798,6 +817,13 @@ enum BaseCatalogSource {
         descriptor: BundledCatalogDescriptor,
         fingerprint: String,
     },
+    Merged {
+        bundled: Box<BaseCatalogSource>,
+        user_path: PathBuf,
+        user_bytes: Vec<u8>,
+        user_fingerprint: String,
+        fingerprint: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -809,6 +835,12 @@ enum BaseCatalogGuard {
     },
     Bundled {
         descriptor: BundledCatalogDescriptor,
+    },
+    Merged {
+        bundled: Box<BaseCatalogGuard>,
+        user_path: PathBuf,
+        user_bytes: Vec<u8>,
+        user_fingerprint: String,
     },
 }
 
@@ -824,7 +856,9 @@ struct BundledCatalogDescriptor {
 impl BaseCatalogSource {
     fn fingerprint(&self) -> &str {
         match self {
-            Self::User { fingerprint, .. } | Self::Bundled { fingerprint, .. } => fingerprint,
+            Self::User { fingerprint, .. }
+            | Self::Bundled { fingerprint, .. }
+            | Self::Merged { fingerprint, .. } => fingerprint,
         }
     }
 
@@ -842,32 +876,30 @@ impl BaseCatalogSource {
             Self::Bundled { descriptor, .. } => BaseCatalogGuard::Bundled {
                 descriptor: descriptor.clone(),
             },
+            Self::Merged {
+                bundled,
+                user_path,
+                user_bytes,
+                user_fingerprint,
+                ..
+            } => BaseCatalogGuard::Merged {
+                bundled: Box::new(bundled.guard()),
+                user_path: user_path.clone(),
+                user_bytes: user_bytes.clone(),
+                user_fingerprint: user_fingerprint.clone(),
+            },
         }
     }
 
     fn load<R: tauri::Runtime>(self, app: &tauri::AppHandle<R>) -> AppResult<Vec<u8>> {
         match self {
             Self::User { bytes, .. } => Ok(bytes),
-            Self::Bundled { launch, .. } => {
-                let codex_home = crate::codex_paths::codex_home_dir(app)?;
-                protocol::fetch_bundled_catalog(&launch, &codex_home).map_err(|error| {
-                    let (code, message) = match error {
-                        protocol::ProtocolError::Timeout => (
-                            "CODEX_MANAGED_MODEL_BUNDLED_TIMEOUT",
-                            "Codex debug models --bundled timed out",
-                        ),
-                        protocol::ProtocolError::Spawn => (
-                            "CODEX_MANAGED_MODEL_BUNDLED_UNAVAILABLE",
-                            "failed to run Codex debug models --bundled",
-                        ),
-                        protocol::ProtocolError::Malformed | protocol::ProtocolError::JsonRpc => (
-                            "CODEX_MANAGED_MODEL_BUNDLED_INVALID",
-                            "Codex debug models --bundled returned an invalid catalog",
-                        ),
-                    };
-                    AppError::new(code, message)
-                })
-            }
+            Self::Bundled { launch, .. } => load_bundled_catalog(app, &launch),
+            Self::Merged {
+                bundled,
+                user_bytes,
+                ..
+            } => merge_user_modifications(&bundled.load(app)?, &user_bytes),
         }
     }
 }
@@ -880,16 +912,15 @@ impl BaseCatalogGuard {
                 bytes,
                 fingerprint,
             } => ensure_user_base_catalog_unchanged(path, bytes, fingerprint),
-            Self::Bundled { descriptor } => {
-                let current_launch = crate::cli_manager::codex_launch_spec(app)
-                    .map_err(|_| base_catalog_drift_error())?
-                    .ok_or_else(base_catalog_drift_error)?;
-                let current_descriptor = bundled_catalog_descriptor(&current_launch)
-                    .map_err(|_| base_catalog_drift_error())?;
-                if &current_descriptor != descriptor {
-                    return Err(base_catalog_drift_error());
-                }
-                Ok(())
+            Self::Bundled { descriptor } => ensure_bundled_descriptor_unchanged(app, descriptor),
+            Self::Merged {
+                bundled,
+                user_path,
+                user_bytes,
+                user_fingerprint,
+            } => {
+                bundled.ensure_unchanged(app)?;
+                ensure_user_base_catalog_unchanged(user_path, user_bytes, user_fingerprint)
             }
         }
     }
@@ -925,6 +956,7 @@ impl OwnedCatalogMetadata {
 #[derive(Clone, Copy)]
 enum CatalogReconcileIntent<'a> {
     Background,
+    ForceBaseRefresh,
     ProposedConfigSave {
         previous_config: Option<&'a [u8]>,
         proposed_config: &'a [u8],
@@ -1005,12 +1037,43 @@ pub(crate) fn prepare_for_profiles_with_policy<R: tauri::Runtime>(
     profiles: &[ManagedCatalogProfile],
     policy: ManagedCatalogPolicy,
 ) -> AppResult<ManagedCatalogPlan> {
-    prepare_for_profiles_with_policy_and_intent(
+    expect_ready_catalog_plan(prepare_for_profiles_with_policy_and_intent(
         app,
         profiles,
         policy,
         CatalogReconcileIntent::Background,
-    )
+    )?)
+}
+
+pub(crate) fn prepare_forced_catalog_upgrade<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    profiles: &[ManagedCatalogProfile],
+    policy: ManagedCatalogPolicy,
+) -> AppResult<ForcedCatalogPlan> {
+    match prepare_for_profiles_with_policy_and_intent(
+        app,
+        profiles,
+        policy,
+        CatalogReconcileIntent::ForceBaseRefresh,
+    )? {
+        PrepareOutcome::Ready(plan) => Ok(ForcedCatalogPlan::Ready(plan)),
+        PrepareOutcome::Blocked(rules) => Ok(ForcedCatalogPlan::Blocked(rules)),
+    }
+}
+
+fn expect_ready_catalog_plan(outcome: PrepareOutcome) -> AppResult<ManagedCatalogPlan> {
+    match outcome {
+        PrepareOutcome::Ready(plan) => Ok(plan),
+        PrepareOutcome::Blocked(_) => Err(AppError::new(
+            "SYSTEM_ERROR",
+            "catalog reconciliation blocked without a forced upgrade",
+        )),
+    }
+}
+
+enum PrepareOutcome {
+    Ready(ManagedCatalogPlan),
+    Blocked(Vec<CodexManagedCatalogInvalidRule>),
 }
 
 fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
@@ -1018,7 +1081,7 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
     profiles: &[ManagedCatalogProfile],
     policy: ManagedCatalogPolicy,
     intent: CatalogReconcileIntent<'_>,
-) -> AppResult<ManagedCatalogPlan> {
+) -> AppResult<PrepareOutcome> {
     validate_profiles(profiles)?;
     let policy = policy.canonicalized()?;
     let PreparedCatalogContext {
@@ -1050,7 +1113,13 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
     } else {
         let profile_set_sha256 = profile_set_sha256(profiles)?;
         let policy_projection = model_context_policy_projection(&policy)?;
-        let source = base_catalog_source(app, original_catalog_path.as_deref())?;
+        let force_refresh = matches!(intent, CatalogReconcileIntent::ForceBaseRefresh);
+        let source = resolve_catalog_base_source(
+            app,
+            original_catalog_path.as_deref(),
+            existing_metadata.as_ref(),
+            force_refresh,
+        )?;
         let source_guard = source.guard();
         let expected_projection_sha256 = projection_sha256(
             &profile_set_sha256,
@@ -1059,24 +1128,32 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
             original_catalog_path.as_deref(),
             &codex_home_key,
         )?;
-        if existing_metadata.as_ref().is_some_and(|metadata| {
-            metadata.is_current()
-                && metadata.profile_set_sha256 == profile_set_sha256
-                && metadata.base_source_fingerprint == source.fingerprint()
-                && metadata.projection_sha256.as_deref()
-                    == Some(expected_projection_sha256.as_str())
-                && metadata.model_context_rule_set_sha256.as_deref()
-                    == Some(policy_projection.rule_set_sha256.as_str())
-                && metadata.model_context_enabled_rules == policy_projection.enabled_rules
-                && metadata.model_context_enabled_rules_sha256.as_deref()
-                    == Some(policy_projection.enabled_rules_sha256.as_str())
-                && metadata.codex_home_key.as_deref() == Some(codex_home_key.as_str())
-                && metadata.original_catalog_path == original_catalog_path
-        }) {
+        if !force_refresh
+            && existing_metadata.as_ref().is_some_and(|metadata| {
+                metadata.is_current()
+                    && metadata.profile_set_sha256 == profile_set_sha256
+                    && metadata.base_source_fingerprint == source.fingerprint()
+                    && metadata.projection_sha256.as_deref()
+                        == Some(expected_projection_sha256.as_str())
+                    && metadata.model_context_rule_set_sha256.as_deref()
+                        == Some(policy_projection.rule_set_sha256.as_str())
+                    && metadata.model_context_enabled_rules == policy_projection.enabled_rules
+                    && metadata.model_context_enabled_rules_sha256.as_deref()
+                        == Some(policy_projection.enabled_rules_sha256.as_str())
+                    && metadata.codex_home_key.as_deref() == Some(codex_home_key.as_str())
+                    && metadata.original_catalog_path == original_catalog_path
+            })
+        {
             (generated_before.bytes.clone(), Some(source_guard))
         } else {
             let source_fingerprint = source.fingerprint().to_string();
             let base_bytes = source.load(app)?;
+            if force_refresh {
+                let invalid_rules = classify_fixable_context_rules(&base_bytes, &policy)?;
+                if !invalid_rules.is_empty() {
+                    return Ok(PrepareOutcome::Blocked(invalid_rules));
+                }
+            }
             (
                 Some(generate_catalog(
                     &base_bytes,
@@ -1127,7 +1204,7 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
     let ownership_after =
         catalog_ownership_after_baseline_change(&ownership, baseline_backup.as_ref())?;
 
-    Ok(ManagedCatalogPlan {
+    Ok(PrepareOutcome::Ready(ManagedCatalogPlan {
         change: PreparedCatalogChange {
             ownership,
             ownership_after,
@@ -1141,7 +1218,7 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
             generated_after,
             expected_owner,
         },
-    })
+    }))
 }
 
 fn prepare_catalog_context<R: tauri::Runtime>(
@@ -1174,7 +1251,8 @@ fn prepare_catalog_context<R: tauri::Runtime>(
                     CatalogReconcileIntent::ProposedConfigSave {
                         proposed_config, ..
                     } => proposed_config.to_vec(),
-                    CatalogReconcileIntent::Background => match &ownership {
+                    CatalogReconcileIntent::Background
+                    | CatalogReconcileIntent::ForceBaseRefresh => match &ownership {
                         CatalogOwnershipContext::ProxyApplied(_) => {
                             config_before.bytes.clone().ok_or_else(|| {
                                 AppError::new(
@@ -1200,7 +1278,8 @@ fn prepare_catalog_context<R: tauri::Runtime>(
                 let config_before = snapshot_cli_proxy_file(config_path)?;
                 validate_config_save_snapshot(intent, &config_before)?;
                 let current = match intent {
-                    CatalogReconcileIntent::Background => {
+                    CatalogReconcileIntent::Background
+                    | CatalogReconcileIntent::ForceBaseRefresh => {
                         config_before.bytes.clone().unwrap_or_default()
                     }
                     CatalogReconcileIntent::ProposedConfigSave {
@@ -1209,7 +1288,8 @@ fn prepare_catalog_context<R: tauri::Runtime>(
                 };
                 let current_catalog_path = parse_catalog_path(Some(&current), "current")?;
                 let original = match intent {
-                    CatalogReconcileIntent::Background => direct_original_catalog_path(
+                    CatalogReconcileIntent::Background
+                    | CatalogReconcileIntent::ForceBaseRefresh => direct_original_catalog_path(
                         current_catalog_path.as_deref(),
                         &generated_path,
                         existing_metadata.as_ref(),
@@ -1464,7 +1544,7 @@ pub(crate) fn sync_current_after_config_save_locked<R: tauri::Runtime>(
     let profiles = load_profiles(&conn)?;
     let settings = crate::settings::read(app)?;
     let policy = ManagedCatalogPolicy::from_settings(&settings)?;
-    prepare_for_profiles_with_policy_and_intent(
+    expect_ready_catalog_plan(prepare_for_profiles_with_policy_and_intent(
         app,
         &profiles,
         policy,
@@ -1472,7 +1552,7 @@ pub(crate) fn sync_current_after_config_save_locked<R: tauri::Runtime>(
             previous_config,
             proposed_config,
         },
-    )?
+    )?)?
     .apply(app)
 }
 
@@ -2039,18 +2119,188 @@ fn base_catalog_source<R: tauri::Runtime>(
         });
     }
 
-    let launch = crate::cli_manager::codex_launch_spec(app)?.ok_or_else(|| {
-        AppError::new(
-            "CODEX_MANAGED_MODEL_CLI_NOT_FOUND",
-            "Codex CLI was not found",
-        )
-    })?;
+    let launch = bundled_launch_spec(app)?;
     let descriptor = bundled_catalog_descriptor(&launch)?;
     let fingerprint = bundled_catalog_fingerprint(&descriptor);
     Ok(BaseCatalogSource::Bundled {
         launch,
         descriptor,
         fingerprint,
+    })
+}
+
+fn load_bundled_catalog<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    launch: &crate::cli_manager::CodexLaunchSpec,
+) -> AppResult<Vec<u8>> {
+    #[cfg(test)]
+    {
+        record_bundled_catalog_load();
+        if let Some(bytes) = bundled_catalog_override_bytes() {
+            return Ok(bytes);
+        }
+    }
+    let codex_home = crate::codex_paths::codex_home_dir(app)?;
+    protocol::fetch_bundled_catalog(launch, &codex_home).map_err(|error| {
+        let (code, message) = match error {
+            protocol::ProtocolError::Timeout => (
+                "CODEX_MANAGED_MODEL_BUNDLED_TIMEOUT",
+                "Codex debug models --bundled timed out",
+            ),
+            protocol::ProtocolError::Spawn => (
+                "CODEX_MANAGED_MODEL_BUNDLED_UNAVAILABLE",
+                "failed to run Codex debug models --bundled",
+            ),
+            protocol::ProtocolError::Malformed | protocol::ProtocolError::JsonRpc => (
+                "CODEX_MANAGED_MODEL_BUNDLED_INVALID",
+                "Codex debug models --bundled returned an invalid catalog",
+            ),
+        };
+        AppError::new(code, message)
+    })
+}
+
+fn ensure_bundled_descriptor_unchanged<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    descriptor: &BundledCatalogDescriptor,
+) -> AppResult<()> {
+    let current_launch = bundled_launch_spec(app).map_err(|_| base_catalog_drift_error())?;
+    let current_descriptor =
+        bundled_catalog_descriptor(&current_launch).map_err(|_| base_catalog_drift_error())?;
+    if &current_descriptor != descriptor {
+        return Err(base_catalog_drift_error());
+    }
+    Ok(())
+}
+
+fn resolve_catalog_base_source<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    original_catalog_path: Option<&Path>,
+    existing_metadata: Option<&OwnedCatalogMetadata>,
+    force_refresh: bool,
+) -> AppResult<BaseCatalogSource> {
+    let user = original_catalog_path
+        .map(|path| base_catalog_source(app, Some(path)))
+        .transpose()?;
+    if !force_refresh {
+        if let Some(user) = user {
+            let tracks_user = existing_metadata
+                .is_some_and(|metadata| metadata.base_source_fingerprint == user.fingerprint());
+            if existing_metadata.is_none() || tracks_user {
+                return Ok(user);
+            }
+            let bundled = match base_catalog_source(app, None) {
+                Ok(bundled) => bundled,
+                Err(_) => return Ok(user),
+            };
+            let merged_fingerprint =
+                merged_catalog_fingerprint(bundled.fingerprint(), user.fingerprint());
+            if existing_metadata.is_some_and(|metadata| {
+                metadata.base_source_fingerprint == merged_fingerprint
+                    || metadata.base_source_fingerprint == bundled.fingerprint()
+            }) {
+                return Ok(merge_catalog_sources(bundled, user));
+            }
+            return Ok(user);
+        }
+        return base_catalog_source(app, None);
+    }
+
+    let bundled = base_catalog_source(app, None)?;
+    Ok(match user {
+        Some(user) => merge_catalog_sources(bundled, user),
+        None => bundled,
+    })
+}
+
+fn merge_catalog_sources(bundled: BaseCatalogSource, user: BaseCatalogSource) -> BaseCatalogSource {
+    let BaseCatalogSource::User {
+        path,
+        bytes,
+        fingerprint: user_fingerprint,
+    } = user
+    else {
+        return bundled;
+    };
+    let fingerprint = merged_catalog_fingerprint(bundled.fingerprint(), &user_fingerprint);
+    BaseCatalogSource::Merged {
+        bundled: Box::new(bundled),
+        user_path: path,
+        user_bytes: bytes,
+        user_fingerprint,
+        fingerprint,
+    }
+}
+
+fn merged_catalog_fingerprint(bundled_fingerprint: &str, user_fingerprint: &str) -> String {
+    sha256_hex(format!("merged\0{bundled_fingerprint}\0{user_fingerprint}").as_bytes())
+}
+
+fn merge_user_modifications(bundled_bytes: &[u8], user_bytes: &[u8]) -> AppResult<Vec<u8>> {
+    let mut bundled: Value = serde_json::from_slice(bundled_bytes)
+        .map_err(|_| base_catalog_invalid("the installed Codex model catalog is not valid JSON"))?;
+    let user: Value = serde_json::from_slice(user_bytes)
+        .map_err(|_| base_catalog_invalid("the user Codex model catalog is not valid JSON"))?;
+    let bundled_object = bundled.as_object_mut().ok_or_else(|| {
+        base_catalog_invalid("the installed Codex model catalog root must be an object")
+    })?;
+    let user_object = user.as_object().ok_or_else(|| {
+        base_catalog_invalid("the user Codex model catalog root must be an object")
+    })?;
+    for (key, value) in user_object {
+        if key == "models" || key == OWNER_METADATA_KEY || bundled_object.contains_key(key) {
+            continue;
+        }
+        bundled_object.insert(key.clone(), value.clone());
+    }
+
+    let user_models = user_object
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            base_catalog_invalid("the user Codex model catalog must contain a models array")
+        })?;
+    let bundled_models = bundled_object
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            base_catalog_invalid("the installed Codex model catalog must contain a models array")
+        })?;
+    let mut bundled_index = HashMap::with_capacity(bundled_models.len());
+    for (index, model) in bundled_models.iter().enumerate() {
+        if let Some(slug) = model.get("slug").and_then(Value::as_str) {
+            bundled_index.insert(slug.to_string(), index);
+        }
+    }
+    for model in user_models {
+        let Some(user_model) = model.as_object() else {
+            continue;
+        };
+        let Some(slug) = user_model.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        if slug.starts_with("aio/") {
+            continue;
+        }
+        if let Some(index) = bundled_index.get(slug).copied() {
+            let target = bundled_models[index]
+                .as_object_mut()
+                .expect("bundled model index points at an object");
+            for (key, value) in user_model {
+                if !target.contains_key(key) {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+        } else {
+            bundled_index.insert(slug.to_string(), bundled_models.len());
+            bundled_models.push(Value::Object(user_model.clone()));
+        }
+    }
+    serde_json::to_vec(&bundled).map_err(|_| {
+        AppError::new(
+            "SYSTEM_ERROR",
+            "failed to serialize the merged Codex model catalog",
+        )
     })
 }
 
@@ -2255,6 +2505,156 @@ fn catalog_path_string(path: Option<&Path>) -> AppResult<Option<String>> {
         })
     })
     .transpose()
+}
+
+fn classify_fixable_context_rules(
+    base_bytes: &[u8],
+    policy: &ManagedCatalogPolicy,
+) -> AppResult<Vec<CodexManagedCatalogInvalidRule>> {
+    let root: Value = serde_json::from_slice(base_bytes)
+        .map_err(|_| base_catalog_invalid("the base Codex model catalog is not valid JSON"))?;
+    let object = root.as_object().ok_or_else(|| {
+        base_catalog_invalid("the base Codex model catalog root must be an object")
+    })?;
+    if object.contains_key(OWNER_METADATA_KEY) {
+        return Err(base_catalog_invalid(
+            "the base Codex model catalog contains reserved AIO metadata",
+        ));
+    }
+    let models = object
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            base_catalog_invalid("the base Codex model catalog must contain a models array")
+        })?;
+    if models.is_empty() || models.len() > MAX_BASE_MODEL_COUNT {
+        return Err(base_catalog_invalid(
+            "the base Codex model catalog has an invalid model count",
+        ));
+    }
+
+    let mut slugs = HashSet::with_capacity(models.len());
+    for model in models {
+        let model_object = model
+            .as_object()
+            .ok_or_else(|| base_catalog_invalid("every base Codex model must be an object"))?;
+        let slug = model_object
+            .get("slug")
+            .and_then(Value::as_str)
+            .filter(|slug| !slug.is_empty() && slug.len() <= 256)
+            .ok_or_else(|| base_catalog_invalid("every base Codex model must have a valid slug"))?;
+        if !slugs.insert(slug.to_string()) {
+            return Err(base_catalog_invalid(
+                "the base Codex model catalog contains duplicate slugs",
+            ));
+        }
+    }
+
+    let mut invalid_rules = Vec::new();
+    for rule in policy.enabled_rules() {
+        let Some(model) = models.iter().find(|model| {
+            model.get("slug").and_then(Value::as_str) == Some(rule.model_id.as_str())
+        }) else {
+            invalid_rules.push(CodexManagedCatalogInvalidRule {
+                model_id: rule.model_id.clone(),
+                context_window: rule.context_window,
+                code: CodexManagedCatalogInvalidRuleCode::TargetMissing,
+            });
+            continue;
+        };
+        let model_object = model
+            .as_object()
+            .expect("base model objects were validated");
+        let windows_valid = model_object
+            .get("context_window")
+            .and_then(Value::as_u64)
+            .is_some()
+            && model_object
+                .get("max_context_window")
+                .and_then(Value::as_u64)
+                .is_some();
+        if !windows_valid {
+            invalid_rules.push(CodexManagedCatalogInvalidRule {
+                model_id: rule.model_id.clone(),
+                context_window: rule.context_window,
+                code: CodexManagedCatalogInvalidRuleCode::InvalidWindow,
+            });
+        }
+    }
+    Ok(invalid_rules)
+}
+
+fn base_catalog_invalid(message: &'static str) -> AppError {
+    AppError::new("CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID", message)
+}
+
+fn bundled_launch_spec<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<crate::cli_manager::CodexLaunchSpec> {
+    #[cfg(test)]
+    if let Some(launch) = bundled_catalog_override_launch() {
+        return Ok(launch);
+    }
+    crate::cli_manager::codex_launch_spec(app)?.ok_or_else(|| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_CLI_NOT_FOUND",
+            "Codex CLI was not found",
+        )
+    })
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BundledCatalogOverride {
+    launch: crate::cli_manager::CodexLaunchSpec,
+    bytes: Vec<u8>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BUNDLED_CATALOG_OVERRIDE: std::cell::RefCell<Option<BundledCatalogOverride>> =
+        const { std::cell::RefCell::new(None) };
+    static BUNDLED_CATALOG_LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn bundled_catalog_override_launch() -> Option<crate::cli_manager::CodexLaunchSpec> {
+    BUNDLED_CATALOG_OVERRIDE.with(|slot| slot.borrow().as_ref().map(|value| value.launch.clone()))
+}
+
+#[cfg(test)]
+fn bundled_catalog_override_bytes() -> Option<Vec<u8>> {
+    BUNDLED_CATALOG_OVERRIDE.with(|slot| slot.borrow().as_ref().map(|value| value.bytes.clone()))
+}
+
+#[cfg(test)]
+fn record_bundled_catalog_load() {
+    BUNDLED_CATALOG_LOADS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+pub(crate) fn set_bundled_catalog_override_for_test(
+    launch: crate::cli_manager::CodexLaunchSpec,
+    bytes: Vec<u8>,
+) {
+    BUNDLED_CATALOG_OVERRIDE.with(|slot| {
+        slot.replace(Some(BundledCatalogOverride { launch, bytes }));
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn clear_bundled_catalog_override_for_test() {
+    BUNDLED_CATALOG_OVERRIDE.with(|slot| slot.replace(None));
+}
+
+#[cfg(test)]
+pub(crate) fn reset_bundled_catalog_loads_for_test() {
+    BUNDLED_CATALOG_LOADS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn bundled_catalog_loads_for_test() -> usize {
+    BUNDLED_CATALOG_LOADS.with(std::cell::Cell::get)
 }
 
 fn generate_catalog(

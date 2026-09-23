@@ -13,6 +13,7 @@ import {
   cliManagerCodexInfoGet,
   cliManagerCodexModelCatalogGet,
   cliManagerCodexModelContextCandidatesGet,
+  cliManagerCodexManagedCatalogUpgrade,
   cliManagerGeminiConfigGet,
   cliManagerGeminiConfigSet,
   cliManagerGeminiInfoGet,
@@ -29,13 +30,15 @@ import {
   type CodexConfigState,
   type CodexModelCatalogState,
   type CodexModelContextCandidatesState,
+  type CodexManagedCatalogUpgradeRequest,
+  type CodexManagedCatalogUpgradeResult,
   type GeminiConfigPatch,
   type GeminiConfigState,
   type GrokConfigState,
   type GrokProxyPreferences,
   type SimpleCliInfo,
 } from "../services/cli/cliManager";
-import { CODEX_CONFIG_MUTATION_SCOPE, cliManagerKeys, cliProxyKeys } from "./keys";
+import { CODEX_CONFIG_MUTATION_SCOPE, cliManagerKeys, cliProxyKeys, settingsKeys } from "./keys";
 
 const CODEX_MODEL_CATALOG_STALE_TIME = 5 * 60 * 1000;
 
@@ -274,6 +277,28 @@ export function useCliManagerCodexConfigTomlSetMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
+    },
+  });
+}
+
+export function useCliManagerCodexManagedCatalogUpgradeMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    scope: CODEX_CONFIG_MUTATION_SCOPE,
+    mutationFn: (request: CodexManagedCatalogUpgradeRequest) =>
+      cliManagerCodexManagedCatalogUpgrade(request),
+    onSuccess: (result: CodexManagedCatalogUpgradeResult) => {
+      if (!result.settings) return;
+      queryClient.setQueryData(settingsKeys.get(), result.settings);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: settingsKeys.get() });
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelCatalogAll() });
+      queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelContextCandidatesAll() });
       queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });

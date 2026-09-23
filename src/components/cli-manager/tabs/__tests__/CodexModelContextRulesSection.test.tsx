@@ -257,4 +257,26 @@ describe("CodexModelContextRulesSection", () => {
     expect(screen.queryByDisplayValue("stale-draft")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("规则已更新");
   });
+
+  it("offers a forced catalog upgrade and confirms the full invalid rule set", () => {
+    const onUpgradeCatalog = vi.fn();
+    const onDisableInvalidCatalogRules = vi.fn();
+    renderSection({
+      catalogUpgradeAvailable: true,
+      onUpgradeCatalog,
+      onDisableInvalidCatalogRules,
+      catalogUpgradeBlockedRules: [
+        { model_id: "removed-model", context_window: 372000, code: "target_missing" },
+        { model_id: "broken-model", context_window: 180000, code: "invalid_window" },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "升级受管模型目录" }));
+    expect(onUpgradeCatalog).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("removed-model：基础目录里没有这个模型")).toBeInTheDocument();
+    expect(screen.getByText("broken-model：上下文字段无效")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "禁用无效规则并升级" }));
+    expect(onDisableInvalidCatalogRules).toHaveBeenCalledTimes(1);
+  });
 });
