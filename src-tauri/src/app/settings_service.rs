@@ -1663,7 +1663,7 @@ pub(crate) enum CodexManagedCatalogUpgradeMode {
 #[derive(Debug)]
 pub(crate) enum CodexManagedCatalogUpgradeOutcome {
     Inactive,
-    Applied(SettingsView),
+    Applied(Box<SettingsView>),
     Blocked(Vec<crate::codex_model_catalog::managed::CodexManagedCatalogInvalidRule>),
 }
 
@@ -1695,11 +1695,11 @@ pub(crate) fn codex_managed_catalog_upgrade_sync<R: tauri::Runtime>(
                     Ok(CodexManagedCatalogUpgradeOutcome::Blocked(rules))
                 }
                 crate::codex_model_catalog::managed::ForcedCatalogPlan::Ready(plan) => {
-                    plan.apply(app)?;
+                    (*plan).apply(app)?;
                     let canonical = settings::read(app)?;
-                    Ok(CodexManagedCatalogUpgradeOutcome::Applied(
+                    Ok(CodexManagedCatalogUpgradeOutcome::Applied(Box::new(
                         SettingsView::from(&canonical),
-                    ))
+                    )))
                 }
             }
         }
@@ -1747,9 +1747,11 @@ pub(crate) fn codex_managed_catalog_upgrade_sync<R: tauri::Runtime>(
             let canonical = commit_prepared_codex_model_context_rules(
                 app,
                 next_policy.model_context_rules,
-                plan,
+                *plan,
             )?;
-            Ok(CodexManagedCatalogUpgradeOutcome::Applied(canonical))
+            Ok(CodexManagedCatalogUpgradeOutcome::Applied(Box::new(
+                canonical,
+            )))
         }
     }
 }

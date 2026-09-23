@@ -114,7 +114,7 @@ pub(crate) async fn cli_manager_codex_managed_catalog_upgrade(
             crate::app::settings_service::CodexManagedCatalogUpgradeOutcome::Applied(settings) => {
                 CodexManagedCatalogUpgradeResult {
                     status: CodexManagedCatalogUpgradeStatus::Applied,
-                    settings: Some(settings),
+                    settings: Some(*settings),
                     invalid_rules: Vec::new(),
                 }
             }

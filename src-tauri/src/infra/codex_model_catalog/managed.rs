@@ -100,7 +100,7 @@ pub struct CodexManagedCatalogInvalidRule {
 
 pub(crate) enum ForcedCatalogPlan {
     Blocked(Vec<CodexManagedCatalogInvalidRule>),
-    Ready(ManagedCatalogPlan),
+    Ready(Box<ManagedCatalogPlan>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1063,7 +1063,7 @@ pub(crate) fn prepare_forced_catalog_upgrade<R: tauri::Runtime>(
 
 fn expect_ready_catalog_plan(outcome: PrepareOutcome) -> AppResult<ManagedCatalogPlan> {
     match outcome {
-        PrepareOutcome::Ready(plan) => Ok(plan),
+        PrepareOutcome::Ready(plan) => Ok(*plan),
         PrepareOutcome::Blocked(_) => Err(AppError::new(
             "SYSTEM_ERROR",
             "catalog reconciliation blocked without a forced upgrade",
@@ -1072,7 +1072,7 @@ fn expect_ready_catalog_plan(outcome: PrepareOutcome) -> AppResult<ManagedCatalo
 }
 
 enum PrepareOutcome {
-    Ready(ManagedCatalogPlan),
+    Ready(Box<ManagedCatalogPlan>),
     Blocked(Vec<CodexManagedCatalogInvalidRule>),
 }
 
@@ -1204,7 +1204,7 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
     let ownership_after =
         catalog_ownership_after_baseline_change(&ownership, baseline_backup.as_ref())?;
 
-    Ok(PrepareOutcome::Ready(ManagedCatalogPlan {
+    Ok(PrepareOutcome::Ready(Box::new(ManagedCatalogPlan {
         change: PreparedCatalogChange {
             ownership,
             ownership_after,
@@ -1218,7 +1218,7 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
             generated_after,
             expected_owner,
         },
-    }))
+    })))
 }
 
 fn prepare_catalog_context<R: tauri::Runtime>(
