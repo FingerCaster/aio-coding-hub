@@ -1294,20 +1294,24 @@ mod tests {
         assert_eq!(refreshed.balance, None);
 
         release_fetch.notify_one();
-        for _ in 0..100 {
-            let in_flight = state
-                .shared
-                .inner
-                .lock()
-                .await
-                .entries
-                .get(&target.provider_id)
-                .is_some_and(|entry| entry.in_flight_generation.is_some());
-            if !in_flight {
-                break;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let in_flight = state
+                    .shared
+                    .inner
+                    .lock()
+                    .await
+                    .entries
+                    .get(&target.provider_id)
+                    .is_some_and(|entry| entry.in_flight_generation.is_some());
+                if !in_flight {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("in-flight generation should clear after the old fetch finishes");
         let entry = state.shared.inner.lock().await;
         let entry = entry
             .entries
