@@ -583,44 +583,6 @@ fn move_model_provider_base_before_nested(lines: &mut Vec<String>, provider_key:
     lines.splice(nested_start..nested_start, block);
 }
 
-/// Upsert a root-level `key = "value"` line before any `[table]` header.
-/// If `trailing_blank` is true and the inserted line is followed by a non-blank
-/// line, an empty separator line is added after it.
-fn upsert_root_toml_key(lines: &mut Vec<String>, key: &str, value: &str, trailing_blank: bool) {
-    let first_table = lines
-        .iter()
-        .position(|l| l.trim().starts_with('['))
-        .unwrap_or(lines.len());
-
-    if let Some(line) = lines
-        .iter_mut()
-        .take(first_table)
-        .find(|line| line.trim_start().starts_with(key))
-    {
-        *line = format!("{key} = \"{value}\"");
-        return;
-    }
-
-    let mut insert_at = 0;
-    while insert_at < first_table {
-        let trimmed = lines[insert_at].trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            insert_at += 1;
-            continue;
-        }
-        break;
-    }
-
-    lines.insert(insert_at, format!("{key} = \"{value}\""));
-    if trailing_blank && insert_at + 1 < lines.len() && !lines[insert_at + 1].trim().is_empty() {
-        lines.insert(insert_at + 1, String::new());
-    }
-}
-
-pub(super) fn upsert_root_preferred_auth_method(lines: &mut Vec<String>, value: &str) {
-    upsert_root_toml_key(lines, "preferred_auth_method", value, false);
-}
-
 pub(super) fn remove_root_preferred_auth_method_if_api_key(lines: &mut Vec<String>) {
     let first_table = lines
         .iter()
@@ -747,10 +709,12 @@ fn build_codex_config_toml_with_auth_strategy(
     };
     move_model_provider_base_before_nested(&mut lines, provider_key.as_str());
 
+    // OAuth-compatible mode strips an AIO-owned apikey preference. Normal mode
+    // must not invent one: Provider name and other route reprojections rebuild
+    // live config from the user baseline, and a baseline without this key used
+    // to get `preferred_auth_method = "apikey"` written back.
     if oauth_compatible {
         remove_root_preferred_auth_method_if_api_key(&mut lines);
-    } else {
-        upsert_root_preferred_auth_method(&mut lines, "apikey");
     }
     if platform == CodexConfigPlatform::Windows {
         upsert_windows_sandbox(&mut lines);

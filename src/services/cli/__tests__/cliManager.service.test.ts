@@ -99,9 +99,8 @@ function makeCodexConfigState(overrides: Partial<CodexConfigState> = {}): CodexC
     features_apply_patch_freeform: null,
     features_shell_tool: null,
     features_exec_policy: null,
-    features_remote_compaction: null,
+    model_provider: "aio",
     features_fast_mode: null,
-    features_responses_websockets_v2: null,
     features_multi_agent: null,
     ...overrides,
   };
@@ -395,9 +394,9 @@ describe("services/cli/cliManager", () => {
     );
 
     vi.mocked(commands.cliManagerCodexConfigSet).mockClear();
-    await cliManagerCodexConfigSet({ features_remote_compaction: true }, { syncHistory: true });
+    await cliManagerCodexConfigSet({ model_provider: "OpenAI" }, { syncHistory: true });
     expect(commands.cliManagerCodexConfigSet).toHaveBeenCalledWith(
-      expect.objectContaining({ features_remote_compaction: true }),
+      expect.objectContaining({ model_provider: "OpenAI" }),
       true
     );
 

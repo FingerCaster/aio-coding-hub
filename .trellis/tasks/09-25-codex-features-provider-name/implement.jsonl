@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "Codex config 跨层修改前的检查清单。"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "当前仍把 remote_compaction 当作 provider 身份来源，实现时要改成 Provider name 契约。"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "provider 身份收敛必须继续复用 provider_projection，不能在 UI 或 patch 里复制规则。"}
+{"file": ".trellis/tasks/09-25-codex-features-provider-name/research/codex-feature-registry.md", "reason": "OpenAI Codex 当前 feature stage 与 fast_mode/service_tier 独立性的证据。"}

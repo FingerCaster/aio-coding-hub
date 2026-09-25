@@ -151,9 +151,8 @@ describe("cli-manager tabs (coverage)", () => {
             features_apply_patch_freeform: true,
             features_shell_tool: true,
             features_exec_policy: true,
-            features_remote_compaction: true,
+            model_provider: "OpenAI",
             features_fast_mode: true,
-            features_responses_websockets_v2: true,
             features_multi_agent: true,
           }}
           codexConfigToml={{

@@ -55,9 +55,8 @@ function makeConfig(overrides: Partial<CodexConfigState> = {}): CodexConfigState
     features_apply_patch_freeform: false,
     features_shell_tool: false,
     features_exec_policy: false,
-    features_remote_compaction: false,
+    model_provider: "aio",
     features_fast_mode: false,
-    features_responses_websockets_v2: false,
     features_multi_agent: null,
     ...overrides,
   };

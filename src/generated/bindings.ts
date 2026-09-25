@@ -2975,15 +2975,14 @@ export type CodexConfigPatch = {
   model_context_window?: number | null;
   model_auto_compact_token_limit?: number | null;
   service_tier: string | null;
+  model_provider?: string | null;
   sandbox_workspace_write_network_access: boolean | null;
   features_unified_exec: boolean | null;
   features_shell_snapshot: boolean | null;
   features_apply_patch_freeform: boolean | null;
   features_shell_tool: boolean | null;
   features_exec_policy: boolean | null;
-  features_remote_compaction: boolean | null;
   features_fast_mode: boolean | null;
-  features_responses_websockets_v2: boolean | null;
   features_multi_agent: boolean | null;
 };
 export type CodexConfigState = {
@@ -3006,15 +3005,14 @@ export type CodexConfigState = {
   model_context_window: number | null;
   model_auto_compact_token_limit: number | null;
   service_tier: string | null;
+  model_provider: string;
   sandbox_workspace_write_network_access: boolean | null;
   features_unified_exec: boolean | null;
   features_shell_snapshot: boolean | null;
   features_apply_patch_freeform: boolean | null;
   features_shell_tool: boolean | null;
   features_exec_policy: boolean | null;
-  features_remote_compaction: boolean | null;
   features_fast_mode: boolean | null;
-  features_responses_websockets_v2: boolean | null;
   features_multi_agent: boolean | null;
 };
 export type CodexConfigTomlState = { config_path: string; exists: boolean; toml: string };

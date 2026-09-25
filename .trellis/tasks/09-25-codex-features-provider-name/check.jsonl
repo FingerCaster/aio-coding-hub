@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "检查 Rust、绑定、前端适配和 UI 是否一起更新。"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "核对身份来源、history sync 和 raw/结构化保存边界没有回归。"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "确认没有第二套 provider key 判断。"}
+{"file": ".trellis/tasks/09-25-codex-features-provider-name/research/codex-feature-registry.md", "reason": "核对删除和保留的 feature 与 Codex registry 一致。"}

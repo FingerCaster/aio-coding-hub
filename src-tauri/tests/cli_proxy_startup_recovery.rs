@@ -139,8 +139,8 @@ fn codex_config_updates_are_preserved_when_cli_proxy_enabled() {
     let _ = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
         &handle,
         serde_json::json!({
-            "features_responses_websockets_v2": true,
-            "features_remote_compaction": true
+            "features_fast_mode": true,
+            "model_provider": "OpenAI"
         }),
     )
     .expect("set codex features");
@@ -149,11 +149,11 @@ fn codex_config_updates_are_preserved_when_cli_proxy_enabled() {
         aio_coding_hub_lib::test_support::codex_config_toml_path(&handle).expect("codex path");
     let before_restore = read_text(&config_path);
     assert!(
-        before_restore.contains("responses_websockets_v2 = true"),
+        before_restore.contains("fast_mode = true"),
         "{before_restore}"
     );
     assert!(
-        before_restore.contains("remote_compaction = true"),
+        before_restore.contains("model_provider = \"OpenAI\""),
         "{before_restore}"
     );
 
@@ -183,11 +183,11 @@ fn codex_config_updates_are_preserved_when_cli_proxy_enabled() {
 
     let after_restore = read_text(&config_path);
     assert!(
-        after_restore.contains("responses_websockets_v2 = true"),
+        after_restore.contains("fast_mode = true"),
         "{after_restore}"
     );
     assert!(
-        after_restore.contains("remote_compaction = true"),
+        after_restore.contains("model_provider = \"OpenAI\""),
         "{after_restore}"
     );
 }
@@ -248,7 +248,7 @@ fn codex_config_update_fails_when_cli_proxy_backup_cannot_refresh() {
     let err = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
         &handle,
         serde_json::json!({
-            "features_remote_compaction": true
+            "model_provider": "OpenAI"
         }),
     )
     .expect_err("backup refresh failure should fail config update");
@@ -316,7 +316,7 @@ fn codex_config_update_rejects_unsafe_cli_proxy_backup_rel() {
     let err = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
         &handle,
         serde_json::json!({
-            "features_remote_compaction": true
+            "model_provider": "OpenAI"
         }),
     )
     .expect_err("unsafe backup_rel should fail");
@@ -387,7 +387,7 @@ fn codex_config_update_rejects_symlinked_cli_proxy_backup_parent() {
     let err = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
         &handle,
         serde_json::json!({
-            "features_remote_compaction": true
+            "model_provider": "OpenAI"
         }),
     )
     .expect_err("symlinked backup parent should fail");
@@ -526,7 +526,7 @@ fn codex_config_update_restores_manifest_when_backup_snapshot_fails() {
     let err = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
         &handle,
         serde_json::json!({
-            "features_remote_compaction": true
+            "model_provider": "OpenAI"
         }),
     )
     .expect_err("backup snapshot failure should fail config update");

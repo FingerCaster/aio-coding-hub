@@ -186,9 +186,8 @@ function makeCodexConfigState(overrides: Partial<CodexConfigState> = {}): CodexC
     features_apply_patch_freeform: null,
     features_shell_tool: null,
     features_exec_policy: null,
-    features_remote_compaction: null,
+    model_provider: "aio",
     features_fast_mode: null,
-    features_responses_websockets_v2: null,
     features_multi_agent: null,
     ...overrides,
   };
@@ -684,13 +683,13 @@ describe("query/cliManager", () => {
 
     await act(async () => {
       await result.current.mutateAsync({
-        patch: { features_remote_compaction: true },
+        patch: { model_provider: "OpenAI" },
         syncHistory: true,
       });
     });
 
     expect(cliManagerCodexConfigSet).toHaveBeenCalledWith(
-      { features_remote_compaction: true },
+      { model_provider: "OpenAI" },
       { syncHistory: true }
     );
   });

@@ -28,6 +28,14 @@ impl CodexManagedProviderKey {
     }
 }
 
+pub(crate) fn parse_managed_provider_key(value: &str) -> AppResult<CodexManagedProviderKey> {
+    match value {
+        AIO_PROVIDER_KEY => Ok(CodexManagedProviderKey::Aio),
+        OPENAI_PROVIDER_KEY => Ok(CodexManagedProviderKey::OpenAi),
+        _ => Err("SEC_INVALID_INPUT: model_provider must be OpenAI or aio".into()),
+    }
+}
+
 pub(crate) fn desired_provider_key_from_config(
     config: &[u8],
 ) -> AppResult<CodexManagedProviderKey> {
@@ -42,6 +50,14 @@ pub(crate) fn reconcile_provider_identity(
 ) -> AppResult<Vec<u8>> {
     let mut doc = parse_document(config)?;
     reconcile_document_provider_identity(&mut doc, desired, expected_base_url)?;
+    Ok(document_bytes(doc))
+}
+
+pub(crate) fn clear_legacy_remote_compaction(config: &[u8]) -> AppResult<Vec<u8>> {
+    let mut doc = parse_document(config)?;
+    if let Some(features) = doc.get_mut("features").and_then(Item::as_table_like_mut) {
+        features.remove("remote_compaction");
+    }
     Ok(document_bytes(doc))
 }
 
@@ -200,13 +216,19 @@ fn parse_document(config: &[u8]) -> AppResult<DocumentMut> {
 }
 
 fn desired_provider_key_from_document(doc: &DocumentMut) -> CodexManagedProviderKey {
-    if doc
+    if let Some(enabled) = doc
         .get("features")
         .and_then(Item::as_table_like)
         .and_then(|features| features.get("remote_compaction"))
         .and_then(Item::as_bool)
-        == Some(true)
     {
+        return if enabled {
+            CodexManagedProviderKey::OpenAi
+        } else {
+            CodexManagedProviderKey::Aio
+        };
+    }
+    if doc.get("model_provider").and_then(Item::as_str) == Some(OPENAI_PROVIDER_KEY) {
         CodexManagedProviderKey::OpenAi
     } else {
         CodexManagedProviderKey::Aio
@@ -707,10 +729,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn desired_key_uses_only_exact_features_boolean() {
+    fn desired_key_keeps_exact_legacy_flag_ahead_of_model_provider() {
         assert_eq!(
             desired_provider_key_from_config(b"[features]\nremote_compaction = true\n").unwrap(),
             CodexManagedProviderKey::OpenAi
+        );
+        assert_eq!(
+            desired_provider_key_from_config(
+                b"model_provider = \"OpenAI\"\n[features]\nremote_compaction = false\n"
+            )
+            .unwrap(),
+            CodexManagedProviderKey::Aio
+        );
+        assert_eq!(
+            desired_provider_key_from_config(b"model_provider = \"OpenAI\"\n").unwrap(),
+            CodexManagedProviderKey::OpenAi
+        );
+        assert_eq!(
+            desired_provider_key_from_config(b"model_provider = \"custom\"\n").unwrap(),
+            CodexManagedProviderKey::Aio
         );
         assert_eq!(
             desired_provider_key_from_config(
@@ -719,6 +756,17 @@ mod tests {
             .unwrap(),
             CodexManagedProviderKey::Aio
         );
+    }
+
+    #[test]
+    fn clear_legacy_remote_compaction_removes_only_that_key() {
+        let output = clear_legacy_remote_compaction(
+            b"[features]\nremote_compaction = true\nfast_mode = true\n",
+        )
+        .unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(!text.contains("remote_compaction"), "{text}");
+        assert!(text.contains("fast_mode = true"), "{text}");
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub struct CodexConfigState {
     pub model_context_window: Option<u64>,
     pub model_auto_compact_token_limit: Option<u64>,
     pub service_tier: Option<String>,
+    pub model_provider: String,
 
     pub sandbox_workspace_write_network_access: Option<bool>,
 
@@ -32,9 +33,7 @@ pub struct CodexConfigState {
     pub features_apply_patch_freeform: Option<bool>,
     pub features_shell_tool: Option<bool>,
     pub features_exec_policy: Option<bool>,
-    pub features_remote_compaction: Option<bool>,
     pub features_fast_mode: Option<bool>,
-    pub features_responses_websockets_v2: Option<bool>,
     pub features_multi_agent: Option<bool>,
 }
 
@@ -64,6 +63,8 @@ pub struct CodexConfigPatch {
     #[serde(default, deserialize_with = "deserialize_nullable_u64_patch")]
     pub model_auto_compact_token_limit: Option<Option<u64>>,
     pub service_tier: Option<String>,
+    #[serde(default)]
+    pub model_provider: Option<String>,
 
     pub sandbox_workspace_write_network_access: Option<bool>,
 
@@ -72,9 +73,7 @@ pub struct CodexConfigPatch {
     pub features_apply_patch_freeform: Option<bool>,
     pub features_shell_tool: Option<bool>,
     pub features_exec_policy: Option<bool>,
-    pub features_remote_compaction: Option<bool>,
     pub features_fast_mode: Option<bool>,
-    pub features_responses_websockets_v2: Option<bool>,
     pub features_multi_agent: Option<bool>,
 }
 

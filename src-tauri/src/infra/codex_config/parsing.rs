@@ -243,6 +243,7 @@ pub(super) fn make_state_from_bytes(
         model_context_window: None,
         model_auto_compact_token_limit: None,
         service_tier: None,
+        model_provider: super::provider_projection::AIO_PROVIDER_KEY.to_string(),
 
         sandbox_workspace_write_network_access: None,
 
@@ -251,9 +252,7 @@ pub(super) fn make_state_from_bytes(
         features_apply_patch_freeform: None,
         features_shell_tool: None,
         features_exec_policy: None,
-        features_remote_compaction: None,
         features_fast_mode: None,
-        features_responses_websockets_v2: None,
         features_multi_agent: None,
     };
 
@@ -348,19 +347,17 @@ pub(super) fn make_state_from_bytes(
             }
             ("features", "shell_tool") => state.features_shell_tool = parse_bool(&raw_value),
             ("features", "exec_policy") => state.features_exec_policy = parse_bool(&raw_value),
-            ("features", "remote_compaction") => {
-                state.features_remote_compaction = parse_bool(&raw_value)
-            }
             ("features", "fast_mode") => state.features_fast_mode = parse_bool(&raw_value),
-            ("features", "responses_websockets_v2") => {
-                state.features_responses_websockets_v2 = parse_bool(&raw_value)
-            }
             ("features", "multi_agent") => state.features_multi_agent = parse_bool(&raw_value),
 
             _ => {}
         }
 
         update_multiline_string_state(raw_line, &mut in_multiline_double, &mut in_multiline_single);
+    }
+
+    if let Ok(key) = super::provider_projection::desired_provider_key_from_config(s.as_bytes()) {
+        state.model_provider = key.as_str().to_string();
     }
 
     Ok(state)

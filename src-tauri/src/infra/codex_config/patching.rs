@@ -317,16 +317,14 @@ enum TableStyle {
     Dotted,
 }
 
-pub(super) const FEATURES_KEY_ORDER: [&str; 9] = [
+pub(super) const FEATURES_KEY_ORDER: [&str; 7] = [
     // Keep a stable persisted order for feature flags in config.toml.
     "shell_snapshot",
     "unified_exec",
     "shell_tool",
     "exec_policy",
     "apply_patch_freeform",
-    "remote_compaction",
     "fast_mode",
-    "responses_websockets_v2",
     "multi_agent",
 ];
 
@@ -565,7 +563,12 @@ pub(super) fn patch_config_toml(
     current: Option<Vec<u8>>,
     patch: CodexConfigPatch,
 ) -> crate::shared::error::AppResult<Vec<u8>> {
-    let remote_compaction = patch.features_remote_compaction;
+    let managed_provider = match patch.model_provider.as_deref() {
+        Some(value) => Some(super::provider_projection::parse_managed_provider_key(
+            value,
+        )?),
+        None => None,
+    };
     validate_enum_or_empty(
         "approval_policy",
         patch.approval_policy.as_deref().unwrap_or(""),
@@ -725,9 +728,7 @@ pub(super) fn patch_config_toml(
         || patch.features_apply_patch_freeform.is_some()
         || patch.features_shell_tool.is_some()
         || patch.features_exec_policy.is_some()
-        || patch.features_remote_compaction.is_some()
         || patch.features_fast_mode.is_some()
-        || patch.features_responses_websockets_v2.is_some()
         || patch.features_multi_agent.is_some();
 
     if has_any_feature_patch {
@@ -750,14 +751,8 @@ pub(super) fn patch_config_toml(
         if let Some(v) = patch.features_exec_policy {
             items.push(("exec_policy", Some(v.to_string())));
         }
-        if let Some(v) = patch.features_remote_compaction {
-            items.push(("remote_compaction", Some(v.to_string())));
-        }
         if let Some(v) = patch.features_fast_mode {
             items.push(("fast_mode", Some(v.to_string())));
-        }
-        if let Some(v) = patch.features_responses_websockets_v2 {
-            items.push(("responses_websockets_v2", Some(v.to_string())));
         }
         if let Some(v) = patch.features_multi_agent {
             items.push(("multi_agent", Some(v.to_string())));
@@ -774,18 +769,10 @@ pub(super) fn patch_config_toml(
 
     let mut out = lines.join("\n");
     out.push('\n');
-    let out = out.into_bytes();
-    match remote_compaction {
-        Some(true) => super::provider_projection::reconcile_provider_identity(
-            &out,
-            super::provider_projection::CodexManagedProviderKey::OpenAi,
-            None,
-        ),
-        Some(false) => super::provider_projection::reconcile_provider_identity(
-            &out,
-            super::provider_projection::CodexManagedProviderKey::Aio,
-            None,
-        ),
-        None => Ok(out),
+    let mut out = out.into_bytes();
+    if let Some(desired) = managed_provider {
+        out = super::provider_projection::reconcile_provider_identity(&out, desired, None)?;
+        out = super::provider_projection::clear_legacy_remote_compaction(&out)?;
     }
+    Ok(out)
 }

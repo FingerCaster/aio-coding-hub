@@ -13,15 +13,14 @@ fn empty_patch() -> CodexConfigPatch {
         model_context_window: None,
         model_auto_compact_token_limit: None,
         service_tier: None,
+        model_provider: None,
         sandbox_workspace_write_network_access: None,
         features_unified_exec: None,
         features_shell_snapshot: None,
         features_apply_patch_freeform: None,
         features_shell_tool: None,
         features_exec_policy: None,
-        features_remote_compaction: None,
         features_fast_mode: None,
-        features_responses_websockets_v2: None,
         features_multi_agent: None,
     }
 }
@@ -167,8 +166,9 @@ shell_tool = false
 }
 
 #[test]
-fn patch_writes_fast_mode_and_service_tier_when_enabled() {
+fn patch_writes_fast_mode_without_service_tier() {
     let input = r#"model = "gpt-5"
+service_tier = "flex"
 
 [features]
 shell_tool = true
@@ -177,7 +177,6 @@ shell_tool = true
     let out = patch_config_toml(
         Some(input.as_bytes().to_vec()),
         CodexConfigPatch {
-            service_tier: Some("fast".to_string()),
             features_fast_mode: Some(true),
             ..empty_patch()
         },
@@ -185,7 +184,7 @@ shell_tool = true
     .expect("patch_config_toml");
 
     let s = String::from_utf8(out).expect("utf8");
-    assert!(s.contains("service_tier = \"fast\""), "{s}");
+    assert!(s.contains("service_tier = \"flex\""), "{s}");
     assert!(s.contains("shell_tool = true"), "{s}");
     assert!(s.contains("fast_mode = true"), "{s}");
 }
@@ -266,8 +265,8 @@ fn patch_accepts_future_model_reasoning_effort_values() {
 }
 
 #[test]
-fn patch_deletes_fast_mode_and_service_tier_when_disabled() {
-    let input = r#"service_tier = "fast"
+fn patch_disables_fast_mode_without_clearing_service_tier() {
+    let input = r#"service_tier = "flex"
 
 [features]
 fast_mode = true
@@ -276,7 +275,6 @@ fast_mode = true
     let out = patch_config_toml(
         Some(input.as_bytes().to_vec()),
         CodexConfigPatch {
-            service_tier: Some(String::new()),
             features_fast_mode: Some(false),
             ..empty_patch()
         },
@@ -284,17 +282,16 @@ fast_mode = true
     .expect("patch_config_toml");
 
     let s = String::from_utf8(out).expect("utf8");
-    assert!(!s.contains("service_tier ="), "{s}");
+    assert!(s.contains("service_tier = \"flex\""), "{s}");
     assert!(s.contains("fast_mode = false"), "{s}");
 }
 
 #[test]
-fn patch_writes_personality_and_websocket_feature() {
+fn patch_writes_personality() {
     let out = patch_config_toml(
         None,
         CodexConfigPatch {
             personality: Some("pragmatic".to_string()),
-            features_responses_websockets_v2: Some(true),
             ..empty_patch()
         },
     )
@@ -302,12 +299,10 @@ fn patch_writes_personality_and_websocket_feature() {
 
     let s = String::from_utf8(out).expect("utf8");
     assert!(s.contains("personality = \"pragmatic\""), "{s}");
-    assert!(s.contains("[features]"), "{s}");
-    assert!(s.contains("responses_websockets_v2 = true"), "{s}");
 }
 
 #[test]
-fn patch_deletes_personality_and_websocket_feature_when_disabled() {
+fn patch_deletes_personality_when_cleared() {
     let input = r#"personality = "friendly"
 
 [features]
@@ -318,7 +313,6 @@ responses_websockets_v2 = true
         Some(input.as_bytes().to_vec()),
         CodexConfigPatch {
             personality: Some(String::new()),
-            features_responses_websockets_v2: Some(false),
             ..empty_patch()
         },
     )
@@ -326,7 +320,7 @@ responses_websockets_v2 = true
 
     let s = String::from_utf8(out).expect("utf8");
     assert!(!s.contains("personality ="), "{s}");
-    assert!(s.contains("responses_websockets_v2 = false"), "{s}");
+    assert!(s.contains("responses_websockets_v2 = true"), "{s}");
 }
 
 #[test]
@@ -339,7 +333,7 @@ remote_compaction = true
     let out = patch_config_toml(
         Some(input.as_bytes().to_vec()),
         CodexConfigPatch {
-            features_remote_compaction: Some(true),
+            features_fast_mode: Some(true),
             ..empty_patch()
         },
     )
@@ -711,17 +705,17 @@ fast_mode = true
 }
 
 #[test]
-fn parse_reads_personality_and_websocket_feature() {
-    let input = r#"personality = "friendly"
+fn parse_effective_provider_follows_legacy_flag_then_root() {
+    let legacy =
+        make_test_state("model_provider = \"OpenAI\"\n\n[features]\nremote_compaction = false\n")
+            .expect("legacy flag");
+    assert_eq!(legacy.model_provider, "aio");
 
-[features]
-responses_websockets_v2 = true
-"#;
+    let root = make_test_state("model_provider = \"OpenAI\"\n").expect("root provider");
+    assert_eq!(root.model_provider, "OpenAI");
 
-    let state = make_test_state(input).expect("make_test_state");
-
-    assert_eq!(state.personality.as_deref(), Some("friendly"));
-    assert_eq!(state.features_responses_websockets_v2, Some(true));
+    let absent = make_test_state("model = \"gpt-5\"\n").expect("absent provider");
+    assert_eq!(absent.model_provider, "aio");
 }
 
 #[test]
@@ -795,7 +789,7 @@ fn patch_updates_sandbox_dotted_mode_when_present() {
 }
 
 #[test]
-fn patch_remote_compaction_enabled_renames_provider_table_to_openai() {
+fn patch_provider_name_renames_aio_table_to_openai() {
     let input = r#"model_provider = "aio"
 
 [model_providers.aio]
@@ -807,7 +801,7 @@ wire_api = "responses"
     let out = patch_config_toml(
         Some(input.as_bytes().to_vec()),
         CodexConfigPatch {
-            features_remote_compaction: Some(true),
+            model_provider: Some("OpenAI".to_string()),
             ..empty_patch()
         },
     )
@@ -818,12 +812,11 @@ wire_api = "responses"
     assert!(s.contains("[model_providers.OpenAI]"), "{s}");
     assert!(s.contains("name = \"OpenAI\""), "{s}");
     assert!(!s.contains("[model_providers.aio]"), "{s}");
-    assert!(s.contains("[features]"), "{s}");
-    assert!(s.contains("remote_compaction = true"), "{s}");
+    assert!(!s.contains("remote_compaction"), "{s}");
 }
 
 #[test]
-fn patch_remote_compaction_disabled_reverts_provider_table_to_aio() {
+fn patch_provider_name_reverts_openai_table_to_aio_and_drops_legacy_flag() {
     let input = r#"model_provider = "OpenAI"
 
 [model_providers.OpenAI]
@@ -838,7 +831,7 @@ remote_compaction = true
     let out = patch_config_toml(
         Some(input.as_bytes().to_vec()),
         CodexConfigPatch {
-            features_remote_compaction: Some(false),
+            model_provider: Some("aio".to_string()),
             ..empty_patch()
         },
     )
@@ -849,11 +842,11 @@ remote_compaction = true
     assert!(s.contains("[model_providers.aio]"), "{s}");
     assert!(s.contains("name = \"aio\""), "{s}");
     assert!(!s.contains("[model_providers.OpenAI]"), "{s}");
-    assert!(s.contains("remote_compaction = false"), "{s}");
+    assert!(!s.contains("remote_compaction"), "{s}");
 }
 
 #[test]
-fn patch_remote_compaction_enabled_creates_model_provider_and_renames_table() {
+fn patch_provider_name_creates_model_provider_and_renames_table() {
     let input = r#"[model_providers.aio]
 name = "aio"
 base_url = "http://127.0.0.1:37124/v1"
@@ -862,7 +855,7 @@ base_url = "http://127.0.0.1:37124/v1"
     let out = patch_config_toml(
         Some(input.as_bytes().to_vec()),
         CodexConfigPatch {
-            features_remote_compaction: Some(true),
+            model_provider: Some("OpenAI".to_string()),
             ..empty_patch()
         },
     )
@@ -873,6 +866,22 @@ base_url = "http://127.0.0.1:37124/v1"
     assert!(s.contains("[model_providers.OpenAI]"), "{s}");
     assert!(s.contains("name = \"OpenAI\""), "{s}");
     assert!(!s.contains("[model_providers.aio]"), "{s}");
+}
+
+#[test]
+fn patch_rejects_custom_provider_name_before_rewrite() {
+    let input = "model_provider = \"aio\"\n";
+    let error = patch_config_toml(
+        Some(input.as_bytes().to_vec()),
+        CodexConfigPatch {
+            model_provider: Some("custom".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect_err("custom provider");
+    assert!(error
+        .to_string()
+        .contains("model_provider must be OpenAI or aio"));
 }
 
 #[test]

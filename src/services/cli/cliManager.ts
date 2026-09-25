@@ -228,9 +228,8 @@ const DEFAULT_CODEX_CONFIG_PATCH = {
   features_apply_patch_freeform: null,
   features_shell_tool: null,
   features_exec_policy: null,
-  features_remote_compaction: null,
+  model_provider: null,
   features_fast_mode: null,
-  features_responses_websockets_v2: null,
   features_multi_agent: null,
 } satisfies GeneratedCodexConfigPatch;
 

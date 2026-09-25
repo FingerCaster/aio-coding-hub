@@ -1397,6 +1397,33 @@ base_url = "http://old/v1"
 }
 
 #[test]
+fn codex_proxy_does_not_invent_preferred_auth_method() {
+    let input = r#"
+forced_login_method = "api"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+    let out = build_codex_config_toml(
+        Some(input.as_bytes().to_vec()),
+        "http://127.0.0.1:37123/v1",
+        CodexConfigPlatform::Other,
+    )
+    .expect("project");
+    let text = String::from_utf8(out).expect("utf8");
+    assert!(!text.contains("preferred_auth_method"), "{text}");
+    assert!(text.contains("forced_login_method = \"api\""), "{text}");
+    assert!(
+        text.contains("base_url = \"http://127.0.0.1:37123/v1\""),
+        "{text}"
+    );
+}
+
+#[test]
 fn codex_oauth_compatible_config_preserves_non_aio_preferred_auth_method() {
     let input = r#"
 preferred_auth_method = "chatgpt"
@@ -1932,7 +1959,7 @@ foo = "bar"
         std::fs::read_to_string(codex_config_path(&handle).expect("config path"))
             .expect("read config after sync");
     assert!(
-        config_after_sync.contains("preferred_auth_method = \"apikey\""),
+        !config_after_sync.contains("preferred_auth_method"),
         "{config_after_sync}"
     );
 
@@ -3156,7 +3183,7 @@ custom = "keep"
     );
 
     let patch: crate::infra::codex_config::CodexConfigPatch =
-        serde_json::from_value(serde_json::json!({ "features_remote_compaction": true }))
+        serde_json::from_value(serde_json::json!({ "model_provider": "OpenAI" }))
             .expect("config patch");
     crate::infra::codex_config::codex_config_set_with_options(&handle, patch, false)
         .expect("route-off toggle");
@@ -3331,7 +3358,7 @@ fn route_on_raw_remote_toggle_skips_history_preflight_and_reprojects_drifted_liv
         .expect("raw config-only remote toggle must skip the process guard");
     let active = std::fs::read_to_string(&config_path).expect("active config");
     let baseline = std::fs::read_to_string(&backup_path).expect("baseline");
-    assert!(active.contains("remote_compaction = true"), "{active}");
+    assert!(!active.contains("remote_compaction"), "{active}");
     assert!(active.contains("model_provider = \"OpenAI\""), "{active}");
     assert!(
         active.contains(&format!("base_url = \"{base_origin}/v1\"")),

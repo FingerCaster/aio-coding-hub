@@ -458,7 +458,7 @@ pub(crate) fn codex_config_patch_target_provider(
 }
 
 fn patch_requires_provider_sync(patch: &CodexConfigPatch) -> bool {
-    patch.features_remote_compaction.is_some()
+    patch.model_provider.is_some()
 }
 
 #[cfg(windows)]
@@ -586,7 +586,12 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
             let target_provider = provider_projection::desired_provider_key_from_config(&merged)?;
             let requires_provider_sync = previous_provider != target_provider;
             let backup_bytes = if requires_provider_sync {
-                provider_projection::reconcile_provider_identity(&merged, target_provider, None)?
+                let reconciled = provider_projection::reconcile_provider_identity(
+                    &merged,
+                    target_provider,
+                    None,
+                )?;
+                provider_projection::clear_legacy_remote_compaction(&reconciled)?
             } else {
                 merged
             };
@@ -606,7 +611,12 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
             let target_provider = provider_projection::desired_provider_key_from_config(&bytes)?;
             let requires_provider_sync = previous_provider != target_provider;
             let next = if requires_provider_sync {
-                provider_projection::reconcile_provider_identity(&bytes, target_provider, None)?
+                let reconciled = provider_projection::reconcile_provider_identity(
+                    &bytes,
+                    target_provider,
+                    None,
+                )?;
+                provider_projection::clear_legacy_remote_compaction(&reconciled)?
             } else {
                 bytes
             };

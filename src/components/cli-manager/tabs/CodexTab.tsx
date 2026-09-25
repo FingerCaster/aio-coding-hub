@@ -89,7 +89,8 @@ const LazyCodeEditor = lazy(() =>
 
 const DEFAULT_CODEX_PROVIDER_TEST_MODEL = "gpt-5.4-mini";
 const MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS = 60_000;
-const FAST_SERVICE_TIER = "fast";
+const MANAGED_PROVIDER_AIO = "aio";
+const MANAGED_PROVIDER_OPENAI = "OpenAI";
 const CODEX_CONFIG_LOCATION_MODE_LABEL = "目录来源";
 const MODEL_REASONING_EFFORT_LABEL = "推理强度 (model_reasoning_effort)";
 const MODEL_REASONING_EFFORT_DESCRIPTION =
@@ -117,7 +118,6 @@ function enumOrDefault(value: string | null, fallback: string) {
 function buildFastModePatch(enabled: boolean): CodexConfigPatch {
   return {
     features_fast_mode: enabled,
-    service_tier: enabled ? FAST_SERVICE_TIER : "",
   };
 }
 
@@ -1494,6 +1494,8 @@ function CodexBasicConfigSection({
 }
 
 function CodexProviderSection({
+  codexConfig,
+  saving,
   providerTestModelText,
   setProviderTestModelText,
   saveProviderTestModel,
@@ -1501,7 +1503,10 @@ function CodexProviderSection({
   providerTestModelControlsDisabled,
   codexProviderSyncing,
   syncCodexProvider,
+  persistCodexConfig,
 }: {
+  codexConfig: CodexConfigState;
+  saving: boolean;
   providerTestModelText: string;
   setProviderTestModelText: (value: string) => void;
   saveProviderTestModel: (nextValue: string) => Promise<void>;
@@ -1509,7 +1514,31 @@ function CodexProviderSection({
   providerTestModelControlsDisabled: boolean;
   codexProviderSyncing: boolean;
   syncCodexProvider?: () => Promise<void> | void;
+  persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
 }) {
+  const [providerNameTarget, setProviderNameTarget] = useState<string | null>(null);
+  const [providerNameChoicePending, setProviderNameChoicePending] = useState(false);
+  const providerName =
+    codexConfig.model_provider === MANAGED_PROVIDER_OPENAI
+      ? MANAGED_PROVIDER_OPENAI
+      : MANAGED_PROVIDER_AIO;
+  const providerNameControlsDisabled = saving || providerNameChoicePending;
+
+  async function persistProviderNameChoice(syncHistory: boolean) {
+    const target = providerNameTarget;
+    if (target == null) return;
+
+    setProviderNameChoicePending(true);
+    try {
+      const updated = await persistCodexConfig({ model_provider: target }, { syncHistory });
+      if (updated) setProviderNameTarget(null);
+    } catch {
+      // The page data model owns user-facing error reporting. Keep the choice open for retry.
+    } finally {
+      setProviderNameChoicePending(false);
+    }
+  }
+
   return (
     <div className="rounded-lg border border-border bg-white p-5 dark:bg-secondary">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -1517,6 +1546,65 @@ function CodexProviderSection({
         AIO Provider
       </h3>
       <div className="divide-y divide-border">
+        <SettingItem
+          label="Provider name"
+          subtitle="在 aio 与 OpenAI 之间切换受管理的 Codex provider。不支持自定义名称。"
+        >
+          <RadioGroup
+            name="provider_name"
+            ariaLabel="Provider name"
+            value={providerName}
+            onChange={(value) => {
+              if (value !== providerName) setProviderNameTarget(value);
+            }}
+            options={[
+              { value: MANAGED_PROVIDER_AIO, label: "aio" },
+              { value: MANAGED_PROVIDER_OPENAI, label: "OpenAI" },
+            ]}
+            disabled={providerNameControlsDisabled}
+          />
+        </SettingItem>
+
+        <DialogRoot
+          open={providerNameTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !providerNameChoicePending) setProviderNameTarget(null);
+          }}
+        >
+          <DialogContent className="max-w-md rounded-lg">
+            <div className="border-b border-border px-5 py-4">
+              <DialogTitle>切换 Provider name</DialogTitle>
+              <DialogDescription className="mt-1.5">
+                将受管理 provider 切换为 {providerNameTarget}
+                。会话记录较多时，同步历史可能需要一些时间。
+              </DialogDescription>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 px-5 py-4">
+              <Button
+                variant="secondary"
+                onClick={() => setProviderNameTarget(null)}
+                disabled={providerNameControlsDisabled}
+              >
+                取消
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => void persistProviderNameChoice(false)}
+                disabled={providerNameControlsDisabled}
+              >
+                仅更新配置
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => void persistProviderNameChoice(true)}
+                disabled={providerNameControlsDisabled}
+              >
+                同步会话记录
+              </Button>
+            </div>
+          </DialogContent>
+        </DialogRoot>
+
         <SettingItem
           label="供应商测试默认模型"
           subtitle={`Codex 供应商做可用性测试时使用的全局模型。Provider 页未单独填写时，会回退到这里；默认值是 ${DEFAULT_CODEX_PROVIDER_TEST_MODEL}。`}
@@ -1606,33 +1694,6 @@ function CodexFeaturesSection({
   effectiveFastModeEnabled: boolean;
   persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
 }) {
-  const [remoteCompactionTarget, setRemoteCompactionTarget] = useState<boolean | null>(null);
-  const [remoteCompactionChoicePending, setRemoteCompactionChoicePending] = useState(false);
-  const remoteCompactionEnabled = boolOrDefault(codexConfig.features_remote_compaction, false);
-  const remoteCompactionControlsDisabled = saving || remoteCompactionChoicePending;
-
-  async function persistRemoteCompactionChoice(syncHistory: boolean) {
-    const target = remoteCompactionTarget;
-    if (target === null) return;
-
-    setRemoteCompactionChoicePending(true);
-    try {
-      const updated = await persistCodexConfig(
-        { features_remote_compaction: target },
-        { syncHistory }
-      );
-      if (updated) setRemoteCompactionTarget(null);
-    } catch {
-      // The page data model owns user-facing error reporting. Keep the choice open for retry.
-    } finally {
-      setRemoteCompactionChoicePending(false);
-    }
-  }
-
-  function handleRemoteCompactionChange(checked: boolean) {
-    setRemoteCompactionTarget(checked);
-  }
-
   return (
     <div className="rounded-lg border border-border bg-white p-5 dark:bg-secondary">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -1641,60 +1702,8 @@ function CodexFeaturesSection({
       </h3>
       <div className="divide-y divide-border">
         <SettingItem
-          label="remote_compaction"
-          subtitle="实验性：启用 remote compaction（需要 ChatGPT 身份验证）。"
-        >
-          <Switch
-            checked={remoteCompactionEnabled}
-            onCheckedChange={handleRemoteCompactionChange}
-            disabled={remoteCompactionControlsDisabled}
-          />
-        </SettingItem>
-
-        <DialogRoot
-          open={remoteCompactionTarget !== null}
-          onOpenChange={(open) => {
-            if (!open && !remoteCompactionChoicePending) setRemoteCompactionTarget(null);
-          }}
-        >
-          <DialogContent className="max-w-md rounded-lg">
-            <div className="border-b border-border px-5 py-4">
-              <DialogTitle>
-                {remoteCompactionTarget === false ? "关闭" : "开启"} remote_compaction
-              </DialogTitle>
-              <DialogDescription className="mt-1.5">
-                会话记录较多时，同步历史可能需要一些时间。
-              </DialogDescription>
-            </div>
-            <div className="flex flex-wrap justify-end gap-2 px-5 py-4">
-              <Button
-                variant="secondary"
-                onClick={() => setRemoteCompactionTarget(null)}
-                disabled={remoteCompactionControlsDisabled}
-              >
-                取消
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => void persistRemoteCompactionChoice(false)}
-                disabled={remoteCompactionControlsDisabled}
-              >
-                仅更新配置
-              </Button>
-              <Button
-                variant="primary"
-                onClick={() => void persistRemoteCompactionChoice(true)}
-                disabled={remoteCompactionControlsDisabled}
-              >
-                同步会话记录
-              </Button>
-            </div>
-          </DialogContent>
-        </DialogRoot>
-
-        <SettingItem
           label="fast_mode"
-          subtitle='开启同时写入 fast_mode=true 与 service_tier="fast"；关闭则删除这两项。'
+          subtitle="只写入 [features].fast_mode。开启为 true，关闭为 false，不修改 service_tier。"
         >
           <Switch
             checked={effectiveFastModeEnabled}
@@ -1704,24 +1713,11 @@ function CodexFeaturesSection({
         </SettingItem>
 
         <SettingItem
-          label="responses_websockets_v2"
-          subtitle="实验性：启用 Responses API websocket 支持（需要中转站支持）。"
-        >
-          <Switch
-            checked={boolOrDefault(codexConfig.features_responses_websockets_v2, false)}
-            onCheckedChange={(checked) =>
-              void persistCodexConfig({ features_responses_websockets_v2: checked })
-            }
-            disabled={saving}
-          />
-        </SettingItem>
-
-        <SettingItem
           label="multi_agent"
           subtitle={
             codexConfig.features_multi_agent == null
-              ? "实验性：通过并行生成多个专门化代理来协作完成复杂任务。当前未设置，使用 Codex 默认行为。"
-              : "实验性：通过并行生成多个专门化代理来协作完成复杂任务。"
+              ? "通过并行生成多个专门化代理来协作完成复杂任务。当前未设置，使用 Codex 默认行为。"
+              : "通过并行生成多个专门化代理来协作完成复杂任务。"
           }
         >
           <Switch
@@ -2198,10 +2194,7 @@ function useCodexTabController({
   );
   const effectiveFastModeEnabled = useMemo(() => {
     if (!codexConfig) return false;
-    return (
-      boolOrDefault(codexConfig.features_fast_mode, false) ||
-      codexConfig.service_tier === FAST_SERVICE_TIER
-    );
+    return boolOrDefault(codexConfig.features_fast_mode, false);
   }, [codexConfig]);
 
   const configLocationPreviewPath = useMemo(
@@ -2645,6 +2638,8 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
           />
 
           <CodexProviderSection
+            codexConfig={codexConfig}
+            saving={controller.saving}
             providerTestModelText={controller.providerTestModelText}
             setProviderTestModelText={controller.setProviderTestModelText}
             saveProviderTestModel={controller.saveProviderTestModel}
@@ -2652,6 +2647,7 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
             providerTestModelControlsDisabled={controller.providerTestModelControlsDisabled}
             codexProviderSyncing={codexProviderSyncing}
             syncCodexProvider={syncCodexProvider}
+            persistCodexConfig={persistCodexConfig}
           />
 
           <CodexSandboxSection

@@ -9,6 +9,7 @@ import { openDesktopUrl } from "../../../../services/desktop/opener";
 import { activeRequestLogsSnapshot } from "../../../../services/gateway/activeRequests";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../../services/gateway/upstreamRetryPolicy";
 import type { UpstreamRetryPolicy } from "../../../../services/settings/settings";
+import type { CodexConfigState } from "../../../../generated/bindings";
 import { CliManagerCodexTab } from "../CodexTab";
 import { createTestAppSettings } from "../../../../test/fixtures/settings";
 
@@ -88,14 +89,13 @@ function createCodexConfig(overrides: Partial<any> = {}) {
     model_context_window: null,
     model_auto_compact_token_limit: null,
     service_tier: null,
+    model_provider: "aio",
     features_shell_snapshot: false,
     features_unified_exec: false,
     features_shell_tool: false,
     features_exec_policy: false,
     features_apply_patch_freeform: false,
-    features_remote_compaction: false,
     features_fast_mode: false,
-    features_responses_websockets_v2: false,
     features_multi_agent: false,
     ...overrides,
   };
@@ -252,178 +252,162 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     });
   });
 
-  it("asks how to handle session history before enabling remote compaction", async () => {
+  it("asks how to handle session history before switching provider name to OpenAI", async () => {
     const persistCodexConfig = vi.fn().mockResolvedValue(createCodexConfig());
     renderTab({ persistCodexConfig });
-    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
-    expect(remoteItem).toBeTruthy();
-    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+    const openai = screen.getByRole("radio", { name: "OpenAI" });
 
-    fireEvent.click(remoteSwitch);
-    let dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    fireEvent.click(openai);
+    let dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     expect(persistCodexConfig).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
-    expect(
-      screen.queryByRole("dialog", { name: "开启 remote_compaction" })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "切换 Provider name" })).not.toBeInTheDocument();
 
-    fireEvent.click(remoteSwitch);
-    dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    fireEvent.click(openai);
+    dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     fireEvent.click(within(dialog).getByRole("button", { name: "仅更新配置" }));
     await waitFor(() =>
       expect(persistCodexConfig).toHaveBeenLastCalledWith(
-        { features_remote_compaction: true },
+        { model_provider: "OpenAI" },
         { syncHistory: false }
       )
     );
     await waitFor(() =>
-      expect(
-        screen.queryByRole("dialog", { name: "开启 remote_compaction" })
-      ).not.toBeInTheDocument()
+      expect(screen.queryByRole("dialog", { name: "切换 Provider name" })).not.toBeInTheDocument()
     );
 
-    fireEvent.click(remoteSwitch);
-    dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    fireEvent.click(openai);
+    dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     fireEvent.click(within(dialog).getByRole("button", { name: "同步会话记录" }));
     await waitFor(() =>
       expect(persistCodexConfig).toHaveBeenLastCalledWith(
-        { features_remote_compaction: true },
+        { model_provider: "OpenAI" },
         { syncHistory: true }
       )
     );
   });
 
-  it("asks how to handle session history before disabling remote compaction", async () => {
+  it("asks how to handle session history before switching provider name to aio", async () => {
     const persistCodexConfig = vi.fn().mockResolvedValue(createCodexConfig());
     renderTab({
-      codexConfig: createCodexConfig({ features_remote_compaction: true }),
+      codexConfig: createCodexConfig({ model_provider: "OpenAI" }),
       persistCodexConfig,
     });
-    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
-    expect(remoteItem).toBeTruthy();
-    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+    const aio = screen.getByRole("radio", { name: "aio" });
 
-    fireEvent.click(remoteSwitch);
-    let dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    fireEvent.click(aio);
+    let dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     expect(persistCodexConfig).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
-    expect(
-      screen.queryByRole("dialog", { name: "关闭 remote_compaction" })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "切换 Provider name" })).not.toBeInTheDocument();
 
-    fireEvent.click(remoteSwitch);
-    dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    fireEvent.click(aio);
+    dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     fireEvent.click(within(dialog).getByRole("button", { name: "仅更新配置" }));
     await waitFor(() =>
       expect(persistCodexConfig).toHaveBeenLastCalledWith(
-        { features_remote_compaction: false },
+        { model_provider: "aio" },
         { syncHistory: false }
       )
     );
     await waitFor(() =>
-      expect(
-        screen.queryByRole("dialog", { name: "关闭 remote_compaction" })
-      ).not.toBeInTheDocument()
+      expect(screen.queryByRole("dialog", { name: "切换 Provider name" })).not.toBeInTheDocument()
     );
 
-    fireEvent.click(remoteSwitch);
-    dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    fireEvent.click(aio);
+    dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     fireEvent.click(within(dialog).getByRole("button", { name: "同步会话记录" }));
     await waitFor(() =>
       expect(persistCodexConfig).toHaveBeenLastCalledWith(
-        { features_remote_compaction: false },
+        { model_provider: "aio" },
         { syncHistory: true }
       )
     );
   });
 
-  it("keeps the requested remote compaction direction while history sync is pending", async () => {
-    let resolvePersist!: (value: ReturnType<typeof createCodexConfig>) => void;
+  it("keeps the requested provider name while history sync is pending", async () => {
+    let resolvePersist!: (value: CodexConfigState | null) => void;
     const persistCodexConfig = vi.fn(
       () =>
-        new Promise<ReturnType<typeof createCodexConfig>>((resolve) => {
+        new Promise<CodexConfigState | null>((resolve) => {
           resolvePersist = resolve;
         })
     );
     renderTab({
-      codexConfig: createCodexConfig({ features_remote_compaction: true }),
+      codexConfig: createCodexConfig({ model_provider: "OpenAI" }),
       persistCodexConfig,
     });
-    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
-    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+    const aio = screen.getByRole("radio", { name: "aio" });
 
-    fireEvent.click(remoteSwitch);
-    const dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    fireEvent.click(aio);
+    const dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     fireEvent.click(within(dialog).getByRole("button", { name: "同步会话记录" }));
 
     await waitFor(() => {
-      expect(screen.getByRole("dialog", { name: "关闭 remote_compaction" })).toBe(dialog);
-      expect(remoteSwitch).toBeDisabled();
+      expect(screen.getByRole("dialog", { name: "切换 Provider name" })).toBe(dialog);
+      expect(aio).toBeDisabled();
       expect(within(dialog).getByRole("button", { name: "取消" })).toBeDisabled();
       expect(within(dialog).getByRole("button", { name: "仅更新配置" })).toBeDisabled();
       expect(within(dialog).getByRole("button", { name: "同步会话记录" })).toBeDisabled();
     });
     fireEvent.keyDown(dialog, { key: "Escape" });
-    expect(screen.getByRole("dialog", { name: "关闭 remote_compaction" })).toBe(dialog);
+    expect(screen.getByRole("dialog", { name: "切换 Provider name" })).toBe(dialog);
     const overlay = Array.from(document.querySelectorAll<HTMLElement>('[data-state="open"]')).find(
       (element) => element.classList.contains("bg-black/30")
     );
     expect(overlay).toBeTruthy();
     fireEvent.click(overlay as HTMLElement);
-    expect(screen.getByRole("dialog", { name: "关闭 remote_compaction" })).toBe(dialog);
+    expect(screen.getByRole("dialog", { name: "切换 Provider name" })).toBe(dialog);
     expect(persistCodexConfig).toHaveBeenCalledWith(
-      { features_remote_compaction: false },
+      { model_provider: "aio" },
       { syncHistory: true }
     );
 
     await act(async () => {
-      resolvePersist(createCodexConfig({ features_remote_compaction: false }));
+      resolvePersist(createCodexConfig({ model_provider: "aio" }) as CodexConfigState);
     });
     await waitFor(() => {
-      expect(
-        screen.queryByRole("dialog", { name: "关闭 remote_compaction" })
-      ).not.toBeInTheDocument();
-      expect(remoteSwitch).toBeEnabled();
+      expect(screen.queryByRole("dialog", { name: "切换 Provider name" })).not.toBeInTheDocument();
+      expect(aio).toBeEnabled();
     });
   });
 
-  it("keeps the remote compaction choice open and retryable after async failures", async () => {
+  it("keeps the provider name choice open and retryable after async failures", async () => {
     const persistCodexConfig = vi
       .fn()
       .mockResolvedValueOnce(null)
       .mockRejectedValueOnce(new Error("save failed"));
     renderTab({ persistCodexConfig });
-    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
-    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+    const openai = screen.getByRole("radio", { name: "OpenAI" });
 
-    fireEvent.click(remoteSwitch);
-    const dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    fireEvent.click(openai);
+    const dialog = screen.getByRole("dialog", { name: "切换 Provider name" });
     const configOnlyButton = within(dialog).getByRole("button", { name: "仅更新配置" });
     const syncHistoryButton = within(dialog).getByRole("button", { name: "同步会话记录" });
 
     fireEvent.click(configOnlyButton);
     await waitFor(() => {
-      expect(screen.getByRole("dialog", { name: "开启 remote_compaction" })).toBe(dialog);
-      expect(remoteSwitch).toBeEnabled();
+      expect(screen.getByRole("dialog", { name: "切换 Provider name" })).toBe(dialog);
+      expect(openai).toBeEnabled();
       expect(configOnlyButton).toBeEnabled();
       expect(syncHistoryButton).toBeEnabled();
     });
     expect(persistCodexConfig).toHaveBeenNthCalledWith(
       1,
-      { features_remote_compaction: true },
+      { model_provider: "OpenAI" },
       { syncHistory: false }
     );
 
     fireEvent.click(syncHistoryButton);
     await waitFor(() => {
-      expect(screen.getByRole("dialog", { name: "开启 remote_compaction" })).toBe(dialog);
-      expect(remoteSwitch).toBeEnabled();
+      expect(screen.getByRole("dialog", { name: "切换 Provider name" })).toBe(dialog);
+      expect(openai).toBeEnabled();
       expect(configOnlyButton).toBeEnabled();
       expect(syncHistoryButton).toBeEnabled();
     });
     expect(persistCodexConfig).toHaveBeenNthCalledWith(
       2,
-      { features_remote_compaction: true },
+      { model_provider: "OpenAI" },
       { syncHistory: true }
     );
   });
@@ -481,15 +465,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     fireEvent.click(within(fastModeItem as HTMLElement).getByRole("switch"));
     expect(persistCodexConfig).toHaveBeenCalledWith({
       features_fast_mode: true,
-      service_tier: "fast",
     });
-
-    const websocketItem = screen.getByText("responses_websockets_v2").parentElement?.parentElement;
-    expect(websocketItem).toBeTruthy();
-    fireEvent.click(within(websocketItem as HTMLElement).getByRole("switch"));
-    expect(persistCodexConfig).toHaveBeenCalledWith({
-      features_responses_websockets_v2: true,
-    });
+    expect(screen.queryByText("responses_websockets_v2")).not.toBeInTheDocument();
+    expect(screen.queryByText("remote_compaction")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("radio", { name: "禁用 (disabled)" }));
     expect(persistCodexConfig).toHaveBeenCalledWith({ web_search: "disabled" });
@@ -1196,7 +1174,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.getByText("当前路径相同，但后续会随 $CODEX_HOME 变化。")).toBeInTheDocument();
   });
 
-  it("treats service_tier=fast as enabled fast mode and defaults personality to none", () => {
+  it("ignores legacy service_tier=fast when fast_mode is off and defaults personality to none", () => {
     renderTab({
       codexConfig: createCodexConfig({ service_tier: "fast", features_fast_mode: false }),
     });
@@ -1205,7 +1183,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(fastModeItem).toBeTruthy();
     expect(within(fastModeItem as HTMLElement).getByRole("switch")).toHaveAttribute(
       "data-state",
-      "checked"
+      "unchecked"
     );
 
     const personalityItem = screen.getByText("输出风格 (personality)").parentElement?.parentElement;

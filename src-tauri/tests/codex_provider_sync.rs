@@ -256,7 +256,7 @@ fn codex_config_set_with_history_refuses_when_codex_is_running_without_writes() 
     ));
     let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
         &handle,
-        serde_json::json!({ "features_remote_compaction": true }),
+        serde_json::json!({ "model_provider": "OpenAI" }),
         true,
     );
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
@@ -311,7 +311,7 @@ fn codex_config_set_without_history_succeeds_while_codex_runs_without_reading_ro
     ));
     let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
         &handle,
-        serde_json::json!({ "features_remote_compaction": true }),
+        serde_json::json!({ "model_provider": "OpenAI" }),
     );
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
 
@@ -343,7 +343,7 @@ fn codex_config_set_with_history_migrates_all_non_target_rollouts_in_one_save() 
     ));
     let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
         &handle,
-        serde_json::json!({ "features_remote_compaction": true }),
+        serde_json::json!({ "model_provider": "OpenAI" }),
         true,
     );
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
@@ -387,7 +387,7 @@ fn managed_catalog_and_config_roll_back_when_history_preflight_fails() {
     ));
     let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
         &handle,
-        serde_json::json!({ "features_remote_compaction": true }),
+        serde_json::json!({ "model_provider": "OpenAI" }),
         true,
     );
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
@@ -432,7 +432,7 @@ fn managed_catalog_failure_happens_before_history_migration() {
     ));
     let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
         &handle,
-        serde_json::json!({ "features_remote_compaction": true }),
+        serde_json::json!({ "model_provider": "OpenAI" }),
         true,
     );
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
