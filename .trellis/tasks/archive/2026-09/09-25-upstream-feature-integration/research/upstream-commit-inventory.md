@@ -228,9 +228,9 @@ Commit:     GitHub <noreply@github.com>
 CommitDate: Sat Aug 15 22:15:52 2026 +0800
 
     fix(cli-proxy): 重启后重连代理时刷新 Claude 直连备份，避免关闭期间切换的供应商被覆盖丢失 (#370)
-    
+
     * fix(cli-proxy): refresh Claude backup snapshot before re-applying stale proxy state
-    
+
     Exit cleanup restores the direct settings.json but intentionally leaves the
     cli-proxy manifest enabled, so the proxy silently re-applies on the next
     launch (sync_enabled). That re-apply never refreshed the backup snapshot, so
@@ -240,25 +240,25 @@ CommitDate: Sat Aug 15 22:15:52 2026 +0800
     captured. Closing the app again then restored the stale snapshot from the
     very first time the proxy was ever enabled, discarding whatever the user had
     switched to in between.
-    
+
     Add claude::is_proxy_managed(), a port-independent check (based on our
     placeholder auth token) for whether settings.json is currently under our
     management. In sync_enabled(), when the Claude target is not proxy-managed,
     re-capture the backup from the current on-disk file before applying the
     gateway config, so a later disable restores the latest direct config instead
     of the original one.
-    
+
     Add a regression test simulating: enable -> exit restore (keep-state) ->
     direct edit to a different provider while closed -> startup sync -> disable,
     asserting the restored config matches the edit made while closed.
-    
+
     * fix(cli-proxy): 备份刷新判定加入网关地址兜底并补齐守卫测试
-    
+
     `is_proxy_managed` 只比对 `ANTHROPIC_AUTH_TOKEN` 时，用户在代理运行期间
     手改 token（把占位符换成自己的 key）会让一份仍指向网关的配置被判定为
     直连配置。随后网关端口变化触发 sync，网关地址就被当成直连配置写进备份，
     关闭代理时用户真实的直连配置被永久替换成失效的本机网关地址。
-    
+
     - claude.rs: token 或本机网关 `/claude` 地址任一命中即视为受管
     - mod.rs: `refresh_backup_from_direct_state` 改为复用既有的
       `capture_current_target_state` + `write_captured_backups`，与 codex
@@ -267,9 +267,9 @@ CommitDate: Sat Aug 15 22:15:52 2026 +0800
       - 仅端口变化时不得刷新备份
       - token 被手改后仍不得把网关地址当成直连配置
       - 备份失败时返回 CLI_PROXY_BACKUP_FAILED 且不覆盖原文件
-    
+
     ---------
-    
+
     Co-authored-by: dyndynjyxa <andrewguai93@gmail.com>
 
  src-tauri/src/infra/cli_proxy/claude.rs |  45 +++++++
@@ -339,42 +339,42 @@ Commit:     GitHub <noreply@github.com>
 CommitDate: Fri Sep 4 09:34:46 2026 +0800
 
     feat(oauth): 上游代理同时作用于 OAuth 登录、令牌刷新与额度查询 (#374)
-    
+
     * feat(oauth): route OAuth login/refresh through the configured upstream proxy
-    
+
     Settings -> Upstream Proxy previously only applied to the gateway's
     post-login API calls to Claude/Codex/Gemini/Grok. The OAuth login,
     token-refresh, quota/limit-check and Codex-quota-reset flows built
     their own HTTP client that only looked at AIO_OAUTH_PROXY_URL or raw
     system proxy env vars, so logging in still required a system-wide
     proxy/VPN even with Upstream Proxy configured in the app.
-    
+
     Reuse the same upstream_proxy_* settings (http/https/socks5/socks5h,
     already validated and tested for self-loop/exit-IP/credentials) for
     every OAuth HTTP client, with AIO_OAUTH_PROXY_URL kept as an explicit
     override for advanced setups. A blank AIO_OAUTH_PROXY_URL now counts as
     unset instead of silently shadowing the configured proxy.
-    
+
     The socks5 local-DNS IPv4-first workaround the gateway client relies on
     moves into http_client::apply_socks5_local_dns_workaround and is applied
     to the OAuth clients too, so a socks5:// proxy behaves the same on both
     paths. resolve_app_configured_proxy_url also runs the gateway's
     validate_proxy_for_settings, so a hand-edited settings.json pointing at
     the gateway cannot self-loop OAuth traffic.
-    
+
     The background token-refresh loop keeps its client between polls and
     rebuilds it only when the configured proxy changes, so a proxy toggled
     at runtime applies without restarting the app while pooled connections
     are still reused in the steady state.
-    
+
     * fix(oauth): 收口上游代理行为并补齐回归测试
-    
+
     * fix(ci): 修复 Windows lib 测试 manifest
-    
+
     * fix(codex): 修复 Windows catalog launcher 参数转义
-    
+
     ---------
-    
+
     Co-authored-by: dyndynjyxa <andrewguai93@gmail.com>
 
  src-tauri/build.rs                                 |  56 +---
@@ -414,74 +414,74 @@ Commit:     GitHub <noreply@github.com>
 CommitDate: Sat Aug 15 21:59:12 2026 +0800
 
     feat(providers): 调用顺序支持定位供应商卡片 (#373)
-    
+
     * feat(providers): 调用顺序支持定位供应商卡片
-    
+
     调用顺序侧栏每项新增定位图标，点击后清空搜索/标签过滤条件，
     并平滑滚动定位到供应商列表中对应的卡片，方便快速查看与编辑配置。
-    
+
     - RouteOrderItemTrailing 新增定位按钮（LocateFixed）
     - 点击清空 setProviderSearch / setSelectedTags 后滚动到 data-provider-id 对应卡片
     - SortableProviderCard 容器增加 data-provider-id 属性供定位查询
-    
+
     * fix(providers): 定位供应商卡片滚动到列表顶部
-    
+
     此前定位使用 block: center，目标卡片落在可视区中间。
     改为 block: start，点击定位后目标卡片出现在列表可视区顶部（第一个位置），
     便于查看该卡片及其后序卡片。
-    
+
     - ProvidersView: scrollIntoView 改为 block: "start"
     - 测试断言锁定 block: "start" 行为
-    
+
     * fix(deps): bump nanoid to 3.3.18 for GHSA-2v37-7h3g-55p8
-    
+
     npm 新发布 nanoid 高危 advisory（GHSA-2v37-7h3g-55p8，受影响 <3.3.18），
     阻断 frontend CI 依赖审计。将 override 提升到 3.3.18；因 3.3.18 发布不足 7 天
     被 minimumReleaseAge 拦截，临时加入 minimumReleaseAgeExclude 豁免
     （满 7 天后可移除）。
-    
+
     - pnpm-workspace.yaml: nanoid override 目标 → 3.3.18，新增 nanoid@3.3.17 覆盖项
     - pnpm-workspace.yaml: minimumReleaseAgeExclude 临时豁免 nanoid
     - pnpm-lock.yaml: nanoid 3.3.17 → 3.3.18
-    
+
     * chore(deps): 将 nanoid 安全升级移出本 PR
-    
+
     本 PR 的目标是「调用顺序支持定位供应商卡片」，nanoid 3.3.18（GHSA-2v37-7h3g-55p8）
     属于独立的依赖安全修复，且附带 minimumReleaseAgeExclude 供应链冷却期豁免，
     需要单独审查、单独回滚、单独跟踪豁免回收，因此从本 PR 移出。
-    
+
     This reverts commit b9bb5dbb1f83e5e302921c8ada0316ed9c6b6896.
-    
+
     * fix(providers): 定位供应商卡片改用 state 驱动并清理待定意图
-    
+
     原实现把待定位 providerId 存在 ref 里，靠 effect 依赖 filteredProviders 的引用变化
     来触发滚动。但无过滤时清空过滤并不改变过滤结果，effect 能跑完全依赖
     setSelectedTags(new Set()) 每次新建 Set 造成的引用抖动——一旦该 setter 后续加上
     值相等短路（同一 hook 内 setCreateModeDialogOpen 已是此写法），无过滤定位会静默失效。
-    
+
     改为用 locateTargetId state 驱动：
     - 三次更新在同一轮批处理内生效，effect 由 locateTargetId 自身变化触发，
       不再依赖 filteredProviders 是否恰好换了引用；
     - 无论是否命中目标都清空 locateTargetId，避免目标被并发删除时意图残留，
       在后续列表变化中触发用户未发起的滚动。
-    
+
     * test(providers): 补齐定位供应商卡片的边界与失败路径
-    
+
     - 无过滤时定位仍需滚动：锁定不依赖 filteredProviders 引用抖动的行为契约
     - 路由项对应 provider 缺失时定位按钮禁用
     - 定位完成后再次改变过滤不得重复滚动：验证待定位意图只被消费一次
-    
+
     同时把 scrollIntoView 打桩从用例内直接赋值 Element.prototype 提到模块级，
     并由 afterEach 清计数——原写法会把 vi.fn 永久留在原型上，调用记录跨用例累积。
-    
+
     * fix(deps): bump nanoid to 3.3.18 for GHSA-2v37-7h3g-55p8
-    
+
     nanoid 3.3.18 已于 2026-08-07 发布，至今已超过 minimumReleaseAge 的 7 天冷却期，
     因此只需 overrides 收敛版本，无需 minimumReleaseAgeExclude 豁免——
     也就免掉了「满 7 天后回来移除豁免」这笔无人跟踪的债务。
-    
+
     ---------
-    
+
     Co-authored-by: Lx <mlx950325@163.com>
     Co-authored-by: dyndynjyxa <andrewguai93@gmail.com>
 
@@ -501,7 +501,7 @@ Commit:     dyndynjyxa <andrewguai93@gmail.com>
 CommitDate: Sat Aug 15 22:18:19 2026 +0800
 
     fix(providers): 可用性测试改用供应商已配置的模型
-    
+
     探测请求此前对 codex 硬编码 gpt-4o-mini、对 claude 硬编码 claude-sonnet-4-6，
     供应商只提供其他模型时测试必然失败（#371）。改为从供应商自己的 model_policy
     取第一个具体模型，再经 resolve_mapping 换算成上游模型名；excluded 模式的
@@ -519,12 +519,12 @@ Commit:     dyndynjyxa <andrewguai93@gmail.com>
 CommitDate: Sat Aug 15 22:41:00 2026 +0800
 
     feat(providers): 可用性探测支持自定义模型与提示词
-    
+
     provider_test_availability 新增可选 model / prompt 参数，优先级为
     覆盖值 → 供应商 model_policy 模型 → 各 CLI 默认值；模型覆盖对
     claude/codex/grok/gemini 均生效（gemini 替换 URL 路径中的模型）。
     默认探测提示词由 ping 改为 hi。
-    
+
     覆盖值属信任边界：模型拒绝通配符与控制字符，gemini 额外拒绝路径
     分隔符与空白（模型名进 URL 路径），提示词上限 4096 字符，校验失败
     返回 SEC_INVALID_INPUT 且不发起上游请求。
@@ -543,7 +543,7 @@ Commit:     dyndynjyxa <andrewguai93@gmail.com>
 CommitDate: Sat Aug 15 22:41:55 2026 +0800
 
     feat(providers): 测试供应商前弹出模型与提示词对话框
-    
+
     点击「测试」改为先打开对话框：模型用 Input + datalist 展示该供应商
     已配置的具体模型（可自由输入清单外模型），提示词默认 hi，确认后才
     发起探测，取消不产生任何 IPC。空值一律传 null 交由后端回退，避免
@@ -571,7 +571,7 @@ Commit:     dyndynjyxa <andrewguai93@gmail.com>
 CommitDate: Tue Aug 11 21:47:31 2026 +0800
 
     feat(app): 添加思考等级展示和模型价格别名优化
-    
+
     - 在App根组件添加Codex目录刷新反馈的全局监听
     - 在请求日志面板及实时追踪卡片中新增思考等级徽章显示
     - 为请求日志专题数据添加reasoning_effort字段支持

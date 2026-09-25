@@ -1,5 +1,5 @@
-{"file": ".trellis/tasks/09-25-upstream-feature-integration/research/model-routing.md", "reason": "Review routing compatibility and Codex protection."}
-{"file": ".trellis/tasks/09-25-upstream-feature-integration/research/remaining-features.md", "reason": "Review selective adaptations and safety constraints."}
+{"file": ".trellis/tasks/archive/2026-09/09-25-upstream-feature-integration/research/model-routing.md", "reason": "Review routing compatibility and Codex protection."}
+{"file": ".trellis/tasks/archive/2026-09/09-25-upstream-feature-integration/research/remaining-features.md", "reason": "Review selective adaptations and safety constraints."}
 {"file": ".trellis/spec/aio-coding-hub/backend/index.md", "reason": "Backend quality and migration checks."}
 {"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "Cross-layer quality, generated bindings, routing and Codex checks."}
 {"file": ".trellis/spec/guides/upstream-merge-scope-guide.md", "reason": "Review integration scope and upstream-origin boundaries."}

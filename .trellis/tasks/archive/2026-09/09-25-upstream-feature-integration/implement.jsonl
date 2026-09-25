@@ -1,5 +1,5 @@
-{"file": ".trellis/tasks/09-25-upstream-feature-integration/research/model-routing.md", "reason": "Upstream policy versus fork compatibility adapter and Codex preservation boundaries."}
-{"file": ".trellis/tasks/09-25-upstream-feature-integration/research/remaining-features.md", "reason": "Feature-by-feature carry/adapt/preserve classification and decision gates."}
+{"file": ".trellis/tasks/archive/2026-09/09-25-upstream-feature-integration/research/model-routing.md", "reason": "Upstream policy versus fork compatibility adapter and Codex preservation boundaries."}
+{"file": ".trellis/tasks/archive/2026-09/09-25-upstream-feature-integration/research/remaining-features.md", "reason": "Feature-by-feature carry/adapt/preserve classification and decision gates."}
 {"file": ".trellis/spec/aio-coding-hub/backend/index.md", "reason": "Backend gateway, OAuth, cost, Codex lifecycle and migration contracts."}
 {"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "Cross-layer routing, Codex managed models, OAuth, settings, generated bindings and UI contracts."}
 {"file": ".trellis/spec/guides/upstream-merge-scope-guide.md", "reason": "Keep selective upstream work integration-only and separate upstream-origin defects."}
