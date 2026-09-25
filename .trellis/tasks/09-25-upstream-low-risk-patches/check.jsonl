@@ -1,0 +1,6 @@
+{"file":".trellis/spec/guides/upstream-merge-scope-guide.md","reason":"检查最终 diff 没有把 upstream-origin 缺陷或冲突提交带入本次移植。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"复核配置、前端测试、Rust IPC/target 分支之间的契约和边界测试。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"复核 asset origin 允许范围没有扩大到不相关的文件系统权限。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md","reason":"复核通知音频失败关闭、超时清理和上游同步记录。"}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"按后端质量清单检查 Rust 测试、格式和 target-gated 分支。"}
+{"file":".trellis/tasks/09-05-gpt-6-astra-stream-intermediate-replies/research/upstream-sync.md","reason":"对照已批准的提交分类、上游 SHA 和明确排除项。"}

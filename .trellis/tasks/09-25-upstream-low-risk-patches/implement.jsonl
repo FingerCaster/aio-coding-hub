@@ -1,0 +1,7 @@
+{"file":".trellis/spec/guides/upstream-merge-scope-guide.md","reason":"限定选择性上游移植范围，并区分整合冲突与 pinned upstream 自身缺陷。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 Home/UI、Tauri asset CSP、Rust target 分支之间的数据流和边界。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"修改配置常量、target 依赖和测试前，确认现有实现与复用边界。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"asset.localhost CSP 和 convertFileSrc 变更涉及资源协议边界，需核对资产权限约束。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md","reason":"通知音频和 upstream 同步属于可靠性边界，需保留失败、超时和来源审计规则。"}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Rust target-gated 通知音频依赖和测试需要遵循后端层规范。"}
+{"file":".trellis/tasks/09-05-gpt-6-astra-stream-intermediate-replies/research/upstream-sync.md","reason":"记录上游基线、30 个差异提交、逐提交冲突审计和本次三个目标提交的选择依据。"}

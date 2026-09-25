@@ -392,8 +392,10 @@ describe("components/home/HomeRequestLogsPanel", () => {
         })
       )
     );
+    // Providers like DeepSeek never report cache creation: the metric still
+    // renders as 0 (without TTL) so the grid stays complete.
     expect(
-      within(screen.getByRole("button", { name: /gpt-5\.6-sol/ })).queryByText("缓存创建")
+      within(expectMetric("缓存创建", "0")).queryByText(/\(5m\)|\(1h\)/)
     ).not.toBeInTheDocument();
     const outputMetric = expectMetric("输出", "—");
     expect(outputMetric).toHaveClass("col-start-1", "row-start-2");
