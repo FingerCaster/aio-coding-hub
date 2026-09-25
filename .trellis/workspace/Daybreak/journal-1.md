@@ -219,3 +219,52 @@ Fetched upstream into a local clone, audited 30 divergent commits, and selective
 ### Next Steps
 
 - Run macOS target checks when an Apple target environment is available.
+
+
+## Session 7: 主会话完成上游功能整合与归档
+
+**Date**: 2026-09-26
+**Task**: 主会话完成上游功能整合与归档
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+完成已批准的 95 文件选择性上游整合；串行验证通过，基线例外独立记录，任务已归档，无关改动保持不变。
+
+### Main Changes
+
+## 已完成
+
+- 用户批准任务并要求减少并发，后续实现、验证和收尾由主会话串行完成，先前子代理停止。
+- 固定 upstream 420e9958091ae460d152a508b1eb0e2110ab733b，选择性适配普通模型路由/Provider 预筛选、只读模型发现和探测 UI、OAuth 代理、Claude 备份补偿、cost TOTAL/f64 聚合、audit OSV fallback 与安全 Responses input 规范化。
+- 保留 fork 的 global/Provider 三态与 reasoning、Codex UUID/受管目录/Profile/aio 别名、Actual 优先费用及窄 thinking-signature 触发；版本、依赖和数据库迁移不变。
+- 用户回复“可以”后按 95 文件清单完成工作提交 88883c9053026900ad259c7401d80a0cec8561ea；提交钩子的前端与 Rust 编译检查通过。
+- 任务归档到 .trellis/tasks/archive/2026-09/09-25-upstream-feature-integration；另外 8 个已有配置/任务文件经 SHA-256 核对保持不变。
+
+## 验证
+
+- 前端全量单 worker：313 文件、2931 测试通过。
+- Rust 主回归：3077 通过、4 ignored、1 filtered；最后设置兼容专项 42 通过。
+- 类型、ESLint、20 个改动前端/脚本文件格式、Rust fmt、Windows all-targets Clippy、生成绑定一致性、spec-links、gateway error codes、Trellis manifests 通过。
+- 实际依赖审计 434 包，bulk 两次失败后 OSV 回退成功，high/critical 均为 0。
+- 本次研究记录空白行格式随归档清理；基线到最终工作区的 diff --check 通过。
+
+## 已知基线例外与边界
+
+- F1：旧 Codex OAuth status 测试在固定 fork 基线 270b808c 独立复现相同失败，主回归明确排除这一项，本次不修复。
+- F2：全仓格式检查仅报未改动的 src-tauri/tauri.conf.json；canonical blob 与基线一致，保留原文件。
+- Linux/macOS 编译未在本机验证，后续 push 前需要对应平台 CI。
+- 详细证据：.trellis/tasks/archive/2026-09/09-25-upstream-feature-integration/research/integration-audit.md 与 research/baseline-findings.md。
+- 本次仅完成本地工作、归档和 journal 提交，没有远程推送。
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `88883c9053026900ad259c7401d80a0cec8561ea` | (see git log) |
+
+### Status
+
+[OK] **Completed**
