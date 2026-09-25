@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-08-06
+- **Total Sessions**: 6
+- **Last Active**: 2026-09-25
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~186 | Active |
+| `journal-1.md` | ~221 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-09-25 | Selective upstream low-risk patch sync | `071d9e79` | `main` |
 | 5 | 2026-08-06 | Archive reasoning effort diagnosis | `a7e7675c8d8b6b9b003cc5ad2069afb91132464a` | `main` |
 | 4 | 2026-08-06 | Prevent Codex capacity signal leakage | `7b246372` | `main` |
 | 3 | 2026-08-06 | Fix Codex stream overload matching | `03f91b3a` | `main` |

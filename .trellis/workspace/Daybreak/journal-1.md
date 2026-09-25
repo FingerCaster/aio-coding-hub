@@ -184,3 +184,38 @@ Verified the non-AIO reasoning effort diagnosis, confirmed the compressed Codex 
 ### Status
 
 [OK] **Completed**
+
+
+## Session 6: Selective upstream low-risk patch sync
+
+**Date**: 2026-09-25
+**Task**: Selective upstream low-risk patch sync
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Fetched upstream into a local clone, audited 30 divergent commits, and selectively applied cda19b25, 3b19a24b, and f273d301. Archived the child task; the parent Astra investigation remains planning.
+
+### Main Changes
+
+- Applied cache metric, Windows asset CSP, and macOS notification isolation patches.
+- Recorded upstream conflict classification and pinned snapshot 420e9958.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `071d9e79` | (see git log) |
+
+### Testing
+
+- [OK] Vitest 29 tests, pnpm typecheck, pnpm lint, generated bindings, spec-links, cargo check/test/fmt, and git diff --check passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Run macOS target checks when an Apple target environment is available.
