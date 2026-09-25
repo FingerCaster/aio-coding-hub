@@ -32,6 +32,7 @@ pub(in crate::gateway) mod upstream_error_response_rules;
 pub(super) use caches::{ProviderBaseUrlPingCache, RecentErrorCache};
 pub(super) use error_code::GatewayErrorCode;
 pub(crate) use failover::resolve_transport_base_url;
+pub(in crate::gateway) use failover::select_base_url_by_mode;
 pub(in crate::gateway) use fake_200::is_fake_200_non_stream_body;
 pub(in crate::gateway) use logging::spawn_enqueue_request_log_with_backpressure;
 pub(in crate::gateway) use model_rewrite::{replace_model_in_body_json, replace_model_in_path};

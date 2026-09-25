@@ -20,6 +20,7 @@ import {
   type CliKey,
   type ProviderRouteRow,
   type ProviderSummary,
+  type ProviderAvailabilityOptions,
 } from "../../../services/providers/providers";
 import {
   summarizeGatewayCircuitRows,
@@ -84,6 +85,7 @@ type ProviderUiState = {
   createDialogState: CreateDialogState | null;
   editTarget: ProviderSummary | null;
   deleteTarget: ProviderSummary | null;
+  testTarget: ProviderSummary | null;
   routeDraftInitialized: boolean;
   routeDraftSelection: RouteDraftSelection;
 };
@@ -120,6 +122,7 @@ function createProviderUiState(activeCli: CliKey): ProviderUiState {
     createDialogState: null,
     editTarget: null,
     deleteTarget: null,
+    testTarget: null,
     routeDraftInitialized: false,
     routeDraftSelection: { kind: "default", modeId: null },
   };
@@ -299,6 +302,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     createDialogState,
     editTarget,
     deleteTarget,
+    testTarget,
     routeDraftSelection: storedRouteDraftSelection,
   } = effectiveProviderUiState;
   let routeDraftSelection = storedRouteDraftSelection;
@@ -333,6 +337,12 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     setProviderUiState((current) => ({
       ...current,
       deleteTarget: typeof value === "function" ? value(current.deleteTarget) : value,
+    }));
+  }, []);
+  const setTestTarget: Dispatch<SetStateAction<ProviderSummary | null>> = useCallback((value) => {
+    setProviderUiState((current) => ({
+      ...current,
+      testTarget: typeof value === "function" ? value(current.testTarget) : value,
     }));
   }, []);
   const setRouteDraftSelection: Dispatch<SetStateAction<RouteDraftSelection>> = useCallback(
@@ -931,7 +941,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
   );
 
   const testProviderAvailability = useCallback(
-    async (provider: ProviderSummary) => {
+    async (provider: ProviderSummary, options: ProviderAvailabilityOptions = {}) => {
       if (
         !beginStatefulProviderAction(testingByProviderIdRef, setTestingByProviderId, provider.id)
       ) {
@@ -941,6 +951,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
       try {
         const result = await testAvailabilityMutation.mutateAsync({
           providerId: provider.id,
+          ...options,
         });
         if (!result) return;
 
@@ -1399,6 +1410,8 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     sourceProvidersById,
     terminalCopyingByProviderId,
     duplicatingByProviderId,
+    testTarget,
+    setTestTarget,
     testProviderAvailability,
     testingByProviderId,
   };

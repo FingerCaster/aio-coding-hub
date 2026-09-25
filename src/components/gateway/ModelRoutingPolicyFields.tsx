@@ -113,7 +113,9 @@ export function ModelRoutingPolicyFields({
 
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-3">
-          <div className="text-xs font-medium text-muted-foreground">精确匹配规则</div>
+          <div className="text-xs font-medium text-muted-foreground">
+            模型匹配规则（精确优先，支持单个 * 通配符）
+          </div>
           <Button
             variant="secondary"
             size="sm"

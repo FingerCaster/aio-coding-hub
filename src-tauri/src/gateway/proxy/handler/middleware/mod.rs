@@ -16,6 +16,7 @@ pub(super) mod probe_interceptor;
 pub(super) mod provider_resolution;
 pub(super) mod recursion_guard;
 pub(super) mod request_fingerprint;
+pub(super) mod response_input_rectifier;
 pub(super) mod runtime_settings_reader;
 pub(super) mod warmup_interceptor;
 
@@ -31,6 +32,7 @@ pub(super) use probe_interceptor::ProbeInterceptorMiddleware;
 pub(super) use provider_resolution::ProviderResolutionMiddleware;
 pub(super) use recursion_guard::RecursionGuardMiddleware;
 pub(super) use request_fingerprint::RequestFingerprintMiddleware;
+pub(super) use response_input_rectifier::ResponseInputRectifierMiddleware;
 pub(super) use runtime_settings_reader::RuntimeSettingsMiddleware;
 pub(super) use warmup_interceptor::WarmupInterceptorMiddleware;
 

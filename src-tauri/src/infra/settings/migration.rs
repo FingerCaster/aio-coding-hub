@@ -594,6 +594,15 @@ fn normalize_model_routing_rule_for_write(
         .into());
     }
 
+    if rule.source_model.matches('*').count() > 1
+        || rule.target_model.as_ref().is_some_and(|target| {
+            target.matches('*').count() > 1
+                || (target.contains('*') && !rule.source_model.contains('*'))
+        })
+    {
+        return Err(format!("SEC_INVALID_INPUT: model_routing_policy.rules[{index}] supports at most one wildcard; a target wildcard requires a source wildcard").into());
+    }
+
     rule.reasoning_effort = rule
         .reasoning_effort
         .take()
@@ -1879,6 +1888,34 @@ mod tests {
             message_behavior: UpstreamErrorMessageBehavior::Override {
                 message: " busy\r\nnow ".to_string(),
             },
+        }
+    }
+
+    #[test]
+    fn routing_wildcards_validate_and_survive_persisted_sanitization() {
+        for (source, target, valid) in [
+            ("gpt-*", "remote-*", true),
+            ("gpt-*", "fixed", true),
+            ("gpt", "remote-*", false),
+            ("g*t-*", "fixed", false),
+            ("gpt-*", "r**", false),
+        ] {
+            let mut policy = ModelRoutingPolicy {
+                enabled: true,
+                rules: vec![ModelRoutingRule {
+                    source_model: source.into(),
+                    target_model: Some(target.into()),
+                    reasoning_effort: None,
+                }],
+            };
+            assert_eq!(
+                normalize_model_routing_policy_for_write(&mut policy).is_ok(),
+                valid
+            );
+            sanitize_model_routing_policy(&mut policy);
+            // Lenient reads/imports preserve exact-only legacy asterisk rules.
+            assert!(policy.enabled);
+            assert_eq!(policy.rules.len(), 1);
         }
     }
 

@@ -163,3 +163,60 @@ response -> 256 KiB bounded reader -> JSON object/type validation
 
 Remote values describe a candidate device-flow transition; bounded parsing and
 current-flow ownership must both succeed before they can affect local state.
+
+## Scenario: Configured Proxy For OAuth Traffic
+
+### 1. Scope / Trigger
+
+Login, device polling, manual refresh, quota lookup/reset and the background
+refresh loop share the configured upstream proxy without changing flow/token
+ownership from the preceding contract.
+
+### 2. Signatures
+
+`build_default_oauth_http_client(app)` delegates to
+`build_oauth_http_client(app, user_agent, timeout_secs, connect_timeout_secs)`.
+Shared HTTP helpers resolve effective settings, protect system-proxy self-loop
+and apply the SOCKS5 local-DNS workaround.
+
+### 3. Contracts
+
+A nonblank `AIO_OAUTH_PROXY_URL` takes precedence; otherwise read and validate
+current app proxy settings, then use standard system proxies if disabled.
+Blank dedicated overrides do not shadow settings. Enabled invalid or loopback
+settings fail closed. Standard system proxies pointing at this gateway are
+bypassed. Explicit overrides remain intentional overrides. `socks5://` uses
+IPv4-first local resolution; `socks5h://` keeps remote resolution.
+The background loop builds its client for each eligible refresh batch, so
+settings changes are observed. Build failures are persisted for affected
+providers without a token refresh and do not terminate the poll loop. Error
+messages and logs mask credentials, including malformed URLs with userinfo.
+
+### 4. Validation / Error Matrix
+
+| Condition | Outcome |
+| --- | --- |
+| Dedicated nonblank override | Use explicit override |
+| Blank override and configured settings | Use app proxy |
+| Enabled app proxy has no URL or targets the gateway | Fail closed |
+| Automatic system proxy targets the gateway | Disable automatic proxy |
+| Client build fails in refresh loop | Persist error; continue later polls |
+
+### 5. Examples
+
+Good: a user changes the app proxy and the next refresh batch uses it.
+Boundary: an empty dedicated environment value still uses app settings.
+Bad: retain a single startup client forever or include proxy credentials in
+OAuth status diagnostics.
+
+### 6. Tests
+
+OAuth client tests cover configured proxy, override precedence, blank values,
+SOCKS5, self-loop and masking. Refresh-loop tests cover per-provider client
+failure persistence and shutdown. Existing command/flow tests preserve stale
+flow cancellation and token ownership.
+
+### 7. Wrong / Correct
+
+Wrong: every OAuth command constructs an independent direct client. Correct:
+thread AppHandle into the shared builder and keep the existing flow owner.

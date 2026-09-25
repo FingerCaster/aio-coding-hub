@@ -31,12 +31,17 @@ import {
   type ProviderAccountUsageResult,
   type ProviderOAuthResetCodexQuotaResult,
   type ProviderAvailabilityResult,
+  type ProviderAvailabilityOptions,
   type ProviderRouteRow,
   type ProviderUpsertInput,
   type ProviderSummary,
   validateProviderCliKey,
   validateProviderId,
 } from "../services/providers/providers";
+import {
+  providerModelsDiscover,
+  type ProviderModelDiscoveryInput,
+} from "../services/providers/modelDiscovery";
 import { isProviderAccountUsageConfigured } from "../services/providers/providerAccountUsageConfig";
 import type { SortModeProviderRow } from "../services/providers/sortModes";
 import { logToConsole } from "../services/consoleLog";
@@ -611,11 +616,22 @@ export function useProviderAccountUsageQuery(provider: ProviderSummary, enabled 
 export function useProviderTestAvailabilityMutation() {
   const queryClient = useQueryClient();
 
-  return useMutation<ProviderAvailabilityResult | null, Error, { providerId: number }>({
-    mutationFn: (input) => providerTestAvailability(input.providerId),
+  return useMutation<
+    ProviderAvailabilityResult | null,
+    Error,
+    { providerId: number } & ProviderAvailabilityOptions
+  >({
+    mutationFn: (input) => providerTestAvailability(input.providerId, input),
     onSuccess: (result) => {
       if (!result) return;
       queryClient.invalidateQueries({ queryKey: gatewayKeys.circuits() });
     },
+  });
+}
+
+// Discovery is read-only: never invalidate or replace the persisted model catalog.
+export function useProviderModelsDiscoverMutation() {
+  return useMutation({
+    mutationFn: (input: ProviderModelDiscoveryInput) => providerModelsDiscover(input),
   });
 }

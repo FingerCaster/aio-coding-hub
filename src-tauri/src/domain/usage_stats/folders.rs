@@ -182,9 +182,7 @@ pub(super) fn row_to_agg(row: &Row<'_>) -> rusqlite::Result<ProviderAgg> {
         cost_covered_success: row
             .get::<_, Option<i64>>("cost_covered_success")?
             .unwrap_or(0),
-        total_cost_usd_femto: row
-            .get::<_, Option<i64>>("total_cost_usd_femto")?
-            .unwrap_or(0),
+        total_cost_usd_femto: row.get("total_cost_usd_femto")?,
     })
 }
 
@@ -270,7 +268,7 @@ SELECT
       r.cost_usd_femto IS NOT NULL
     ) THEN 1 ELSE 0 END
   ) AS cost_covered_success,
-  SUM(
+  TOTAL(
     CASE WHEN (
       r.status >= 200 AND r.status < 300 AND r.error_code IS NULL AND
       r.cost_usd_femto IS NOT NULL AND r.cost_usd_femto > 0

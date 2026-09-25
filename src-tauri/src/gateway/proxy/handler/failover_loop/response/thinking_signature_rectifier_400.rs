@@ -195,13 +195,19 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             response_rule_body = None;
         }
         let upstream_body_text = String::from_utf8_lossy(body_for_scan.as_ref()).to_string();
-        let signature_trigger = enable_thinking_signature_rectifier
-            .then(|| thinking_signature_rectifier::detect_trigger(&upstream_body_text))
-            .flatten();
-        let budget_trigger = signature_trigger
-            .is_none()
-            .then(|| thinking_budget_rectifier::detect_trigger(&upstream_body_text))
-            .flatten();
+        use crate::gateway::reactive_rectifier::{self, ReactiveRectifierKind};
+        let matched = reactive_rectifier::detect(
+            &cli_key,
+            &upstream_body_text,
+            enable_thinking_signature_rectifier,
+            enable_thinking_budget_rectifier,
+        );
+        let signature_trigger = matched.and_then(|(kind, trigger)| {
+            (kind == ReactiveRectifierKind::ThinkingSignature).then_some(trigger)
+        });
+        let budget_trigger = matched.and_then(|(kind, trigger)| {
+            (kind == ReactiveRectifierKind::ThinkingBudget).then_some(trigger)
+        });
 
         let mut rectified_applied = false;
         let mut rectifier_kind: Option<&'static str> = None;

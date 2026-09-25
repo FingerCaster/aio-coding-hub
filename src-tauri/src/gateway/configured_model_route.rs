@@ -65,10 +65,7 @@ pub(in crate::gateway) fn resolve(
         return None;
     }
 
-    let rule = policy
-        .rules
-        .iter()
-        .find(|rule| rule.source_model == requested_model)?;
+    let (rule, capture) = matching_rule(policy, requested_model)?;
     if rule.target_model.is_none() && rule.reasoning_effort.is_none() {
         return None;
     }
@@ -78,9 +75,123 @@ pub(in crate::gateway) fn resolve(
         provider_name: provider_name.to_string(),
         policy_source,
         source_model: requested_model.to_string(),
-        target_model: rule.target_model.clone(),
+        target_model: rule.target_model.as_ref().map(|target| {
+            if supports_wildcard_expansion(rule) {
+                target.replace('*', capture)
+            } else {
+                target.clone()
+            }
+        }),
         reasoning_effort: rule.reasoning_effort.clone(),
     })
+}
+
+// Older exact-only settings could contain literal asterisks. Retain those rows
+// and their original meaning if they cannot represent a single-wildcard mapping.
+fn supports_wildcard_expansion(rule: &crate::settings::ModelRoutingRule) -> bool {
+    rule.source_model.matches('*').count() <= 1
+        && !rule.target_model.as_ref().is_some_and(|target| {
+            target.matches('*').count() > 1
+                || (target.contains('*') && !rule.source_model.contains('*'))
+        })
+}
+
+// Match upstream exact/specific/wildcard order without reordering persisted rules.
+fn matching_rule<'a>(
+    policy: &'a crate::settings::ModelRoutingPolicy,
+    model: &'a str,
+) -> Option<(&'a crate::settings::ModelRoutingRule, &'a str)> {
+    if !policy.enabled {
+        return None;
+    }
+    policy
+        .rules
+        .iter()
+        .filter_map(|rule| {
+            if rule.target_model.is_none() && rule.reasoning_effort.is_none() {
+                return None;
+            }
+            if supports_wildcard_expansion(rule) {
+                match_pattern(&rule.source_model, model).map(|capture| (rule, capture))
+            } else {
+                (rule.source_model == model).then_some((rule, ""))
+            }
+        })
+        .min_by(|(left, _), (right, _)| {
+            let left_wildcard =
+                supports_wildcard_expansion(left) && left.source_model.contains('*');
+            let right_wildcard =
+                supports_wildcard_expansion(right) && right.source_model.contains('*');
+            left_wildcard
+                .cmp(&right_wildcard)
+                .then_with(|| compare_patterns(&left.source_model, &right.source_model))
+        })
+}
+
+fn compare_patterns(left: &str, right: &str) -> std::cmp::Ordering {
+    left.contains('*')
+        .cmp(&right.contains('*'))
+        .then_with(|| {
+            right
+                .chars()
+                .filter(|c| *c != '*')
+                .count()
+                .cmp(&left.chars().filter(|c| *c != '*').count())
+        })
+        .then_with(|| left.cmp(right))
+}
+
+fn match_pattern<'a>(pattern: &str, model: &'a str) -> Option<&'a str> {
+    let Some((prefix, suffix)) = pattern.split_once('*') else {
+        return (pattern == model).then_some("");
+    };
+    if suffix.contains('*') {
+        return None;
+    }
+    model.strip_prefix(prefix)?.strip_suffix(suffix)
+}
+
+/// A matched effective policy declares an explicit candidate. Preserve route order;
+/// absent/disabled/unmatched policies remain fallback candidates when none match.
+/// Forced providers retain their own policy and bypass sibling preference narrowing.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::gateway) fn filter_providers(
+    providers: &mut Vec<crate::providers::ProviderForGateway>,
+    cli_key: &str,
+    method: &str,
+    path: &str,
+    requested_model: Option<&str>,
+    bypass: bool,
+    global_policy: &crate::settings::ModelRoutingPolicy,
+    forced_provider_id: Option<i64>,
+) {
+    if bypass
+        || forced_provider_id.is_some()
+        || !is_supported_inference_request(cli_key, method, path)
+    {
+        return;
+    }
+    let Some(model) =
+        requested_model.filter(|model| !model.is_empty() && !model.starts_with("aio/"))
+    else {
+        return;
+    };
+    let is_explicit = |provider: &crate::providers::ProviderForGateway| {
+        !crate::providers::has_bridged_input_semantics(
+            provider.source_provider_id,
+            provider.bridge_type.as_deref(),
+        ) && matching_rule(
+            provider
+                .model_routing_policy_override
+                .as_ref()
+                .unwrap_or(global_policy),
+            model,
+        )
+        .is_some()
+    };
+    if providers.iter().any(is_explicit) {
+        providers.retain(is_explicit);
+    }
 }
 
 fn is_supported_inference_request(cli_key: &str, method: &str, path: &str) -> bool {
@@ -367,6 +478,145 @@ pub(in crate::gateway) fn mark_applied(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_pattern_precedence_captures_unicode_without_cascading() {
+        let policy = crate::settings::ModelRoutingPolicy {
+            enabled: true,
+            rules: vec![
+                crate::settings::ModelRoutingRule {
+                    source_model: "*".into(),
+                    target_model: Some("fallback-*".into()),
+                    reasoning_effort: None,
+                },
+                crate::settings::ModelRoutingRule {
+                    source_model: "gpt-*".into(),
+                    target_model: Some("remote-*".into()),
+                    reasoning_effort: Some("high".into()),
+                },
+                crate::settings::ModelRoutingRule {
+                    source_model: "gpt-exact".into(),
+                    target_model: Some("exact-target".into()),
+                    reasoning_effort: None,
+                },
+                crate::settings::ModelRoutingRule {
+                    source_model: "gpt-*-mini".into(),
+                    target_model: Some("small-*".into()),
+                    reasoning_effort: None,
+                },
+            ],
+        };
+        for (model, target) in [
+            ("gpt-exact", "exact-target"),
+            ("gpt-多语言-mini", "small-多语言"),
+            ("gpt-large", "remote-large"),
+            ("other", "fallback-other"),
+        ] {
+            let route = resolve(
+                "codex",
+                "POST",
+                "/v1/responses",
+                Some(model),
+                false,
+                &policy,
+                None,
+                1,
+                "provider",
+            )
+            .unwrap();
+            assert_eq!(route.target_model.as_deref(), Some(target));
+            assert_eq!(route.source_model, model);
+        }
+        assert!(resolve(
+            "codex",
+            "POST",
+            "/v1/responses",
+            Some("aio/profile"),
+            false,
+            &policy,
+            None,
+            1,
+            "provider"
+        )
+        .is_none());
+        assert!(resolve(
+            "codex",
+            "POST",
+            "/v1/responses",
+            Some("gpt-exact"),
+            true,
+            &policy,
+            None,
+            1,
+            "provider"
+        )
+        .is_none());
+        assert!(match_pattern("a*a", "a").is_none());
+    }
+
+    #[test]
+    fn legacy_asterisk_rules_remain_literal_when_not_valid_wildcard_mappings() {
+        for (source, target) in [("gpt**", "remote**"), ("exact", "remote-*")] {
+            let mut policy = crate::settings::ModelRoutingPolicy {
+                enabled: true,
+                rules: vec![crate::settings::ModelRoutingRule {
+                    source_model: source.into(),
+                    target_model: Some(target.into()),
+                    reasoning_effort: None,
+                }],
+            };
+            let route = resolve(
+                "codex",
+                "POST",
+                "/v1/responses",
+                Some(source),
+                false,
+                &policy,
+                None,
+                1,
+                "provider",
+            )
+            .unwrap();
+            assert_eq!(route.target_model.as_deref(), Some(target));
+            assert!(resolve(
+                "codex",
+                "POST",
+                "/v1/responses",
+                Some("gpt-large"),
+                false,
+                &policy,
+                None,
+                1,
+                "provider"
+            )
+            .is_none());
+            policy.rules.insert(
+                0,
+                crate::settings::ModelRoutingRule {
+                    source_model: "*".into(),
+                    target_model: Some("fallback-*".into()),
+                    reasoning_effort: None,
+                },
+            );
+            let route = resolve(
+                "codex",
+                "POST",
+                "/v1/responses",
+                Some(source),
+                false,
+                &policy,
+                None,
+                1,
+                "provider",
+            )
+            .unwrap();
+            assert_eq!(
+                route.target_model.as_deref(),
+                Some(target),
+                "legacy literal rules retain exact precedence"
+            );
+        }
+    }
 
     fn route(target_model: Option<&str>, effort: Option<&str>) -> ConfiguredModelRoute {
         ConfiguredModelRoute {

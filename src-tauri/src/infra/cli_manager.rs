@@ -128,19 +128,23 @@ fn read_limited_command_output<R: Read>(
     })
 }
 
-fn spawn_limited_output_reader<R>(reader: R) -> JoinHandle<std::io::Result<LimitedCommandOutput>>
+fn spawn_limited_output_reader<R>(
+    reader: R,
+    limit: usize,
+) -> JoinHandle<std::io::Result<LimitedCommandOutput>>
 where
     R: Read + Send + 'static,
 {
-    std::thread::spawn(move || read_limited_command_output(reader, COMMAND_OUTPUT_STREAM_LIMIT))
+    std::thread::spawn(move || read_limited_command_output(reader, limit))
 }
 
 fn collect_output_reader(
     task: Option<JoinHandle<std::io::Result<LimitedCommandOutput>>>,
     stream_name: &str,
+    limit: usize,
 ) -> crate::shared::error::AppResult<LimitedCommandOutput> {
     let Some(task) = task else {
-        return Ok(LimitedCommandOutput::empty(COMMAND_OUTPUT_STREAM_LIMIT));
+        return Ok(LimitedCommandOutput::empty(limit));
     };
 
     match task.join() {
@@ -154,9 +158,10 @@ fn collect_limited_process_output(
     status: std::process::ExitStatus,
     stdout_task: Option<JoinHandle<std::io::Result<LimitedCommandOutput>>>,
     stderr_task: Option<JoinHandle<std::io::Result<LimitedCommandOutput>>>,
+    limit: usize,
 ) -> crate::shared::error::AppResult<LimitedProcessOutput> {
-    let stdout = collect_output_reader(stdout_task, "stdout")?;
-    let stderr = collect_output_reader(stderr_task, "stderr")?;
+    let stdout = collect_output_reader(stdout_task, "stdout", limit)?;
+    let stderr = collect_output_reader(stderr_task, "stderr", limit)?;
     Ok(LimitedProcessOutput {
         status,
         stdout,
@@ -167,9 +172,10 @@ fn collect_limited_process_output(
 fn drain_limited_output_readers(
     stdout_task: Option<JoinHandle<std::io::Result<LimitedCommandOutput>>>,
     stderr_task: Option<JoinHandle<std::io::Result<LimitedCommandOutput>>>,
+    limit: usize,
 ) {
-    let _ = collect_output_reader(stdout_task, "stdout");
-    let _ = collect_output_reader(stderr_task, "stderr");
+    let _ = collect_output_reader(stdout_task, "stdout", limit);
+    let _ = collect_output_reader(stderr_task, "stderr", limit);
 }
 
 fn limited_output_to_string(output: &LimitedCommandOutput, stream_name: &str) -> String {
@@ -187,43 +193,91 @@ fn limited_output_to_string(output: &LimitedCommandOutput, stream_name: &str) ->
 }
 
 fn command_output_with_timeout(
+    cmd: Command,
+    timeout: Duration,
+    label: String,
+) -> crate::shared::error::AppResult<LimitedProcessOutput> {
+    command_output_with_timeout_limit(cmd, timeout, label, COMMAND_OUTPUT_STREAM_LIMIT)
+}
+
+fn command_output_with_timeout_limit(
     mut cmd: Command,
     timeout: Duration,
     label: String,
+    output_limit: usize,
 ) -> crate::shared::error::AppResult<LimitedProcessOutput> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    #[cfg(unix)]
+    crate::shared::process::configure_unix_process_group(&mut cmd);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to execute {label}: {e}"))?;
-    let stdout_task = child.stdout.take().map(spawn_limited_output_reader);
-    let stderr_task = child.stderr.take().map(spawn_limited_output_reader);
+    let stdout_task = child
+        .stdout
+        .take()
+        .map(|reader| spawn_limited_output_reader(reader, output_limit));
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|reader| spawn_limited_output_reader(reader, output_limit));
 
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                return collect_limited_process_output(status, stdout_task, stderr_task);
+                return collect_limited_process_output(
+                    status,
+                    stdout_task,
+                    stderr_task,
+                    output_limit,
+                );
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    drain_limited_output_readers(stdout_task, stderr_task);
+                    terminate_command(&mut child);
+                    drain_limited_output_readers(stdout_task, stderr_task, output_limit);
                     return Err(format!("{label} timed out after {}ms", timeout.as_millis()).into());
                 }
                 std::thread::sleep(CMD_POLL_INTERVAL);
             }
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                drain_limited_output_readers(stdout_task, stderr_task);
+                terminate_command(&mut child);
+                drain_limited_output_readers(stdout_task, stderr_task, output_limit);
                 return Err(format!("failed to wait for {label}: {e}").into());
             }
         }
     }
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn run_discovery_command(
+    command: Command,
+    timeout: Duration,
+    output_limit: usize,
+) -> crate::shared::error::AppResult<String> {
+    let output = command_output_with_timeout_limit(
+        command,
+        timeout,
+        "Codex discovery probe".to_string(),
+        output_limit,
+    )?;
+    if !output.status.success() || output.stdout.truncated || output.stderr.truncated {
+        return Err("CLI_DISCOVERY_PROBE_FAILED: unsuccessful or oversized output".into());
+    }
+    String::from_utf8(output.stdout.bytes)
+        .map_err(|_| "CLI_DISCOVERY_PROBE_FAILED: invalid UTF-8".into())
+}
+
+fn terminate_command(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    crate::shared::process::terminate_unix_process_group(child.id());
+    #[cfg(windows)]
+    crate::shared::process::terminate_windows_process_tree(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn home_dir<R: tauri::Runtime>(
@@ -732,6 +786,25 @@ pub(crate) fn codex_launch_spec<R: tauri::Runtime>(
         version: run_version(&executable).ok(),
         executable,
     }))
+}
+
+pub(crate) fn codex_discovery_version<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    deadline: Instant,
+) -> crate::shared::error::AppResult<Option<String>> {
+    #[cfg(windows)]
+    {
+        use crate::wsl::provider_model_discovery::{version_source, CodexVersionSource};
+        match version_source(app, deadline) {
+            CodexVersionSource::Native => {}
+            CodexVersionSource::Wsl(version) => return Ok(Some(version)),
+            CodexVersionSource::Fallback => return Ok(None),
+        }
+    }
+    if Instant::now() >= deadline {
+        return Ok(None);
+    }
+    codex_launch_spec(app).map(|launch| launch.and_then(|launch| launch.version))
 }
 
 fn cli_probe(app: &tauri::AppHandle, cmd: &str) -> crate::shared::error::AppResult<CliProbeResult> {

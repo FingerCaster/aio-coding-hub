@@ -42,7 +42,7 @@ use middleware::{
     Cx2ccCountTokensInterceptorMiddleware, ManagedModelRouteMiddleware, MiddlewareAction,
     ModelInferenceMiddleware, ProbeInterceptorMiddleware, ProviderResolutionMiddleware,
     ProxyContext, RecursionGuardMiddleware, RequestFingerprintMiddleware,
-    RuntimeSettingsMiddleware, WarmupInterceptorMiddleware,
+    ResponseInputRectifierMiddleware, RuntimeSettingsMiddleware, WarmupInterceptorMiddleware,
 };
 
 type SpecialSettings = Arc<Mutex<Vec<serde_json::Value>>>;
@@ -272,6 +272,12 @@ where
 
     // 4. Codex request-origin classification.
     let ctx = match CodexRequestClassifierMiddleware::run(ctx) {
+        MiddlewareAction::Continue(ctx) => *ctx,
+        MiddlewareAction::ShortCircuit(resp) => return resp,
+    };
+
+    // Normalize Responses shorthand after bounded decoding and before model routing.
+    let ctx = match ResponseInputRectifierMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };

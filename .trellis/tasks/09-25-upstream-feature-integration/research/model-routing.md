@@ -1,0 +1,61 @@
+# Research: upstream model routing vs fork Codex multi-model support
+
+- Query: Compare upstream unified provider model policy/routing and discovery with the fork's configured model route, provider model catalog, managed Codex profiles, and `aio/*` route. Determine the smallest integration boundary that adopts upstream routing while preserving fork Codex multi-model behavior.
+- Scope: mixed (fork worktree, read-only upstream checkout at 420e9958091ae460d152a508b1eb0e2110ab733b, and exported patches for 9e2d84c8, bcb63382, 48563377, 537dd7a8)
+- Date: 2026-09-25
+
+## Findings
+
+### Fixed revisions and upstream feature shape
+
+- Upstream comparison checkout `E:/MyWork/aio-coding-hub-upstream` is clean at `420e9958091ae460d152a508b1eb0e2110ab733b`. Fork baseline is `270b808c678af99c5d1ee4535071acae0adbb465`; stated merge base is `4f02ba3d`.
+- The four relevant upstream commits are recorded in `research/upstream-commit-inventory.md` and full patches are under `C:/Users/admin/AppData/Local/Temp/aio-upstream-planning-xy61hsur/`.
+- Upstream's policy is a per-Provider `ProviderModelPolicyV1` (`mode = all | selected | excluded`, `model_patterns`, `mappings`) in `src-tauri/src/domain/providers/model_policy.rs:4-163`. It separates provider eligibility from model rewriting, supports one `*` wildcard, sorts exact/specific patterns before broad ones, and never recursively remaps a target. `provider_selection.rs:23-89` narrows candidates to explicit matches when any exist, keeps fallback providers otherwise, and preserves a forced provider unless that provider itself blocks the model.
+- Upstream applies a resolved target once per provider attempt in `src-tauri/src/gateway/proxy/handler/failover_loop/prepare/provider_model_policy.rs:17-87`; it emits one `model_redirect` audit/event record with provider identity. `provider_iterator.rs:185-191,303-349` deliberately skips generic policy for CX2CC bridges, then applies the mapping before transport. `RequestBeforeSend` and later transport ownership remain in the same attempt pipeline.
+- Upstream migration `src-tauri/src/infra/db/migrations/v37_to_v38.rs:5-48` adds `providers.model_policy_json`, defaults non-Claude providers to `all`, and treats Claude NULL as legacy. The frontend editor explicitly warns that saving cuts over old mappings and cannot switch back (`src/pages/providers/ProviderModelPolicySection.tsx:153-162,255-261`). This is a destructive semantic cutover for existing fork policy data unless a compatibility migration is added.
+
+### Fork's current configured route and policy contract
+
+- Fork has a separate global `settings.model_routing_policy` plus nullable Provider override. The contract says SQL NULL inherits global; `Some(enabled=true)` replaces it; `Some(enabled=false)` suppresses routing (`.trellis/spec/aio-coding-hub/cross-layer/configured-model-routing-contract.md:107-118`). The fork's UI exposes the three states “继承全局 / 专属规则 / 明确关闭” (`src/pages/providers/ProviderEditorDialog.tsx:196-224`).
+- Fork rules are exact, case-sensitive, first-match, one-pass and allow either `target_model`, `reasoning_effort`, or both (`configured-model-routing-contract.md:96-105`). `src-tauri/src/gateway/configured_model_route.rs:40-83` bypasses managed routes and every `aio/*` model, chooses Provider override or global, then resolves against the immutable requested model. This is target rewrite plus effort-only rewrite, unlike upstream's target-only model mapping.
+- Fork eligibility is broad request-family based: POST Claude Messages, Codex Responses/compact, Grok Chat/Responses, and Gemini generate paths (`configured_model_route.rs:86-114`). It applies after sanitizer and `RequestBeforeSend`, before final URL/body/fingerprint/transport, and an apply failure changes Provider without upstream transport retry (`configured-model-routing-contract.md:120-182`). It does not filter the Provider candidate set before selection; current provider middleware selects providers and proceeds directly (`src-tauri/src/gateway/proxy/handler/middleware/provider_resolution.rs:45-129`).
+- Fork persistence/export is already cross-layer and versioned: settings schema 57, SQLite 45 nullable Provider field, share/config bundle v4 (`configured-model-routing-contract.md:69-92,192-200`), with strict validation/sanitization in `src-tauri/src/infra/settings/migration.rs:570-658` and frontend validation in `src/services/gateway/modelRoutingPolicy.ts:1-92`.
+
+### Codex multi-model behavior that must stay fork-owned
+
+- Provider-scoped model discovery and stable identity are already implemented in `src-tauri/src/domain/provider_models.rs:811-956,984-1157,1497-1657`: `(provider_uuid, model_uuid, remote_model_id)`, direct Codex-only eligibility, no-redirect bounded `/v1/models`, stale discovered rows retained on failure, and exact alias resolution.
+- Managed aliases support both new exact `aio/<profile_name_key>` and legacy exact `aio/<model_uuid>` (`provider_models.rs:1599-1648`). `managed_model_route.rs:21-85` rejects non-Codex/invalid aliases, binds exactly one direct Provider, rewrites the request to the remote model, disables session reuse, and preserves same-provider gates/retries. Configured route already bypasses `aio/*` (`configured_model_route.rs:52-59`); this bypass must remain when upstream policy is inserted.
+- Fork managed profiles write top-level `model = "aio/<profile_name_key>"`, `model_provider = "aio"`, use content SHA ownership and no-clobber/compensation (`.trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md:183-199`). The Codex catalog transaction merges bundled/user catalogs, projects per-profile capabilities, and restores user catalog bindings (`...codex-managed-model-route-contract.md:201-245`). Upstream's catalog projection must not replace this owner or create per-upstream `model_providers`; upstream itself requires one AIO provider (`...:185-193`).
+- On Windows, upstream's dynamic Codex OAuth discovery can obtain the client version from an applied WSL Codex configuration only when exactly one valid configured distro is found; otherwise it fails closed to native/fallback (`upstream/src-tauri/src/infra/wsl/provider_model_discovery.rs:17-35,71-110,183-235`). It validates the WSL manifest, applied `aio` provider, `apikey` auth, bounded `wsl.exe timeout` probes, and uses native installed CLI when no WSL candidate exists. This is discovery identity only and should not alter fork's managed profile/catalog ownership.
+
+### Dynamic discovery/OAuth behavior in upstream
+
+- Upstream `src-tauri/src/app/provider_model_discovery.rs:15-67,440-682` adds bounded provider-editor discovery for API-key and supported OAuth providers, no redirects, model-format-specific parsing (Claude/Codex/Grok data IDs, Gemini names), and read-only saved OAuth credentials. Codex OAuth adds dynamic client version and account headers (`src-tauri/src/gateway/oauth/adapters/codex.rs:114-136`); OAuth discovery does not refresh/write tokens (covered by upstream tests in that module).
+- Fork's existing `provider_models.rs:1190-1279,1497-1597` is narrower: direct Codex catalog persistence, fixed OpenAI-compatible `/v1/models`, bounded body/count, no redirects, UUID identity and connection snapshot checks. Adopting upstream dynamic discovery is additive only if its command/DTO layer is kept separate from this persisted Codex catalog and profile binding.
+
+## Design boundary and unresolved product conflicts
+
+1. **Policy data model conflict (must be decided before implementation).** Upstream policy has no global scope and no reasoning-effort field. Fork currently permits global rules, Provider inherit/override/disable, target-only rules, and effort-only rules. Viable options:
+   - **A (recommended for “upstream routing”):** migrate only model-target semantics to upstream per-Provider policies; materialize an inherited global rule into each affected Provider at migration time; preserve old global/override JSON read-only as a compatibility record; keep fork effort-only behavior in a separate compatibility layer until explicitly retired.
+   - **B:** keep fork global/Provider policy as the source of truth and implement upstream's eligibility/wildcard algorithm as a runtime adapter. This gives upstream runtime behavior without destructive persistence migration, but upstream UI/import/export/schema cannot be copied verbatim.
+   - **C:** full cutover: discard/disable global and effort-only semantics and require users to recreate per-Provider target mappings. This matches upstream most closely but violates the requirement to avoid silently discarding user config; requires explicit user approval and migration warnings.
+2. **Provider-selection behavior conflict.** Upstream filters/ prefers Providers before failover (`provider_selection.rs:23-89`), while fork currently selects all enabled Providers first and applies configured route per attempt (`provider_resolution.rs:45-129`, `configured_model_route.rs:131-209`). Adopting upstream behavior changes which Provider is eligible, circuit/failover ordering, and forced-provider diagnostics. The implementation must either make the adapter perform upstream eligibility before current selection or retain current selection and only import upstream target rewrite; this is a product behavior decision, not a textual merge.
+3. **Reasoning-only rules.** Fork's `reasoning_effort` can exist without `target_model` and maps by protocol (Claude `output_config`, Responses `reasoning`, Chat `reasoning_effort`, Gemini thinking fields) (`configured_model_route.rs:142-186,212-239`). Upstream `ProviderModelMapping` requires a target and has no effort concept (`upstream/src-tauri/src/domain/providers/model_policy.rs:22-36`). Preserve this in a fork-owned post-policy transform or ask whether it may be removed; do not silently convert effort-only rules into target rewrites.
+4. **Codex route bypass and policy projection.** Both systems intentionally treat `aio/*` as server-managed. Upstream policy projection may add mapped ordinary Codex slugs to the picker/catalog (`upstream/src-tauri/src/infra/codex_model_catalog/projection.rs:27-45,297-325`), while fork's catalog is profile/capability-owned. Keep upstream `aio/*` bypass, exact managed alias resolution, and fork catalog transaction as authoritative; only merge upstream ordinary-slug projection if it does not mutate the profile-owned catalog or top-level `aio` provider.
+5. **Discovery overlap.** Upstream dynamic OAuth/API-key discovery is an editor-time, non-persistent catalog fetch; fork `provider_models` discovery persists UUID rows and capabilities. Adopt upstream command/parser/error behavior only as an input source for fork's existing persistence, guarded by provider UUID and connection snapshot. Do not replace fork persisted identities with remote IDs or let discovery overwrite manual capability fields.
+6. **WSL applicability.** WSL version probing is applicable only on Windows and only for a single validated applied Codex distro; malformed, stale, multiple, or timed-out manifests fall back. It should affect Codex OAuth discovery's version header, not model alias routing or profile identity. On non-Windows it is absent.
+
+## Related specs
+
+- `.trellis/spec/aio-coding-hub/cross-layer/configured-model-routing-contract.md`
+- `.trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md`
+- `.trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md`
+- `.trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md`
+- `.trellis/spec/guides/upstream-merge-scope-guide.md`
+- `.trellis/tasks/09-25-upstream-feature-integration/research/upstream-commit-inventory.md`
+
+## Caveats / Not Found
+
+- No implementation or Git operation was performed in the fork. The upstream checkout and patch files were read-only inputs.
+- The exported commit patches include additional OAuth refresh/discovery changes and UI/test churn beyond routing; only the behavior relevant to the requested routing/Codex boundary is summarized here.
+- The user has authorized adopting upstream routing and retaining fork Codex multi-model support, but has not chosen the migration semantics for global rules, Provider inherit/disable, or effort-only rules. Those choices remain a decision gate before code changes.

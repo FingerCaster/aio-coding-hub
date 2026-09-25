@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_PROBE_PROMPT: &str = "hi";
+const MAX_PROBE_PROMPT_CHARS: usize = 4096;
 const PROBE_RESPONSE_BODY_LIMIT: usize = 64 * 1024;
 const PROBE_RESPONSE_PREVIEW_LIMIT: usize = 500;
 
@@ -261,12 +263,61 @@ fn resolve_codex_probe_model_from_sources(
         .unwrap_or_else(|| crate::settings::DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string())
 }
 
+/// Validates a caller-supplied probe prompt. Empty input falls back to the default prompt.
+fn normalize_probe_prompt(raw: Option<String>) -> AppResult<String> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_PROBE_PROMPT.to_string());
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(DEFAULT_PROBE_PROMPT.to_string());
+    }
+    if trimmed.chars().count() > MAX_PROBE_PROMPT_CHARS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: probe prompt must be at most {MAX_PROBE_PROMPT_CHARS} characters"
+        )
+        .into());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Validates a caller-supplied probe model. Empty input means "keep the resolved default".
+///
+/// The model reaches the upstream verbatim, so it must not carry a policy wildcard or control
+/// characters. Gemini additionally puts the model inside the URL path, where separators would
+/// create extra path segments (and `..` would be normalized away by `Url::set_path`).
+fn validate_probe_model(cli_key: &str, raw: Option<String>) -> AppResult<Option<String>> {
+    let Some(raw) = raw else { return Ok(None) };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.contains('*') || trimmed.chars().any(char::is_control) {
+        return Err(
+            "SEC_INVALID_INPUT: probe model must not contain wildcards or control characters"
+                .into(),
+        );
+    }
+    if cli_key == "gemini"
+        && trimmed
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '/' | '\\' | '?' | '#'))
+    {
+        return Err(
+            "SEC_INVALID_INPUT: gemini probe model must not contain path separators or whitespace"
+                .into(),
+        );
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
 fn build_probe_request(
     cli_key: &str,
     base_url: &str,
     api_key: &str,
     model_override: Option<&str>,
     grok_preferences: Option<&crate::grok_config::GrokProxyPreferences>,
+    prompt: &str,
 ) -> AppResult<(String, HeaderMap, serde_json::Value)> {
     match cli_key {
         "claude" => {
@@ -280,7 +331,7 @@ fn build_probe_request(
             let body = serde_json::json!({
                 "model": model_override.unwrap_or("claude-sonnet-4-6"),
                 "max_tokens": 1,
-                "messages": [{"role": "user", "content": "ping"}]
+                "messages": [{"role": "user", "content": prompt}]
             });
             Ok((url, headers, body))
         }
@@ -295,7 +346,7 @@ fn build_probe_request(
             let body = serde_json::json!({
                 "model": model_override.unwrap_or(crate::settings::DEFAULT_CODEX_PROVIDER_TEST_MODEL),
                 "max_tokens": 1,
-                "messages": [{"role": "user", "content": "ping"}]
+                "messages": [{"role": "user", "content": prompt}]
             });
             Ok((url, headers, body))
         }
@@ -313,8 +364,8 @@ fn build_probe_request(
                 crate::grok_config::GrokApiBackend::Responses => (
                     build_probe_url(base_url, "/v1/responses", None)?,
                     serde_json::json!({
-                        "model": preferences.model_id,
-                        "input": "ping",
+                        "model": model_override.unwrap_or(&preferences.model_id),
+                        "input": prompt,
                         "max_output_tokens": 1,
                         "store": false,
                         "stream": false
@@ -323,8 +374,8 @@ fn build_probe_request(
                 crate::grok_config::GrokApiBackend::ChatCompletions => (
                     build_probe_url(base_url, "/v1/chat/completions", None)?,
                     serde_json::json!({
-                        "model": preferences.model_id,
-                        "messages": [{"role": "user", "content": "ping"}],
+                        "model": model_override.unwrap_or(&preferences.model_id),
+                        "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": 1,
                         "stream": false
                     }),
@@ -336,13 +387,16 @@ fn build_probe_request(
             let query = format!("key={api_key}");
             let url = build_probe_url(
                 base_url,
-                "/v1beta/models/gemini-2.0-flash:generateContent",
+                &format!(
+                    "/v1beta/models/{}:generateContent",
+                    model_override.unwrap_or("gemini-2.0-flash")
+                ),
                 Some(&query),
             )?;
             let mut headers = HeaderMap::new();
             headers.insert("content-type", HeaderValue::from_static("application/json"));
             let body = serde_json::json!({
-                "contents": [{"parts": [{"text": "ping"}]}],
+                "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"maxOutputTokens": 1}
             });
             Ok((url, headers, body))
@@ -388,8 +442,12 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     db: db::Db,
     provider_id: i64,
+    model: Option<String>,
+    prompt: Option<String>,
 ) -> AppResult<ProviderAvailabilityResult> {
     let provider = load_effective_provider_for_test(db.clone(), provider_id).await?;
+    let probe_model = validate_probe_model(&provider.cli_key, model)?;
+    let probe_prompt = normalize_probe_prompt(prompt)?;
 
     if let Some(bridge_type) = provider.bridge_type.as_deref() {
         let bridge_label = if bridge_type == CX2CC_BRIDGE_TYPE {
@@ -446,7 +504,9 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
     )
     .await?;
 
-    let regular_probe_model = if provider.cli_key == "codex" {
+    let regular_probe_model = if probe_model.is_some() {
+        probe_model
+    } else if provider.cli_key == "codex" {
         match normalize_probe_model(provider.availability_test_model.as_deref()) {
             Some(model) => Some(model),
             None => {
@@ -471,6 +531,7 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
         &effective_credential,
         regular_probe_model.as_deref(),
         grok_preferences.as_ref(),
+        &probe_prompt,
     )?;
 
     let client = reqwest::Client::builder()
@@ -560,6 +621,60 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
 mod tests {
     use super::*;
 
+    #[test]
+    fn probe_overrides_are_bounded_and_defaults_are_preserved() {
+        assert_eq!(normalize_probe_prompt(None).unwrap(), "hi");
+        assert_eq!(normalize_probe_prompt(Some("  ".into())).unwrap(), "hi");
+        assert_eq!(
+            normalize_probe_prompt(Some(" a prompt ".into())).unwrap(),
+            "a prompt"
+        );
+        assert!(normalize_probe_prompt(Some("x".repeat(4096))).is_ok());
+        assert!(normalize_probe_prompt(Some("x".repeat(4097))).is_err());
+        assert_eq!(
+            validate_probe_model("codex", Some(" ".into())).unwrap(),
+            None
+        );
+        for model in ["gpt-*", "bad\nmodel"] {
+            assert!(validate_probe_model("codex", Some(model.into())).is_err());
+        }
+        for model in ["bad/model", "bad?model", "bad#model", "bad model"] {
+            assert!(validate_probe_model("gemini", Some(model.into())).is_err());
+        }
+        assert_eq!(
+            validate_probe_model("codex", Some(" vendor/model ".into()))
+                .unwrap()
+                .as_deref(),
+            Some("vendor/model")
+        );
+    }
+
+    #[test]
+    fn custom_probe_model_and_prompt_reach_each_protocol() {
+        for cli in ["claude", "codex", "grok", "gemini"] {
+            let (url, _, body) = build_probe_request(
+                cli,
+                "https://api.example.com",
+                "secret",
+                Some("custom-model"),
+                None,
+                "custom prompt",
+            )
+            .unwrap();
+            if cli == "gemini" {
+                assert!(url.contains("/models/custom-model:generateContent"));
+                assert_eq!(body["contents"][0]["parts"][0]["text"], "custom prompt");
+            } else {
+                assert_eq!(body["model"], "custom-model");
+                if body.get("input").is_some() {
+                    assert_eq!(body["input"], "custom prompt");
+                } else {
+                    assert_eq!(body["messages"][0]["content"], "custom prompt");
+                }
+            }
+        }
+    }
+
     fn header_value(headers: &HeaderMap, key: &str) -> String {
         headers
             .get(key)
@@ -576,6 +691,7 @@ mod tests {
             "sk-claude",
             None,
             None,
+            DEFAULT_PROBE_PROMPT,
         )
         .expect("claude request");
 
@@ -583,7 +699,7 @@ mod tests {
         assert_eq!(header_value(&headers, "x-api-key"), "sk-claude");
         assert_eq!(header_value(&headers, "anthropic-version"), "2023-06-01");
         assert_eq!(body["model"], "claude-sonnet-4-6");
-        assert_eq!(body["messages"][0]["content"], "ping");
+        assert_eq!(body["messages"][0]["content"], DEFAULT_PROBE_PROMPT);
     }
 
     #[test]
@@ -594,6 +710,7 @@ mod tests {
             "sk-claude",
             Some("claude-test-model"),
             None,
+            DEFAULT_PROBE_PROMPT,
         )
         .expect("claude request");
 
@@ -608,12 +725,13 @@ mod tests {
             "sk-openai",
             Some("gpt-test"),
             None,
+            DEFAULT_PROBE_PROMPT,
         )
         .expect("codex request");
 
         assert_eq!(url, "https://api.example.com/v1/chat/completions");
         assert_eq!(header_value(&headers, "authorization"), "Bearer sk-openai");
-        assert_eq!(body["messages"][0]["content"], "ping");
+        assert_eq!(body["messages"][0]["content"], DEFAULT_PROBE_PROMPT);
         assert_eq!(body["model"], "gpt-test");
     }
 
@@ -630,6 +748,7 @@ mod tests {
             "test-grok-key",
             None,
             Some(&preferences),
+            DEFAULT_PROBE_PROMPT,
         )
         .expect("Grok request");
 
@@ -639,7 +758,7 @@ mod tests {
             "Bearer test-grok-key"
         );
         assert_eq!(body["model"], preferences.model_id);
-        assert_eq!(body["input"], "ping");
+        assert_eq!(body["input"], DEFAULT_PROBE_PROMPT);
         assert_eq!(body["store"], false);
         assert_eq!(body["stream"], false);
     }
@@ -658,6 +777,7 @@ mod tests {
             "test-grok-key",
             None,
             Some(&preferences),
+            DEFAULT_PROBE_PROMPT,
         )
         .expect("Grok Chat request");
 
@@ -668,7 +788,7 @@ mod tests {
         );
         assert_eq!(body["model"], preferences.model_id);
         assert_eq!(body["messages"][0]["role"], "user");
-        assert_eq!(body["messages"][0]["content"], "ping");
+        assert_eq!(body["messages"][0]["content"], DEFAULT_PROBE_PROMPT);
         assert_eq!(body["stream"], false);
     }
 
@@ -698,8 +818,15 @@ mod tests {
         ];
 
         for (cli_key, base_url, expected_url) in cases {
-            let (url, _, _) = build_probe_request(cli_key, base_url, "test-key", None, None)
-                .unwrap_or_else(|err| panic!("{cli_key} probe request failed: {err}"));
+            let (url, _, _) = build_probe_request(
+                cli_key,
+                base_url,
+                "test-key",
+                None,
+                None,
+                DEFAULT_PROBE_PROMPT,
+            )
+            .unwrap_or_else(|err| panic!("{cli_key} probe request failed: {err}"));
 
             assert_eq!(url, expected_url, "unexpected {cli_key} probe URL");
         }
@@ -713,6 +840,7 @@ mod tests {
             "sk-google",
             None,
             None,
+            DEFAULT_PROBE_PROMPT,
         )
         .expect("gemini request");
 
@@ -721,14 +849,24 @@ mod tests {
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=sk-google"
         );
         assert_eq!(header_value(&headers, "content-type"), "application/json");
-        assert_eq!(body["contents"][0]["parts"][0]["text"], "ping");
+        assert_eq!(
+            body["contents"][0]["parts"][0]["text"],
+            DEFAULT_PROBE_PROMPT
+        );
     }
 
     #[test]
     fn build_probe_request_rejects_unsupported_cli_key() {
-        let err = build_probe_request("unknown", "https://api.example.com", "secret", None, None)
-            .unwrap_err()
-            .to_string();
+        let err = build_probe_request(
+            "unknown",
+            "https://api.example.com",
+            "secret",
+            None,
+            None,
+            DEFAULT_PROBE_PROMPT,
+        )
+        .unwrap_err()
+        .to_string();
 
         assert_eq!(err, "UNSUPPORTED_CLI_KEY: unknown");
     }

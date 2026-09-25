@@ -235,3 +235,65 @@ let first_chunk = source_provider_id.map(|_| configured);
 let header = timing.response_header_timeout(configured);
 let first_chunk = timing.sse_first_chunk_timeout(configured);
 ```
+
+## Scenario: Input Normalization And Narrow Reactive Registry
+
+### 1. Scope / Trigger
+
+Responses input shorthand normalization and registry changes share the gateway
+request pipeline; neither may silently expand network retry behavior.
+
+### 2. Signatures
+
+`rectify_response_input(&mut Value) -> Option<ResponseInputRectifierResult>`
+runs through `ResponseInputRectifierMiddleware` after bounded body decoding
+and Codex classification, before model inference/provider selection.
+`reactive_rectifier::detect(cli_key, message, signature_enabled, budget_enabled)`
+selects the existing ordered Claude signature/budget algorithms.
+
+### 3. Contracts
+
+For Codex/Grok `/responses` or `/v1/responses` (optional trailing slash),
+string input becomes user/input_text content; an empty string becomes an empty
+array; a recognized object becomes one array element with fields preserved.
+Arrays, null, missing or unrecognized values stay untouched. Normalization
+operates on decoded bounded bytes, clears stale encoding and records a request
+marker; it does not trigger a new attempt. Existing plugin/final-wire ordering
+and the strict phased-message validator remain authoritative afterward.
+The reactive registry retains existing enable flags, signature-before-budget
+ordering, trigger detectors, counters and one-attempt repair ownership.
+Generic 400/invalid-request errors without thinking/signature/redacted evidence
+must not gain a signature retry. No new rectifier flags or settings migration.
+
+### 4. Validation / Error Matrix
+
+| Input/event | Outcome |
+| --- | --- |
+| Gzipped valid Responses string input | Normalize after decoding; one upstream send |
+| Recognized input object | Wrap and preserve all fields |
+| Array/null/unrecognized input | Unchanged |
+| Generic invalid request | No registry match |
+| Signature cue with disabled flag | No signature match |
+| Non-Claude reactive error | No match in the Claude registry |
+
+### 5. Examples
+
+Good: input `"hello"` reaches upstream as one user input_text message.
+Boundary: plugin behavior remains governed by its existing final-wire contract.
+Bad: count proactive normalization as a network retry or broaden every 400 into
+signature repair.
+
+### 6. Tests
+
+Pure response_input_rectifier and reactive_rectifier tests cover input shapes
+and narrow triggers. Route test
+`responses_input_shorthand_is_normalized_after_bounded_gzip_decode` asserts
+metadata preservation, no stale content-encoding, one attempt and a marker.
+Existing route tests own generic 400, retry caps, firewall and managed/CX2CC
+regressions.
+
+### 7. Wrong / Correct
+
+Wrong: rectify raw gzip bytes or add `invalid request` as an unconditional
+signature trigger. Correct: normalize after bounded decode and dispatch only
+through the existing protocol-specific narrow detectors.

@@ -725,17 +725,23 @@ export async function providerOAuthResetCodexQuota(
   });
 }
 
+export type ProviderAvailabilityOptions = { model?: string | null; prompt?: string | null };
+
 export async function providerTestAvailability(
-  providerId: number
+  providerId: number,
+  options: ProviderAvailabilityOptions = {}
 ): Promise<ProviderAvailabilityResult | null> {
   const normalizedProviderId = validateProviderId(providerId);
+
+  const model = options.model?.trim() || null;
+  const prompt = options.prompt?.trim() || null;
 
   return invokeGeneratedIpc<ProviderAvailabilityResult>({
     title: "测试供应商可用性失败",
     cmd: "provider_test_availability",
-    args: { providerId: normalizedProviderId },
+    args: { providerId: normalizedProviderId, model, prompt },
     invoke: () =>
-      commands.providerTestAvailability(normalizedProviderId) as Promise<
+      commands.providerTestAvailability(normalizedProviderId, model, prompt) as Promise<
         GeneratedCommandResult<ProviderAvailabilityResult>
       >,
   });

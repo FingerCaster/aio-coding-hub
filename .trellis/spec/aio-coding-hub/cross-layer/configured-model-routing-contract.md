@@ -99,8 +99,14 @@ normalized JSON value.
   bytes; effort is at most 64 Unicode scalar characters.
 - Strict writes trim fields and reject an empty source, control characters,
   duplicate normalized source, and a rule with neither target nor effort.
-- Matching is exact, case-sensitive, first-match, and one-pass against the
-  immutable client model. A target is never fed back into the rule list.
+- Matching is case-sensitive and one-pass against the immutable client model.
+  Exact rules precede single-wildcard rules; wildcard ties prefer more literal
+  Unicode characters, then lexical source order. A target is never rematched.
+  A source star captures the substring between its prefix and suffix; a target
+  star substitutes that capture, including an empty or non-ASCII capture.
+- Strict new writes reject multiple stars and a target star without a source
+  star. Defensive reads retain legacy rows that violate this new shape and
+  match/apply them literally; loading existing data must not discard those rows.
 - An enabled empty policy normalizes to disabled. Disabled policies may retain
   valid rules for later re-enablement but have no runtime effect.
 
@@ -121,7 +127,7 @@ original unmodified request and do not trigger failover.
 
 Only POST inference requests are eligible:
 
-- Claude Messages, including the final CX2CC request;
+- Claude Messages; CX2CC and authenticated local reentry bypass this policy;
 - Codex Responses and `/responses/compact`;
 - Grok Chat Completions or Responses;
 - Gemini `generateContent` and `streamGenerateContent`.
@@ -129,6 +135,16 @@ Only POST inference requests are eligible:
 Managed `aio/` requests, managed aliases, discovery, availability testing,
 token counting, search/list/auxiliary endpoints, non-POST traffic, disabled
 policies, and unmatched models are unchanged.
+
+Before ordinary provider gates, call
+`configured_model_route::filter_providers` with the original model, effective
+global/provider policy and forced-provider identity. If any unbridged candidate
+matches, retain only matching candidates in their existing order; otherwise
+retain the full fallback list. Repeat this projection after an infinite-mode
+route refresh. A reasoning-only rule is a match. SQL NULL inherits global;
+explicit disabled suppresses it. Forced providers, managed aliases and trusted
+internal reentry bypass this narrowing. Bridged providers never declare an
+ordinary-policy match. This does not create another persisted route order.
 
 The final-wire sequence is fixed:
 
@@ -284,3 +300,20 @@ commit_final_wire_state(outcome);
 
 The immutable requested model is the audit identity. The verified final wire
 model is the upstream and pricing identity. They must never be conflated.
+
+### Upstream Compatibility Regression Anchors
+
+- `upstream_pattern_precedence_captures_unicode_without_cascading`: exact,
+  specificity, Unicode capture, managed bypass and overlapping prefix/suffix.
+- `legacy_asterisk_rules_remain_literal_when_not_valid_wildcard_mappings`:
+  strict-write rejection cannot become destructive defensive-read migration.
+- Provider-selection tests exercise inherited, disabled and reasoning-only
+  policies plus forced-provider and alias bypass. Existing route-level tests
+  still own plugin/final-wire ordering and zero-send apply failures.
+
+Wrong: persist upstream model-policy JSON, delete inherited rules, or match
+again against a previous provider's rewritten target. Correct: project the
+fork's effective policy into the matcher per request and retain the final-wire
+atomic apply and audit/cost ownership described above.
+
+局部 settings patch 未提供 `model_routing_policy` 时必须保留 canonical 中的旧字面量规则，不得因新通配符写入校验阻断无关设置；显式提交该字段时仍执行严格校验。回归锚点：`ordinary_settings_patch_preserves_legacy_routes_unless_explicitly_replaced`。

@@ -2188,7 +2188,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mock_runtime_router_grok_responses_json_is_transparent_and_logged() {
+    async fn mock_runtime_router_grok_responses_normalizes_input_and_preserves_response_and_log() {
         let request_body =
             r#"{"model":"grok-json-responses","input":"hello","store":false,"stream":false}"#;
         let response_body = r#"{"id":"resp-grok-json","object":"response","model":"grok-json-responses","output":[],"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}"#;
@@ -2219,7 +2219,7 @@ INSERT INTO codex_managed_profiles(
             .has_header_line("x-grok-req-id: grok-request-route"));
         assert_eq!(
             serde_json::from_slice::<Value>(&observation.captured.body).expect("request JSON"),
-            serde_json::from_str::<Value>(request_body).expect("expected request JSON")
+            serde_json::json!({"model":"grok-json-responses", "input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}], "store":false, "stream":false})
         );
         assert_eq!(
             observation.response.get("id").and_then(Value::as_str),
@@ -4218,6 +4218,64 @@ INSERT INTO codex_managed_profiles(
                 .is_err(),
             "fail-closed beforeSend should not send the request upstream"
         );
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn responses_input_shorthand_is_normalized_after_bounded_gzip_decode() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let mut cfg = settings::AppSettings::default();
+        cfg.enable_codex_session_id_completion = false;
+        disable_upstream_retry_policy(&mut cfg);
+        settings::write(app.handle(), &cfg).expect("settings");
+        crate::cli_proxy::set_enabled(app.handle(), "codex", true, "http://127.0.0.1:37123")
+            .expect("proxy");
+        let dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&dir.path().join("response-input.sqlite")).expect("db");
+        let (base_url, captured_rx, upstream_task) = spawn_capturing_raw_upstream(
+            r#"{"id":"input-ok","object":"response","model":"model","output":[]}"#,
+        )
+        .await;
+        insert_codex_provider(&db, base_url);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_plugin_pipeline(
+            app.handle().clone(),
+            db,
+            log_tx,
+            GatewayPluginPipeline::empty_shared(),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(Body::from(gzip_bytes(
+                br#"{"model":"model","input":"hello","stream":false,"metadata":{"keep":true}}"#,
+            )))
+            .expect("request");
+        assert_eq!(
+            router.oneshot(request).await.expect("response").status(),
+            StatusCode::OK
+        );
+        let captured = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("capture timeout")
+            .expect("capture");
+        assert!(!captured.has_header_line("content-encoding:"));
+        let body: Value = serde_json::from_slice(&captured.body).expect("JSON");
+        assert_eq!(
+            body["input"],
+            serde_json::json!([{"role":"user","content":[{"type":"input_text","text":"hello"}]}])
+        );
+        assert_eq!(body["metadata"]["keep"], true);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(request_log_attempts(&log).len(), 1);
+        assert!(parse_special_settings(&log)
+            .iter()
+            .any(|setting| setting["type"] == "response_input_rectifier"));
         upstream_task.abort();
     }
 

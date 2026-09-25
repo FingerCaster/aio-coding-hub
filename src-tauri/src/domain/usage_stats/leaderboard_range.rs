@@ -43,7 +43,7 @@ pub(super) struct ProviderAgg {
     pub(super) cache_creation_5m_input_tokens: i64,
     pub(super) cache_creation_1h_input_tokens: i64,
     pub(super) cost_covered_success: i64,
-    pub(super) total_cost_usd_femto: i64,
+    pub(super) total_cost_usd_femto: f64,
 }
 
 impl ProviderAgg {
@@ -101,9 +101,7 @@ impl ProviderAgg {
         self.cost_covered_success = self
             .cost_covered_success
             .saturating_add(add.cost_covered_success);
-        self.total_cost_usd_femto = self
-            .total_cost_usd_femto
-            .saturating_add(add.total_cost_usd_femto);
+        self.total_cost_usd_femto += add.total_cost_usd_femto;
     }
 
     pub(super) fn into_leaderboard_row(
@@ -130,9 +128,9 @@ impl ProviderAgg {
             None
         };
 
-        let total_cost_usd_femto = self.total_cost_usd_femto.max(0);
-        let cost_usd = if self.cost_covered_success > 0 && total_cost_usd_femto > 0 {
-            Some(total_cost_usd_femto as f64 / USD_FEMTO_DENOM)
+        let total_cost_usd_femto = self.total_cost_usd_femto.max(0.0);
+        let cost_usd = if self.cost_covered_success > 0 && total_cost_usd_femto > 0.0 {
+            Some(total_cost_usd_femto / USD_FEMTO_DENOM)
         } else {
             None
         };
@@ -332,7 +330,7 @@ pub fn leaderboard_provider(
                     cache_creation_5m_input_tokens: cache_creation_5m_input_tokens.unwrap_or(0),
                     cache_creation_1h_input_tokens: cache_creation_1h_input_tokens.unwrap_or(0),
                     cost_covered_success: 0,
-                    total_cost_usd_femto: 0,
+                    total_cost_usd_femto: 0.0,
                 },
             ))
         })

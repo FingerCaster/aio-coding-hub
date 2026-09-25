@@ -109,7 +109,8 @@ impl GatewayBackgroundTasks {
         let (circuit_persist_tx, circuit_task) =
             provider_circuit_breakers::start_buffered_writer(db.clone());
         let (oauth_refresh_shutdown, oauth_refresh_rx) = watch::channel(false);
-        let oauth_refresh_task = super::oauth::refresh_loop::spawn(db.clone(), oauth_refresh_rx);
+        let oauth_refresh_task =
+            super::oauth::refresh_loop::spawn(app.clone(), db.clone(), oauth_refresh_rx);
         let (account_usage_shutdown, account_usage_rx) = watch::channel(false);
         let (account_usage_reconcile_tx, account_usage_reconcile_rx) = mpsc::channel(8);
         let account_usage_task = spawn_account_usage_gateway_coordinator(

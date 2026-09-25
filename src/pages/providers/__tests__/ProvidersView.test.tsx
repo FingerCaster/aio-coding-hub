@@ -31,6 +31,7 @@ import {
   useProviderDeleteMutation,
   useProviderSetEnabledMutation,
   useProviderTestAvailabilityMutation,
+  useProviderModelsDiscoverMutation,
   useProvidersListQuery,
   useProvidersReorderMutation,
 } from "../../../query/providers";
@@ -181,6 +182,7 @@ vi.mock("../../../query/providers", async () => {
     useProviderDeleteMutation: vi.fn(),
     useProvidersReorderMutation: vi.fn(),
     useProviderTestAvailabilityMutation: vi.fn(),
+    useProviderModelsDiscoverMutation: vi.fn(),
   };
 });
 
@@ -220,6 +222,9 @@ function dragProviderPool(event: any) {
 
 beforeEach(() => {
   dndContextDragHandlers = [];
+  vi.mocked(useProviderModelsDiscoverMutation).mockReturnValue({
+    mutateAsync: vi.fn().mockResolvedValue({ status: "ready", models: ["remote-model"] }),
+  } as any);
   vi.mocked(copyText).mockResolvedValue(undefined);
   vi.mocked(providerDuplicate).mockResolvedValue({
     id: 999,
@@ -278,6 +283,62 @@ afterEach(() => {
 });
 
 describe("pages/providers/ProvidersView", () => {
+  it("keeps discovery exceptions private and forwards the confirmed probe draft", async () => {
+    const provider = {
+      id: 7,
+      provider_uuid: "11111111-1111-4111-8111-111111111111",
+      cli_key: "claude",
+      name: "Probe provider",
+      enabled: true,
+      base_urls: ["https://example.test"],
+      base_url_mode: "order",
+      auth_mode: "api_key",
+      cost_multiplier: 1,
+      claude_models: {},
+      tags: [],
+    };
+    vi.mocked(useProvidersListQuery).mockReturnValue({
+      data: [provider],
+      isFetching: false,
+    } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({ data: [], isFetching: false } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    const discover = vi.fn().mockRejectedValue(new Error("SYNTHETIC_PRIVATE_UPSTREAM_ERROR"));
+    vi.mocked(useProviderModelsDiscoverMutation).mockReturnValue({ mutateAsync: discover } as any);
+    const probe = vi.fn().mockResolvedValue({ ok: true, latency_ms: 1, status: 200 });
+    vi.mocked(useProviderTestAvailabilityMutation).mockReturnValue({ mutateAsync: probe } as any);
+
+    renderWithQuery(<ProvidersView activeCli="claude" setActiveCli={vi.fn()} />);
+    fireEvent.click(screen.getByTitle("测试供应商可用性"));
+    fireEvent.change(screen.getByRole("combobox", { name: "模型" }), {
+      target: { value: "custom-model" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "提示词" }), {
+      target: { value: "test prompt" },
+    });
+    expect(probe).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "获取模型候选" }));
+    await screen.findByText("模型发现失败，请检查供应商连接后重试。");
+    expect(screen.queryByText("SYNTHETIC_PRIVATE_UPSTREAM_ERROR")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "模型" })).toHaveValue("custom-model");
+    expect(discover).toHaveBeenCalledWith(expect.objectContaining({ providerId: 7, apiKey: null }));
+    fireEvent.click(screen.getByRole("button", { name: "开始测试" }));
+    await waitFor(() =>
+      expect(probe).toHaveBeenCalledWith({
+        providerId: 7,
+        model: "custom-model",
+        prompt: "test prompt",
+      })
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("switches a saved create flow to edit mode when model discovery fails", async () => {
     vi.mocked(useProvidersListQuery).mockReturnValue({
       data: [],
@@ -1251,6 +1312,88 @@ describe("pages/providers/ProvidersView", () => {
     expect(screen.getAllByText("Alpha Relay").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Beta Gateway").length).toBeGreaterThan(0);
     expect(screen.getByText("共 2 / 2 条")).toBeInTheDocument();
+  });
+
+  it("locates a filtered provider once and ignores missing route members", async () => {
+    const providers = [
+      {
+        id: 1,
+        cli_key: "claude",
+        name: "Alpha Relay",
+        enabled: true,
+        base_urls: ["https://a"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: {},
+        tags: ["prod"],
+      },
+      {
+        id: 2,
+        cli_key: "claude",
+        name: "Beta Gateway",
+        enabled: true,
+        base_urls: ["https://b"],
+        base_url_mode: "ping",
+        cost_multiplier: 1,
+        claude_models: {},
+        tags: ["prod"],
+      },
+    ] as any[];
+
+    vi.mocked(useProvidersListQuery).mockReturnValue({ data: providers, isFetching: false } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useDefaultRouteProvidersQuery).mockReturnValue({
+      data: [{ provider_id: 1 }, { provider_id: 2 }, { provider_id: 999 }],
+      isFetching: false,
+    } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+
+    renderWithQuery(<ProvidersView activeCli="claude" setActiveCli={vi.fn()} />);
+
+    expect(screen.getByText("共 2 / 2 条")).toBeInTheDocument();
+    expect(screen.getByText("Default 按照从上到下依次调用")).toBeInTheDocument();
+
+    const searchInput = screen.getByRole("textbox", { name: "搜索供应商名称" });
+    fireEvent.change(searchInput, { target: { value: "beta" } });
+
+    expect(screen.getAllByText("Beta Gateway").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Alpha Relay")).toHaveLength(1);
+    const orderPanel = within(screen.getByRole("complementary", { name: "供应商调用顺序" }));
+    expect(orderPanel.queryByLabelText("第 1 位")).not.toBeInTheDocument();
+    expect(orderPanel.queryByLabelText("第 2 位")).not.toBeInTheDocument();
+    expect(screen.getByText("共 1 / 2 条")).toBeInTheDocument();
+
+    const scroll = vi.fn();
+    const previousScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scroll,
+    });
+    fireEvent.click(orderPanel.getByRole("button", { name: "定位 Alpha Relay" }));
+    await waitFor(() => expect(searchInput).toHaveValue(""));
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(orderPanel.getByRole("button", { name: /定位.*999/ })).toBeDisabled();
+    fireEvent.change(searchInput, { target: { value: "beta" } });
+    fireEvent.change(searchInput, { target: { value: "" } });
+    expect(scroll).toHaveBeenCalledTimes(1);
+
+    expect(screen.getAllByText("Alpha Relay").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Beta Gateway").length).toBeGreaterThan(0);
+    expect(screen.getByText("共 2 / 2 条")).toBeInTheDocument();
+    if (previousScroll)
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", previousScroll);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   });
 
   it("defaults the route draft and members to the persisted active template", async () => {

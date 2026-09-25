@@ -978,7 +978,7 @@ SELECT
   COUNT(1) AS request_count,
   SUM(COALESCE(input_tokens, 0)) AS total_input_tokens,
   SUM(COALESCE(output_tokens, 0)) AS total_output_tokens,
-  SUM(COALESCE(cost_usd_femto, 0)) AS total_cost_usd_femto,
+  TOTAL(COALESCE(cost_usd_femto, 0)) AS total_cost_usd_femto,
   SUM(duration_ms) AS total_duration_ms
 FROM request_logs
 WHERE session_id IN ({placeholders})
@@ -1016,7 +1016,7 @@ GROUP BY cli_key, session_id
         let total_output_tokens: i64 = row
             .get("total_output_tokens")
             .map_err(|e| db_err!("invalid session aggregate total_output_tokens: {e}"))?;
-        let total_cost_usd_femto: i64 = row
+        let total_cost_usd_femto: f64 = row
             .get("total_cost_usd_femto")
             .map_err(|e| db_err!("invalid session aggregate total_cost_usd_femto: {e}"))?;
         let total_duration_ms: i64 = row
@@ -1029,7 +1029,7 @@ GROUP BY cli_key, session_id
                 request_count: request_count.max(0),
                 total_input_tokens: total_input_tokens.max(0),
                 total_output_tokens: total_output_tokens.max(0),
-                total_cost_usd_femto: total_cost_usd_femto.max(0),
+                total_cost_usd_femto: total_cost_usd_femto.max(0.0),
                 total_duration_ms: total_duration_ms.max(0),
             },
         );
@@ -1051,6 +1051,44 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::{mpsc, Semaphore};
+
+    #[test]
+    fn aggregate_by_session_ids_allows_cost_totals_above_i64_max() {
+        const COST_TERM_FEMTO: i64 = 3_i64 << 61;
+
+        let (_app, db, _dir) = init_test_db();
+        let conn = db.open_connection().expect("open connection");
+        for (trace_id, created_at) in [("session-cost-a", 1_i64), ("session-cost-b", 2_i64)] {
+            conn.execute(
+                r#"
+INSERT INTO request_logs (
+  trace_id, cli_key, session_id, method, path, status, error_code, duration_ms,
+  attempts_json, cost_usd_femto, excluded_from_stats, created_at, created_at_ms
+) VALUES (?1, 'codex', 'overflow-session', 'POST', '/v1/responses', 200, NULL, 10,
+  '[]', ?2, 0, ?3, ?4)
+"#,
+                params![
+                    trace_id,
+                    COST_TERM_FEMTO,
+                    created_at,
+                    created_at.saturating_mul(1000)
+                ],
+            )
+            .expect("insert session request log");
+        }
+        drop(conn);
+
+        let aggregates = super::aggregate_by_session_ids(&db, &["overflow-session".to_string()])
+            .expect("aggregate sessions");
+        let aggregate = aggregates
+            .get(&("codex".to_string(), "overflow-session".to_string()))
+            .expect("session aggregate");
+        let expected = COST_TERM_FEMTO as f64 * 2.0;
+
+        assert_eq!(aggregate.request_count, 2);
+        assert!(aggregate.total_cost_usd_femto.is_finite());
+        assert_eq!(aggregate.total_cost_usd_femto, expected);
+    }
 
     fn request_log_insert(trace_id: &str) -> RequestLogInsert {
         RequestLogInsert {

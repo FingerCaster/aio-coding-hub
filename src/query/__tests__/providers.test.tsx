@@ -46,10 +46,12 @@ import {
   useProviderOAuthStatusQuery,
   useProviderSetEnabledMutation,
   useProviderTestAvailabilityMutation,
+  useProviderModelsDiscoverMutation,
   useProviderUpsertMutation,
   useProvidersListQuery,
   useProvidersReorderMutation,
 } from "../providers";
+import { providerModelsDiscover } from "../../services/providers/modelDiscovery";
 import { useProviderModelsRefreshMutation } from "../providerModels";
 import {
   gatewayKeys,
@@ -106,6 +108,8 @@ vi.mock("../../services/providers/providerModels", async () => {
     providerModelsRefresh: vi.fn(),
   };
 });
+
+vi.mock("../../services/providers/modelDiscovery", () => ({ providerModelsDiscover: vi.fn() }));
 
 beforeEach(() => {
   vi.mocked(providerAccountUsageDesktopLeaseAcquire).mockResolvedValue(true);
@@ -1898,6 +1902,40 @@ describe("query/providers", () => {
     expect(providerClaudeTerminalLaunchCommand).toHaveBeenCalledWith(8);
   });
 
+  it("discovers candidates without invalidating or overwriting provider catalogs", async () => {
+    const input = {
+      providerId: 8,
+      cliKey: "codex",
+      authMode: "api_key" as const,
+      baseUrls: ["https://example.test/v1"],
+      baseUrlMode: "order" as const,
+      apiKey: null,
+      sourceProviderId: null,
+      bridgeType: null,
+    };
+    const candidates = {
+      status: "ready" as const,
+      models: ["gpt-new"],
+      origin: "openai",
+      base_url_index: 0,
+    };
+    vi.mocked(providerModelsDiscover).mockResolvedValue(candidates);
+    const client = createTestQueryClient();
+    const preservedKey = ["provider-models", "existing-catalog"];
+    const catalog = { models: [{ modelUuid: "existing-id", source: "manual" }] };
+    client.setQueryData(preservedKey, catalog);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const { result } = renderHook(() => useProviderModelsDiscoverMutation(), {
+      wrapper: createQueryWrapper(client),
+    });
+    await act(async () => {
+      await expect(result.current.mutateAsync(input)).resolves.toEqual(candidates);
+    });
+    expect(providerModelsDiscover).toHaveBeenCalledWith(input);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(client.getQueryData(preservedKey)).toEqual(catalog);
+  });
+
   it("useProviderTestAvailabilityMutation calls service with provider id", async () => {
     setTauriRuntime();
 
@@ -1920,6 +1958,6 @@ describe("query/providers", () => {
       await result.current.mutateAsync({ providerId: 8 });
     });
 
-    expect(providerTestAvailability).toHaveBeenCalledWith(8);
+    expect(providerTestAvailability).toHaveBeenCalledWith(8, { providerId: 8 });
   });
 });

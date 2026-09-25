@@ -462,7 +462,7 @@ describe("services/providers/providers", () => {
     expect(commands.providerDelete).toHaveBeenCalledWith(1, false);
     expect(commands.providersReorder).toHaveBeenCalledWith("claude", [2, 1]);
     expect(commands.providerClaudeTerminalLaunchCommand).toHaveBeenCalledWith(5);
-    expect(commands.providerTestAvailability).toHaveBeenCalledWith(5);
+    expect(commands.providerTestAvailability).toHaveBeenCalledWith(5, null, null);
   });
 
   it("passes the provider usage stats cleanup flag to IPC", async () => {

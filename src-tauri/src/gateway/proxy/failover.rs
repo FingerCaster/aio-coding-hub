@@ -208,6 +208,40 @@ pub(crate) fn resolve_transport_base_url(
         .unwrap_or_default())
 }
 
+pub(in crate::gateway) async fn select_base_url_by_mode(
+    client: &reqwest::Client,
+    base_urls: &[String],
+    mode: providers::ProviderBaseUrlMode,
+) -> (String, bool) {
+    let primary = base_urls
+        .iter()
+        .find(|url| !url.trim().is_empty())
+        .cloned()
+        .unwrap_or_default();
+
+    if !matches!(mode, providers::ProviderBaseUrlMode::Ping) || base_urls.len() <= 1 {
+        return (primary, false);
+    }
+
+    let Some((base_url, _)) = first_successful_base_url_probe(base_urls, |base_url| {
+        let client = client.clone();
+        async move {
+            crate::base_url_probe::probe_base_url_ms(
+                &client,
+                &base_url,
+                Duration::from_millis(PROVIDER_BASE_URL_PING_TIMEOUT_MS),
+            )
+            .await
+        }
+    })
+    .await
+    else {
+        return (primary, false);
+    };
+
+    (base_url, true)
+}
+
 pub(crate) fn resolve_primary_provider_base_url(
     provider: &providers::ProviderForGateway,
     cli_key: &str,

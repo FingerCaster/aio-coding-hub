@@ -213,7 +213,7 @@ pub(super) fn validate_cli_key(cli_key: &str) -> crate::shared::error::AppResult
     crate::shared::cli_key::validate_cli_key(cli_key)
 }
 
-pub(super) fn normalize_base_urls(
+pub(crate) fn normalize_base_urls(
     base_urls: Vec<String>,
 ) -> crate::shared::error::AppResult<Vec<String>> {
     let initial_capacity = base_urls.len().clamp(1, MAX_PROVIDER_BASE_URLS);

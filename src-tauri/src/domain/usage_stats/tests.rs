@@ -1454,6 +1454,107 @@ INSERT INTO request_logs (
 }
 
 #[test]
+fn v2_leaderboards_allow_cost_totals_above_i64_max() {
+    const COST_TERM_FEMTO: i64 = 3_i64 << 61;
+    const USD_FEMTO_DENOM: f64 = 1_000_000_000_000_000.0;
+
+    fn overflow_folder_lookup(keys: &[UsageSessionLookupKey]) -> Vec<UsageResolvedFolder> {
+        keys.iter()
+            .map(|key| {
+                let is_selected = key.session_id != "overflow-unselected";
+                UsageResolvedFolder {
+                    cli_key: key.cli_key.clone(),
+                    session_id: key.session_id.clone(),
+                    folder_name: if is_selected {
+                        "overflow".to_string()
+                    } else {
+                        "unselected".to_string()
+                    },
+                    folder_path: if is_selected {
+                        "/work/overflow".to_string()
+                    } else {
+                        "/work/unselected".to_string()
+                    },
+                }
+            })
+            .collect()
+    }
+
+    let conn = setup_conn();
+    for (session_id, created_at) in [("overflow-a", 1_000_i64), ("overflow-b", 1_001_i64)] {
+        insert_usage_log(
+            &conn,
+            TestUsageLog {
+                cost_usd_femto: Some(COST_TERM_FEMTO),
+                session_id: Some(session_id),
+                created_at,
+                ..base_usage_log(created_at)
+            },
+        );
+    }
+
+    let expected_cost_usd = (COST_TERM_FEMTO as f64 * 2.0) / USD_FEMTO_DENOM;
+    let assert_cost = |label: &str, rows: Vec<UsageLeaderboardRow>| {
+        assert_eq!(rows.len(), 1, "{label}");
+        let actual = rows[0].cost_usd.expect("cost_usd");
+        assert!(actual.is_finite(), "{label}: {actual}");
+        assert!(
+            (actual - expected_cost_usd).abs() < 1e-9,
+            "{label}: expected {expected_cost_usd}, got {actual}"
+        );
+    };
+
+    for (label, scope) in [
+        ("cli", UsageScopeV2::Cli),
+        ("model", UsageScopeV2::Model),
+        ("day", UsageScopeV2::Day),
+        ("provider", UsageScopeV2::Provider),
+    ] {
+        let rows = leaderboard_v2_with_conn(&conn, scope, None, None, None, None, Some(50), false)
+            .unwrap_or_else(|error| panic!("{label} leaderboard failed: {error}"));
+        assert_cost(label, rows);
+    }
+
+    insert_usage_log(
+        &conn,
+        TestUsageLog {
+            cost_usd_femto: Some(COST_TERM_FEMTO),
+            session_id: Some("overflow-unselected"),
+            created_at: 1_002,
+            ..base_usage_log(1_002)
+        },
+    );
+    let selected_folder_keys = vec!["/work/overflow".to_string()];
+
+    for (label, scope) in [
+        ("folder-filtered-cli", UsageScopeV2::Cli),
+        ("folder-filtered-model", UsageScopeV2::Model),
+        ("folder-filtered-day", UsageScopeV2::Day),
+        ("folder-filtered-provider", UsageScopeV2::Provider),
+        ("folder", UsageScopeV2::Folder),
+    ] {
+        let rows = leaderboard_v2_folder_filtered_with_conn(
+            &conn,
+            FolderFilteredLeaderboardParams {
+                scope,
+                start_ts: None,
+                end_ts: None,
+                cli_key: None,
+                provider_id: None,
+                folder_keys: &selected_folder_keys,
+                limit: Some(50),
+                exclude_cx2cc_gateway_bridge: false,
+                day_start_hour: 0,
+                development_time_gap_thresholds: DevelopmentTimeGapThresholds::default(),
+            },
+            overflow_folder_lookup,
+        )
+        .unwrap_or_else(|error| panic!("{label} leaderboard failed: {error}"));
+        assert_cost(label, rows);
+    }
+}
+
+#[test]
 fn v1_provider_cache_rate_trend_uses_effective_denom_and_bucket() {
     let conn = setup_conn();
 

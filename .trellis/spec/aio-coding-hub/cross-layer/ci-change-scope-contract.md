@@ -130,3 +130,52 @@ fail it.
    matrix against the same helper used by Actions. It must also pin the current
    full-tier command inventory and forbid dependency installation, Cargo, or
    nonexistent release/TUI checks in docs-contract.
+
+## Scenario: Dependency Audit Registry And OSV Fallback
+
+### 1. Scope / Trigger
+
+`scripts/check-pnpm-audit.mjs` is the dependency audit entry point used by
+local and CI checks. Transient registry failures must not become a clean audit.
+
+### 2. Signatures
+
+`pnpm audit:deps` runs self-tests and the audit script. Honor trimmed
+`PNPM_AUDIT_REGISTRY`. Resolve Windows pnpm through the existing
+`cmd.exe /d /s /c pnpm.cmd` wrapper; preserve workspace dependency enumeration.
+
+### 3. Contracts
+
+Keep bulk requests and retries bounded, then use OSV exact package-version
+querybatch plus advisory detail lookups if bulk is unavailable. Transport,
+shape, pagination, severity or detail errors in the fallback must fail closed.
+A verified threshold-level advisory fails the gate; only completely evaluated
+clean results succeed. Never change dependencies simply to silence an audit
+transport outage in an integration task.
+
+### 4. Validation / Error Matrix
+
+| Event | Result |
+| --- | --- |
+| Successful valid bulk audit | Evaluate advisory threshold |
+| Transient bulk status | Bounded retry, then fallback |
+| Bulk unavailable and OSV clean | Success after complete evaluation |
+| OSV malformed/incomplete/transport failure | Nonzero audit failure |
+| High/critical vulnerability | Nonzero audit failure |
+
+### 5. Examples
+
+Good: unavailable bulk service falls back to exact installed versions in OSV.
+Boundary: a custom registry retains its configured endpoint during retries.
+Bad: swallow a failed detail request or execute a Unix-only pnpm launch on Windows.
+
+### 6. Tests
+
+`check-pnpm-audit.selftest.mjs` covers retry/fallback, registry behavior,
+malformed data, unresolved advisories and threshold decisions. Run the actual
+audit separately to distinguish fixture coverage from live network results.
+
+### 7. Wrong / Correct
+
+Wrong: return an empty advisory list on fallback failure. Correct: report audit
+failure unless every queried dependency/advisory is fully evaluated.

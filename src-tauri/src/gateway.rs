@@ -18,7 +18,9 @@ mod model_route_mapping;
 pub(crate) mod oauth;
 pub(crate) mod plugins;
 mod proxy;
+mod reactive_rectifier;
 mod response_fixer;
+mod response_input_rectifier;
 mod routes;
 pub(crate) mod runtime;
 pub(crate) mod session_manager;
@@ -69,4 +71,14 @@ pub(crate) fn resolve_transport_base_url(
     cli_key: &str,
 ) -> Result<String, String> {
     proxy::resolve_transport_base_url(transport, cli_key)
+}
+
+pub(crate) async fn select_provider_base_url_for_discovery(
+    base_urls: &[String],
+    mode: crate::providers::ProviderBaseUrlMode,
+) -> String {
+    let client = http_client::get();
+    proxy::select_base_url_by_mode(&client, base_urls, mode)
+        .await
+        .0
 }

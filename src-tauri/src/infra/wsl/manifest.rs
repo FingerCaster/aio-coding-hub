@@ -8,7 +8,7 @@ use super::shell::write_file_synced;
 use super::types::{WslCliBackup, WslDistroManifest};
 
 pub(super) const WSL_MANIFEST_MAX_BYTES: usize = 256 * 1024;
-const WSL_MANIFEST_FILE_COUNT_MAX: usize = 256;
+pub(super) const WSL_MANIFEST_FILE_COUNT_MAX: usize = 256;
 pub(super) const WSL_CLIENT_CONFIG_MAX_BYTES: usize = 1024 * 1024;
 
 pub(super) fn wsl_manifests_dir<R: tauri::Runtime>(

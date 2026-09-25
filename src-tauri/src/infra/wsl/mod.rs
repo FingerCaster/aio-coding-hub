@@ -10,6 +10,8 @@ mod manifest;
 mod mcp_adapt;
 mod mcp_sync;
 mod prompt_sync;
+#[cfg(any(windows, test))]
+pub(crate) mod provider_model_discovery;
 mod shell;
 mod skills_sync;
 mod status;

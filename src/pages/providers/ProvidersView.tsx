@@ -15,11 +15,14 @@ import { Spinner } from "../../ui/Spinner";
 import { Switch } from "../../ui/Switch";
 import { ProviderEditorDialog } from "./ProviderEditorDialog";
 import { ProviderImportDialog } from "./ProviderImportDialog";
+import { ProviderTestDialog } from "./ProviderTestDialog";
 import { ProviderShareDialog } from "./ProviderShareDialog";
 import { ProviderModelCatalogDialog } from "./ProviderModelCatalogDialog";
 import { SortableProviderCard } from "./SortableProviderCard";
 import { SortableProviderOrderItem } from "./SortableProviderOrderItem";
 import { useProvidersViewDataModel } from "./hooks/useProvidersViewDataModel";
+import { useProviderModelsDiscoverMutation } from "../../query/providers";
+import { useProviderModelCatalogQuery } from "../../query/providerModels";
 import { isCodexDirectProvider } from "../../services/providers/providerModels";
 
 export type ProvidersViewProps = {
@@ -40,6 +43,7 @@ function getRouteRowEnabled(row: unknown) {
 
 export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
   const model = useProvidersViewDataModel(activeCli);
+  const discovery = useProviderModelsDiscoverMutation();
   const {
     providers,
     codexProviders,
@@ -117,13 +121,23 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
     terminalCopyingByProviderId,
     duplicatingByProviderId,
     testProviderAvailability,
+    testTarget,
+    setTestTarget,
     testingByProviderId,
   } = model;
+  const testCatalogProvider = testTarget && isCodexDirectProvider(testTarget) ? testTarget : null;
+  const testCatalog = useProviderModelCatalogQuery(
+    testCatalogProvider?.id ?? null,
+    testCatalogProvider?.provider_uuid ?? null
+  );
   const providersListScrollRef = useRef<HTMLDivElement | null>(null);
   const pendingProvidersScrollRestoreRef = useRef<PendingProvidersScrollRestore | null>(null);
   const routeDraftValue =
     routeDraftSelection.kind === "default" ? "default" : `mode:${routeDraftSelection.modeId}`;
   const selectedCliName = CLIS.find((cli) => cli.key === activeCli)?.name ?? activeCli;
+  const [locateTarget, setLocateTarget] = useState<{ cliKey: CliKey; providerId: number } | null>(
+    null
+  );
   const [clearUsageStatsOnDelete, setClearUsageStatsOnDelete] = useState(false);
   const [shareTarget, setShareTarget] = useState<(typeof providers)[number] | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
@@ -157,6 +171,24 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
     providersListElement.scrollTop = pendingRestore.scrollTop;
     pendingProvidersScrollRestoreRef.current = null;
   }, [activeCli, providersLoading, providers.length, filteredProviders.length]);
+
+  useEffect(() => {
+    if (!locateTarget) return;
+    if (locateTarget.cliKey === activeCli) {
+      providersListScrollRef.current
+        ?.querySelector<HTMLElement>('[data-provider-id="' + locateTarget.providerId + '"]')
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    setLocateTarget(null);
+  }, [activeCli, filteredProviders, locateTarget]);
+
+  function locateProviderCard(providerId: number) {
+    if (!providersById[providerId]) return;
+    pendingProvidersScrollRestoreRef.current = null;
+    setProviderSearch("");
+    setSelectedTags(new Set());
+    setLocateTarget({ cliKey: activeCli, providerId });
+  }
 
   function captureProvidersListScrollPosition(cliKey: CliKey) {
     const providersListElement = providersListScrollRef.current;
@@ -375,7 +407,9 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
                             provider.cli_key === "claude" ? copyTerminalLaunchCommand : undefined
                           }
                           terminalLaunchCopying={Boolean(terminalCopyingByProviderId[provider.id])}
-                          onTestAvailability={testProviderAvailability}
+                          onTestAvailability={(provider) => {
+                            if (!testingByProviderId[provider.id]) setTestTarget(provider);
+                          }}
                           testAvailabilityLoading={Boolean(testingByProviderId[provider.id])}
                           onManageModels={
                             isCodexDirectProvider(provider) ? setModelCatalogTarget : undefined
@@ -529,6 +563,17 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
                                     variant="secondary"
                                     size="sm"
                                     className="h-7 px-2 text-xs"
+                                    disabled={provider == null}
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                    onClick={() => locateProviderCard(row.provider_id)}
+                                    aria-label={"定位 " + providerLabel}
+                                  >
+                                    定位
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    className="h-7 px-2 text-xs"
                                     disabled={routeSaving}
                                     onPointerDown={(event) => event.stopPropagation()}
                                     onClick={() => removeProviderFromCurrentRoute(row.provider_id)}
@@ -549,6 +594,44 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
           ) : null}
         </div>
       </div>
+
+      <ProviderTestDialog
+        provider={testTarget}
+        catalogModels={testCatalog.data?.models.map((row) => row.remoteModelId)}
+        onDiscover={
+          testTarget && !testTarget.source_provider_id && !testTarget.bridge_type
+            ? async () => {
+                const result = await discovery
+                  .mutateAsync({
+                    providerId: testTarget.id,
+                    cliKey: testTarget.cli_key,
+                    authMode: testTarget.auth_mode,
+                    baseUrls: testTarget.base_urls,
+                    baseUrlMode: testTarget.base_url_mode,
+                    apiKey: null,
+                    sourceProviderId: null,
+                    bridgeType: null,
+                  })
+                  .catch(() => {
+                    throw new Error("模型发现失败，请检查供应商连接后重试。");
+                  });
+                if (result?.status === "ready") return result.models;
+                if (result?.status === "empty") return [];
+                if (result?.status === "unsupported")
+                  throw new Error("此供应商暂不支持动态模型发现，可手动输入模型。");
+                throw new Error("模型发现失败，请检查供应商连接后重试。");
+              }
+            : undefined
+        }
+        testing={testTarget ? Boolean(testingByProviderId[testTarget.id]) : false}
+        onClose={() => setTestTarget(null)}
+        onConfirm={(input) => {
+          if (!testTarget || testingByProviderId[testTarget.id]) return;
+          const provider = testTarget;
+          setTestTarget(null);
+          void testProviderAvailability(provider, input);
+        }}
+      />
 
       {createDialogState ? (
         <ProviderEditorDialog

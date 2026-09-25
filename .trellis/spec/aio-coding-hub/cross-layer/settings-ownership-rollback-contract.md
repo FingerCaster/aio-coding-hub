@@ -363,3 +363,57 @@ if !result.ok {
     rollback_owned_setting_and_converge_canonical(app, result)?;
 }
 ```
+
+## Scenario: Refresh Claude Direct Backup During Proxy Resume
+
+### 1. Scope / Trigger
+
+An enabled Claude manifest survives exit restoration. On the next live sync,
+its direct settings may contain edits made while the app was closed.
+
+### 2. Signatures
+
+`claude::is_proxy_managed(app)` recognizes the placeholder token or local
+Claude gateway URL independently of the current port.
+`refresh_backup_from_direct_state(app, cli_key, manifest)` captures current
+bytes, writes backups and returns `AppliedProxyConfig` committed snapshots.
+
+### 3. Contracts
+
+Only a non-managed Claude target refreshes the direct backup. Port changes and
+hand-edited tokens on a still-managed URL must not turn gateway bytes into the
+user baseline. Capture failure returns `CLI_PROXY_BACKUP_FAILED` before
+applying proxy configuration. After capture, keep backup and live file writes
+in one reverse-order CAS rollback chain. An apply/manifest failure restores
+only bytes still owned by this operation; rollback failure must report recovery
+required. Preserve concurrent edits and the separate Codex catalog transaction.
+
+### 4. Validation / Error Matrix
+
+| State | Result |
+| --- | --- |
+| Restored direct config edited offline | Refresh baseline, then apply proxy |
+| Managed URL, different gateway port | Retain original baseline |
+| Managed URL with manually changed token | Retain original baseline |
+| Cannot capture bounded direct settings | No live overwrite |
+| Apply fails after backup refresh | Restore previous backup; preserve live edit |
+| Concurrent drift during compensation | Preserve drift and report recovery |
+
+### 5. Examples
+
+Good: provider B selected while closed is restored after the next proxy disable.
+Boundary: only the gateway port changes, so provider A remains the baseline.
+Bad: snapshot a managed local URL and later restore it as the user's direct URL.
+
+### 6. Tests
+
+Claude sync tests cover offline edits, port changes, token edits, capture
+failure and `claude_proxy_sync_restores_refreshed_backup_when_apply_fails`.
+Existing AppliedProxyConfig CAS tests cover preserving drift while restoring
+other owned files.
+
+### 7. Wrong / Correct
+
+Wrong: refresh backup based only on equality with the new gateway URL.
+Correct: recognize managed state independently of port and retain committed
+backup snapshots in the same compensated operation as the live rewrite.

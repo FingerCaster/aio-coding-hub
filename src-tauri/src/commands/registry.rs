@@ -108,6 +108,7 @@ macro_rules! generated_command_registry {
             providers_reorder => crate::commands::providers::providers_reorder,
             default_route_providers_list => crate::commands::providers::default_route_providers_list,
             default_route_providers_set_order => crate::commands::providers::default_route_providers_set_order,
+            provider_models_discover => crate::commands::providers::provider_models_discover,
             provider_models_get => crate::commands::providers::provider_models_get,
             provider_models_refresh => crate::commands::providers::provider_models_refresh,
             provider_model_manual_upsert => crate::commands::providers::provider_model_manual_upsert,

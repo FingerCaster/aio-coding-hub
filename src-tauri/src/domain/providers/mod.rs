@@ -45,16 +45,15 @@ pub(crate) use share::{
     PROVIDER_SHARE_MAX_BYTES,
 };
 
-pub(crate) use validation::validate_claude_models;
+pub(crate) use validation::{normalize_base_urls, validate_claude_models};
 
 #[cfg(test)]
 use types::{claude_models_from_json, normalize_model_slot, MAX_MODEL_NAME_LEN};
 #[cfg(test)]
 use validation::{
-    base_urls_from_row, normalize_base_urls, normalize_reset_time_hms_lossy,
-    normalize_reset_time_hms_strict, parse_reset_time_hms, validate_limit_usd, MAX_LIMIT_USD,
-    MAX_PROVIDER_BASE_URLS, MAX_PROVIDER_BASE_URL_CHARS, MAX_PROVIDER_NOTE_CHARS,
-    MAX_PROVIDER_ORDER_IDS,
+    base_urls_from_row, normalize_reset_time_hms_lossy, normalize_reset_time_hms_strict,
+    parse_reset_time_hms, validate_limit_usd, MAX_LIMIT_USD, MAX_PROVIDER_BASE_URLS,
+    MAX_PROVIDER_BASE_URL_CHARS, MAX_PROVIDER_NOTE_CHARS, MAX_PROVIDER_ORDER_IDS,
 };
 
 #[cfg(test)]

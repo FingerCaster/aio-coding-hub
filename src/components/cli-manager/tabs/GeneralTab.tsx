@@ -900,7 +900,7 @@ export function CliManagerGeneralTab({
               <CollapsibleSettingsCard
                 icon={<Shuffle className="h-5 w-5 text-white" />}
                 title="模型路由"
-                subtitle="按客户端原始模型精确匹配，并在最终上游请求中替换模型或思考强度。"
+                subtitle="按客户端原始模型匹配，优先使用明确匹配的供应商，并在最终请求中替换模型或思考强度。"
                 iconClassName="bg-teal-600"
               >
                 <ModelRoutingPolicyFields

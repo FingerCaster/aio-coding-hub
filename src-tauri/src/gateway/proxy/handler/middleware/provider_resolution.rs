@@ -128,6 +128,19 @@ impl ProviderResolutionMiddleware {
         ctx.effective_sort_mode_id = selection.effective_sort_mode_id;
         ctx.providers = selection.providers;
 
+        if let Some(runtime) = ctx.runtime_settings.as_ref() {
+            crate::gateway::configured_model_route::filter_providers(
+                &mut ctx.providers,
+                &ctx.cli_key,
+                &ctx.method_hint,
+                &ctx.forwarded_path,
+                ctx.requested_model.as_deref(),
+                ctx.managed_model_route.is_some() || ctx.trusted_internal_reentry.is_some(),
+                &runtime.model_routing_policy,
+                ctx.forced_provider_id,
+            );
+        }
+
         // --- forced provider ---
         let forced_provider_missing = force_provider_if_requested(
             &mut ctx.providers,

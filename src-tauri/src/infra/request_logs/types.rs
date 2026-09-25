@@ -161,6 +161,6 @@ pub struct SessionStatsAggregate {
     pub request_count: i64,
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
-    pub total_cost_usd_femto: i64,
+    pub total_cost_usd_femto: f64,
     pub total_duration_ms: i64,
 }

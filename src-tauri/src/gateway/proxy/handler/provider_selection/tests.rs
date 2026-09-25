@@ -350,3 +350,59 @@ fn sort_mode_global_disable_removes_bound_provider_before_common_gate() {
     assert!(!circuit.should_allow(p1.id, now).allow);
     assert!(circuit.should_allow(p2.id, now).allow);
 }
+
+#[test]
+fn configured_routing_prefers_explicit_candidates_and_preserves_forcing_and_bypasses() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::db::init_for_tests(&dir.path().join("policy.sqlite")).unwrap();
+    let p1 = insert_provider(&db, "Inherited", true);
+    let p2 = insert_provider(&db, "Disabled", true);
+    let p3 = insert_provider(&db, "Specific", true);
+    let mut candidates = providers::list_enabled_for_gateway_in_mode(&db, "claude", None).unwrap();
+    let policy = crate::settings::ModelRoutingPolicy {
+        enabled: true,
+        rules: vec![crate::settings::ModelRoutingRule {
+            source_model: "model-*".into(),
+            target_model: None,
+            reasoning_effort: Some("high".into()),
+        }],
+    };
+    candidates
+        .iter_mut()
+        .find(|p| p.id == p2.id)
+        .unwrap()
+        .model_routing_policy_override = Some(Default::default());
+    candidates
+        .iter_mut()
+        .find(|p| p.id == p3.id)
+        .unwrap()
+        .model_routing_policy_override = Some(policy.clone());
+    let filter = |items: &mut Vec<providers::ProviderForGateway>,
+                  model: &str,
+                  bypass: bool,
+                  forced: Option<i64>| {
+        crate::gateway::configured_model_route::filter_providers(
+            items,
+            "claude",
+            "POST",
+            "/v1/messages",
+            Some(model),
+            bypass,
+            &policy,
+            forced,
+        );
+    };
+    let mut narrowed = candidates.clone();
+    filter(&mut narrowed, "model-a", false, None);
+    assert_eq!(ids(&narrowed), vec![p1.id, p3.id]);
+    for (model, bypass, forced) in [
+        ("model-a", false, Some(p2.id)),
+        ("unmatched", false, None),
+        ("aio/profile", false, None),
+        ("model-a", true, None),
+    ] {
+        let mut actual = candidates.clone();
+        filter(&mut actual, model, bypass, forced);
+        assert_eq!(ids(&actual), ids(&candidates));
+    }
+}

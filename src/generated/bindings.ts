@@ -822,6 +822,16 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async providerModelsDiscover(
+    input: ProviderModelDiscoveryInput
+  ): Promise<Result<ProviderModelDiscoveryResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("provider_models_discover", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async providerModelsGet(
     providerId: number,
     providerUuid: string
@@ -978,12 +988,14 @@ export const commands = {
     }
   },
   async providerTestAvailability(
-    providerId: number
+    providerId: number,
+    model: string | null,
+    prompt: string | null
   ): Promise<Result<ProviderAvailabilityResult, string>> {
     try {
       return {
         status: "ok",
-        data: await TAURI_INVOKE("provider_test_availability", { providerId }),
+        data: await TAURI_INVOKE("provider_test_availability", { providerId, model, prompt }),
       };
     } catch (e) {
       if (e instanceof Error) throw e;
@@ -4145,6 +4157,30 @@ export type ProviderModelCatalog = {
   lastErrorCode: string | null;
   models: ProviderModelEntry[];
 };
+export type ProviderModelDiscoveryErrorCode =
+  | "invalid_config"
+  | "redirect"
+  | "unauthorized"
+  | "timeout"
+  | "network"
+  | "invalid_response"
+  | "too_large";
+export type ProviderModelDiscoveryInput = {
+  providerId: number | null;
+  cliKey: string;
+  authMode: ProviderAuthMode;
+  baseUrls: string[];
+  baseUrlMode: ProviderBaseUrlMode;
+  apiKey: string | null;
+  sourceProviderId: number | null;
+  bridgeType: string | null;
+};
+export type ProviderModelDiscoveryResult =
+  | { status: "ready"; models: string[]; origin: string; base_url_index: number | null }
+  | { status: "empty"; origin: string; base_url_index: number | null }
+  | { status: "unsupported"; reason: ProviderModelDiscoveryUnsupportedReason }
+  | { status: "error"; code: ProviderModelDiscoveryErrorCode; http_status: number | null };
+export type ProviderModelDiscoveryUnsupportedReason = "oauth" | "cx_2cc";
 export type ProviderModelEntry = {
   modelUuid: string;
   providerId: number;

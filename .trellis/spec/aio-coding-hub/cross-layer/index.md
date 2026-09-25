@@ -16,7 +16,8 @@ TypeScript bindings, frontend adapters, and React UI.
   common provider-gate ownership, Ready-provider limits, persisted attempts,
   route hops, and UI count semantics.
 - [Configured model routing contract](./configured-model-routing-contract.md):
-  exact original-model matching, global/provider three-state policy, final-wire
+  exact/single-wildcard original-model matching, explicit-first provider filtering,
+  global/provider three-state policy, final-wire
   protocol rewrites, pre-send failover, and provider-scoped audit/cost basis.
 - [CX2CC routing contract](./cx2cc-routing-contract.md): single-owner model
   mapping, reasoning presence, provider-scoped context projection, shared
@@ -36,6 +37,9 @@ TypeScript bindings, frontend adapters, and React UI.
   persisted route cascades, retired bridge cleanup/import rejection,
   cancel/filter/invalidate cache reconciliation, and request-time provider
   identity in decision-chain displays.
+- [Provider discovery and probe contract](./provider-discovery-and-probe-contract.md):
+  read-only bounded suggestions, native/WSL Codex discovery identity, model/prompt
+  overrides, stale-dialog protection, and one-shot provider-card location.
 - [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md):
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.

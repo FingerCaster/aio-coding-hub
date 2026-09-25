@@ -80,6 +80,15 @@ export function validateModelRoutingPolicy(policy: ModelRoutingPolicy): string |
       }
       if (containsControlCharacter(rule.target_model)) return `${label}的目标模型包含控制字符`;
     }
+    if (
+      (rule.source_model.match(/\*/g)?.length ?? 0) > 1 ||
+      (rule.target_model?.match(/\*/g)?.length ?? 0) > 1
+    ) {
+      return label + "的来源与目标模型各最多包含一个 * 通配符";
+    }
+    if (rule.target_model?.includes("*") && !rule.source_model.includes("*")) {
+      return label + "的目标通配符需要来源模型包含通配符";
+    }
     if (rule.reasoning_effort) {
       if ([...rule.reasoning_effort].length > MAX_MODEL_ROUTING_EFFORT_CHARS) {
         return `${label}的思考强度不能超过 ${MAX_MODEL_ROUTING_EFFORT_CHARS} 个字符`;

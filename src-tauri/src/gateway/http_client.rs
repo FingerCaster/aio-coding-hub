@@ -464,6 +464,23 @@ fn proxy_uses_socks5_local_dns(proxy_url: &str) -> bool {
         .is_some_and(|parsed| parsed.scheme() == "socks5")
 }
 
+/// Force IPv4-first DNS resolution when an explicit `socks5://` proxy is used.
+///
+/// `socks5://` (unlike `socks5h://`) resolves hostnames locally, and many local
+/// SOCKS5 clients cannot reach an AAAA result, so every client that installs an
+/// explicit proxy must apply this before adding the proxy — the gateway's
+/// outbound client and the OAuth clients in [`crate::gateway::oauth`] alike.
+pub(crate) fn apply_socks5_local_dns_workaround(
+    builder: reqwest::ClientBuilder,
+    proxy_url: &str,
+) -> reqwest::ClientBuilder {
+    if proxy_uses_socks5_local_dns(proxy_url) {
+        builder.dns_resolver2(Ipv4FirstResolver)
+    } else {
+        builder
+    }
+}
+
 fn proxy_test_url() -> String {
     #[cfg(test)]
     if let Some(lock) = TEST_PROXY_TEST_URL_OVERRIDE.get() {
@@ -733,9 +750,17 @@ pub fn is_proxy_enabled() -> bool {
     get_current_proxy_url().is_some()
 }
 
-fn effective_proxy_url(settings: &AppSettings) -> Result<Option<String>, String> {
+/// Resolve the effective upstream proxy URL (with credentials) from settings,
+/// or `None` when the upstream proxy toggle is disabled.
+///
+/// Shared by the gateway's outbound client and by OAuth login/refresh clients
+/// ([`crate::gateway::oauth`]) so a single "Upstream Proxy" setting covers both.
+pub(crate) fn effective_proxy_url(settings: &AppSettings) -> Result<Option<String>, String> {
     if !settings.upstream_proxy_enabled {
         return Ok(None);
+    }
+    if settings.upstream_proxy_url.trim().is_empty() {
+        return Err("Upstream proxy URL cannot be empty when proxy is enabled".to_string());
     }
 
     build_effective_proxy_url(
@@ -1006,18 +1031,13 @@ fn configure_proxy(
 ) -> Result<ClientBuilder, String> {
     if let Some(url) = proxy_url {
         validate_proxy_url(url)?;
-        if proxy_uses_socks5_local_dns(url) {
-            builder = builder.dns_resolver2(Ipv4FirstResolver);
-        }
+        builder = apply_socks5_local_dns_workaround(builder, url);
         let proxy = reqwest::Proxy::all(url)
             .map_err(|e| format!("Invalid proxy URL '{}': {}", mask_url(url), e))?;
         builder = builder.proxy(proxy);
         tracing::debug!("[HttpClient] Proxy configured: {}", mask_url(url));
-    } else if system_proxy_points_to_gateway() {
-        builder = builder.no_proxy();
-        tracing::warn!("[HttpClient] System proxy points to gateway, bypassing to avoid recursion");
     } else {
-        tracing::debug!("[HttpClient] Following system proxy (no explicit proxy configured)");
+        builder = apply_system_proxy_self_loop_guard(builder);
     }
 
     Ok(builder)
@@ -1040,6 +1060,21 @@ fn system_proxy_points_to_gateway() -> bool {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .any(|value| proxy_points_to_gateway_with_context(&value, &context))
+}
+
+/// Disable automatic system proxies when they point back at this gateway.
+/// Clients with an explicit proxy must not call this helper because an explicit
+/// proxy is an intentional override.
+pub(crate) fn apply_system_proxy_self_loop_guard(
+    builder: reqwest::ClientBuilder,
+) -> reqwest::ClientBuilder {
+    if system_proxy_points_to_gateway() {
+        tracing::warn!("[HttpClient] System proxy points to gateway, bypassing to avoid recursion");
+        builder.no_proxy()
+    } else {
+        tracing::debug!("[HttpClient] Following system proxy (no explicit proxy configured)");
+        builder
+    }
 }
 
 pub(crate) async fn validate_gateway_target(
@@ -1215,6 +1250,8 @@ pub fn mask_url(url: &str) -> String {
             Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
             None => format!("{}://{}", parsed.scheme(), host),
         }
+    } else if url.contains('@') {
+        "[redacted]".to_string()
     } else if url.len() > 20 {
         format!("{}...", &url[..20])
     } else {
@@ -1987,6 +2024,19 @@ mod tests {
         let err = validate_proxy_for_settings(&settings)
             .expect_err("mixed credentials should be rejected");
         assert!(err.contains("either in proxy URL or username/password fields"));
+    }
+
+    #[test]
+    fn test_effective_proxy_url_rejects_enabled_proxy_without_url() {
+        let settings = AppSettings {
+            upstream_proxy_enabled: true,
+            upstream_proxy_url: "   ".to_string(),
+            ..AppSettings::default()
+        };
+
+        let err = effective_proxy_url(&settings)
+            .expect_err("enabled upstream proxy must require a proxy URL");
+        assert!(err.contains("cannot be empty"));
     }
 
     #[test]

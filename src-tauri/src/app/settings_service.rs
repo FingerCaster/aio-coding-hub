@@ -1203,7 +1203,9 @@ fn apply_settings_update_owned_patch(
         .model_routing_policy
         .clone()
         .unwrap_or_else(|| previous_token.model_routing_policy.clone());
-    settings::normalize_model_routing_policy_for_write(&mut model_routing_policy)?;
+    if update.model_routing_policy.is_some() {
+        settings::normalize_model_routing_policy_for_write(&mut model_routing_policy)?;
+    }
     let mut upstream_error_response_rules = update
         .upstream_error_response_rules
         .clone()
@@ -3180,6 +3182,41 @@ mod tests {
         apply_settings_update_owned_patch(&mut latest, &update).expect("ordinary settings update");
 
         assert_eq!(latest.codex_model_context_rules, expected_rules);
+    }
+
+    #[test]
+    fn ordinary_settings_patch_preserves_legacy_routes_unless_explicitly_replaced() {
+        let mut latest = settings::AppSettings {
+            model_routing_policy: settings::ModelRoutingPolicy {
+                enabled: true,
+                rules: vec![settings::ModelRoutingRule {
+                    source_model: "gpt**".to_string(),
+                    target_model: Some("legacy-target".to_string()),
+                    reasoning_effort: None,
+                }],
+            },
+            ..settings::AppSettings::default()
+        };
+        let expected_policy = latest.model_routing_policy.clone();
+        let next_cooldown = latest.provider_cooldown_seconds.saturating_add(1);
+        let update = SettingsPatch {
+            provider_cooldown_seconds: Some(next_cooldown),
+            ..SettingsPatch::default()
+        }
+        .to_update(&latest);
+
+        apply_settings_update_owned_patch(&mut latest, &update)
+            .expect("unrelated patch must preserve legacy exact-only routes");
+        assert_eq!(latest.provider_cooldown_seconds, next_cooldown);
+        assert_eq!(latest.model_routing_policy, expected_policy);
+
+        let invalid_replacement = SettingsPatch {
+            model_routing_policy: Some(expected_policy.clone()),
+            ..SettingsPatch::default()
+        }
+        .to_update(&latest);
+        assert!(apply_settings_update_owned_patch(&mut latest, &invalid_replacement).is_err());
+        assert_eq!(latest.model_routing_policy, expected_policy);
     }
 
     #[test]

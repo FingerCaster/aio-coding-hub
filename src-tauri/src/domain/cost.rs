@@ -292,7 +292,7 @@ pub fn calculate_cost_usd_femto_with_options(
     }
     .unwrap_or(0);
 
-    let output_cost = if options.priority_service_tier_applied {
+    let output_cost_value = if options.priority_service_tier_applied {
         get_femto_from_any(
             obj,
             &[
@@ -306,8 +306,11 @@ pub fn calculate_cost_usd_femto_with_options(
             obj,
             &["output_cost_per_token", "output_cost_per_cached_token"],
         )
+    };
+    if clamp_token_count(usage.output_tokens) > 0 && output_cost_value.is_none() {
+        return None;
     }
-    .unwrap_or(0);
+    let output_cost = output_cost_value.unwrap_or(0);
 
     let input_cost_above_200k = get_femto(obj, "input_cost_per_token_above_200k_tokens");
     let output_cost_above_200k = get_femto(obj, "output_cost_per_token_above_200k_tokens");

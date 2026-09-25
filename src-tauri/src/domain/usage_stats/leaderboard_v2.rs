@@ -596,7 +596,7 @@ SELECT
 	      cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
 	    ) THEN 1 ELSE 0 END
 	  ) AS cost_covered_success,
-	  SUM(
+	  TOTAL(
 	    CASE WHEN (
 	      status >= 200 AND status < 300 AND error_code IS NULL AND
 	      cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
@@ -691,9 +691,7 @@ GROUP BY cli_key
                         cost_covered_success: row
                             .get::<_, Option<i64>>("cost_covered_success")?
                             .unwrap_or(0),
-                        total_cost_usd_femto: row
-                            .get::<_, Option<i64>>("total_cost_usd_femto")?
-                            .unwrap_or(0),
+                        total_cost_usd_femto: row.get("total_cost_usd_femto")?,
                     };
 
                     Ok(agg.into_leaderboard_row(key.clone(), key))
@@ -731,7 +729,7 @@ SELECT
 	      cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
 	    ) THEN 1 ELSE 0 END
 	  ) AS cost_covered_success,
-	  SUM(
+	  TOTAL(
 	    CASE WHEN (
 	      status >= 200 AND status < 300 AND error_code IS NULL AND
 	      cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
@@ -826,9 +824,7 @@ GROUP BY COALESCE(NULLIF(requested_model, ''), 'Unknown')
                         cost_covered_success: row
                             .get::<_, Option<i64>>("cost_covered_success")?
                             .unwrap_or(0),
-                        total_cost_usd_femto: row
-                            .get::<_, Option<i64>>("total_cost_usd_femto")?
-                            .unwrap_or(0),
+                        total_cost_usd_femto: row.get("total_cost_usd_femto")?,
                     };
 
                     Ok(agg.into_leaderboard_row(key.clone(), key))
@@ -866,7 +862,7 @@ SELECT
       cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
     ) THEN 1 ELSE 0 END
   ) AS cost_covered_success,
-  SUM(
+  TOTAL(
     CASE WHEN (
       status >= 200 AND status < 300 AND error_code IS NULL AND
       cost_usd_femto IS NOT NULL AND cost_usd_femto > 0
@@ -964,9 +960,7 @@ GROUP BY key
                         cost_covered_success: row
                             .get::<_, Option<i64>>("cost_covered_success")?
                             .unwrap_or(0),
-                        total_cost_usd_femto: row
-                            .get::<_, Option<i64>>("total_cost_usd_femto")?
-                            .unwrap_or(0),
+                        total_cost_usd_femto: row.get("total_cost_usd_femto")?,
                     };
 
                     Ok(agg.into_leaderboard_row(key.clone(), key))
@@ -1009,7 +1003,7 @@ SELECT
       r.cost_usd_femto IS NOT NULL AND r.cost_usd_femto > 0
     ) THEN 1 ELSE 0 END
   ) AS cost_covered_success,
-  SUM(
+  TOTAL(
     CASE WHEN (
       r.status >= 200 AND r.status < 300 AND r.error_code IS NULL AND
       r.cost_usd_femto IS NOT NULL AND r.cost_usd_femto > 0
@@ -1115,9 +1109,7 @@ GROUP BY r.cli_key, r.final_provider_id
                         cost_covered_success: row
                             .get::<_, Option<i64>>("cost_covered_success")?
                             .unwrap_or(0),
-                        total_cost_usd_femto: row
-                            .get::<_, Option<i64>>("total_cost_usd_femto")?
-                            .unwrap_or(0),
+                        total_cost_usd_femto: row.get("total_cost_usd_femto")?,
                     };
 
                     Ok((cli_key, provider_id, provider_name, agg))

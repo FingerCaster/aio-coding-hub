@@ -170,3 +170,55 @@ valid successful TTFB rows -> output_tokens / (duration - TTFB)
 
 Each layer preserves the same filter identity and the backend remains the sole
 owner of aggregation semantics.
+
+## Scenario: Cost Aggregates Beyond Signed 64-Bit Totals
+
+### 1. Scope / Trigger
+
+Session, folder/day/provider/model leaderboards, usage summaries and provider
+spend gates aggregate stored request costs across arbitrarily many rows.
+
+### 2. Signatures
+
+Persisted per-request `cost_usd_femto` remains unchanged. Aggregation uses
+SQLite `TOTAL(COALESCE(cost_usd_femto, 0))` and Rust `f64` consumers,
+including `SessionStatsAggregate.total_cost_usd_femto`. USD conversion uses
+`1e15`; published number DTOs and query keys keep their existing shape.
+
+### 3. Contracts
+
+Never decode a floating aggregate through `i64` or sum femto values with
+SQLite integer `SUM`. Preserve provider/client usage ownership and exclusions.
+Clamp negative aggregate usage to zero at existing consumer boundaries; active
+session cost remains None for nonpositive totals. A request with positive
+output usage and no effective output rate has unknown cost (None), not a
+partially priced input-only total. Priority rows may use existing base-rate
+fallback; Actual service-tier precedence and incremental log updates remain.
+
+### 4. Validation / Error Matrix
+
+| Case | Expected |
+| --- | --- |
+| Two valid stored costs sum above i64 max | Finite f64 aggregate, successful query |
+| Empty aggregate | Zero; session optional presentation remains None |
+| Negative aggregate | Existing nonnegative consumer projection |
+| Positive output tokens, missing effective output rate | Unknown request cost |
+| Missing priority output rate, present base rate | Existing base fallback |
+
+### 5. Examples
+
+Good: two `3_i64 << 61` femto rows aggregate before USD conversion.
+Boundary: a zero-cost active session keeps its prior nullable UI contract.
+Bad: silently overflow to an integer or report input-only cost as fully known.
+
+### 6. Tests
+
+Overflow fixtures cover request-log sessions, gateway session projection,
+provider limit gates, provider usage and all leaderboard scopes. Domain cost
+tests cover missing output prices and base fallback. Existing tier tests
+retain Actual priority billing and raw/client usage separation.
+
+### 7. Wrong / Correct
+
+Wrong: `row.get::<_, i64>("total_cost")? as f64` after an integer SUM.
+Correct: SQL TOTAL and f64 decoding throughout the aggregate consumer chain.

@@ -602,6 +602,16 @@ where
 
     input.effective_sort_mode_id = selection.effective_sort_mode_id;
     input.providers = selection.providers;
+    crate::gateway::configured_model_route::filter_providers(
+        &mut input.providers,
+        &input.cli_key,
+        &input.method_hint,
+        &input.forwarded_path,
+        input.requested_model.as_deref(),
+        input.managed_model_route.is_some() || input.trusted_internal_reentry.is_some(),
+        &runtime.model_routing_policy,
+        input.forced_provider_id,
+    );
     if let Some(provider_id) = input.forced_provider_id {
         if let Some(index) = input
             .providers

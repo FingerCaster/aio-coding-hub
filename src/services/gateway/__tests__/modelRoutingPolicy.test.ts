@@ -86,3 +86,19 @@ describe("modelRoutingPolicy", () => {
     ).toContain("不能超过 256 字节");
   });
 });
+
+it("validates upstream-compatible source and target wildcard pairs", () => {
+  for (const [source, target, valid] of [
+    ["gpt-*", "remote-*", true],
+    ["gpt-*", "fixed", true],
+    ["gpt", "remote-*", false],
+    ["g*t-*", "fixed", false],
+    ["gpt-*", "r**", false],
+  ] as const) {
+    const error = validateModelRoutingPolicy({
+      enabled: true,
+      rules: [{ source_model: source, target_model: target, reasoning_effort: null }],
+    });
+    expect(error === null).toBe(valid);
+  }
+});
