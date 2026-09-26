@@ -3,6 +3,7 @@ import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../services/gateway/upstrea
 import { DEFAULT_FORM_VALUES } from "../providerEditorUtils";
 import { buildProviderEditorUpsertInput } from "../providerEditorSubmitModel";
 import type { ProviderEditorPayloadContext } from "../providerEditorActionContext";
+import { NATIVE_GATEWAY_PROTOCOLS } from "../../../constants/nativeGateway";
 
 function makeContext(
   overrides: Partial<ProviderEditorPayloadContext> = {}
@@ -36,6 +37,26 @@ function makeContext(
 }
 
 describe("pages/providers/providerEditorSubmitModel", () => {
+  it.each(NATIVE_GATEWAY_PROTOCOLS)(
+    "requires an explicit $key gateway protocol for each native client",
+    ({ key }) => {
+      for (const cliKey of ["pi", "omp"] as const) {
+        const result = buildProviderEditorUpsertInput(
+          makeContext({ cliKey, gatewayProtocol: key })
+        );
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.value.payload.gatewayProtocol).toBe(key);
+      }
+    }
+  );
+  it("blocks missing native protocol without adding a protocol to legacy providers", () => {
+    expect(
+      buildProviderEditorUpsertInput(makeContext({ cliKey: "pi", gatewayProtocol: null })).ok
+    ).toBe(false);
+    const legacy = buildProviderEditorUpsertInput(makeContext());
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) expect(legacy.value.payload.gatewayProtocol).toBeUndefined();
+  });
   it("requires an api key when editing an api-key provider without a saved secret", () => {
     const result = buildProviderEditorUpsertInput(
       makeContext({

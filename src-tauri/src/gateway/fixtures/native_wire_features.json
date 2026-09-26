@@ -1,0 +1,1573 @@
+[
+  {
+    "client": "pi",
+    "protocol": "anthropic-messages",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1/messages?beta=true",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Use only the local fixture.",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "max_tokens": 1024,
+      "stream": true,
+      "tools": [
+        {
+          "name": "read",
+          "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+          "eager_input_streaming": true,
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to read (relative or absolute)"
+              },
+              "offset": {
+                "type": "number",
+                "description": "Line number to start reading from (1-indexed)"
+              },
+              "limit": {
+                "type": "number",
+                "description": "Maximum number of lines to read"
+              }
+            },
+            "required": ["path"]
+          },
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_w0\",\"name\":\"read\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\pi--2093cf0ec0\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "anthropic-messages",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1/messages?beta=true",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_w0",
+              "name": "read",
+              "input": {
+                "path": "C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\pi--2093cf0ec0\\cwd\\fixture.txt"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "toolu_w0",
+              "content": "W0_LOCAL_READ_CONTENT\n",
+              "is_error": false,
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "max_tokens": 1024,
+      "stream": true,
+      "tools": [
+        {
+          "name": "read",
+          "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+          "eager_input_streaming": true,
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to read (relative or absolute)"
+              },
+              "offset": {
+                "type": "number",
+                "description": "Line number to start reading from (1-indexed)"
+              },
+              "limit": {
+                "type": "number",
+                "description": "Maximum number of lines to read"
+              }
+            },
+            "required": ["path"]
+          },
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"W0_LOCAL_FIXTURE_OK\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "anthropic-messages",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1/messages?beta=true",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Use only the local fixture.",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "max_tokens": 8192,
+      "stream": true,
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 2048,
+        "display": "summarized"
+      }
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"W0_SYNTHETIC_THOUGHT\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"w0-fake-signature\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"W0_LOCAL_FIXTURE_OK\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "anthropic-messages",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1/messages?beta=true",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\pi--29ec4b2d31\\cwd\\pixel.png\"></file>\nUse only the local fixture."
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP4z8DwnwGM/zMwAAAf7gP9NRsAMwAAAABJRU5ErkJggg=="
+              },
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "max_tokens": 1024,
+      "stream": true
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"W0_LOCAL_FIXTURE_OK\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-completions",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "max_completion_tokens": 1024,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read",
+            "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+            "parameters": {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Path to the file to read (relative or absolute)"
+                },
+                "offset": {
+                  "type": "number",
+                  "description": "Line number to start reading from (1-indexed)"
+                },
+                "limit": {
+                  "type": "number",
+                  "description": "Maximum number of lines to read"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_w0\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\pi--bf465bb6bb\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-completions",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_w0",
+              "type": "function",
+              "function": {
+                "name": "read",
+                "arguments": "{\"path\":\"D:\\\\OrcaProjects\\\\aio-coding-hub-fork\\\\omp-pi-channel-integration\\\\.trellis\\\\.runtime\\\\research\\\\omp-pi\\\\runs\\\\extended-2026-09-26T08-45-32-903Z\\\\pi--bf465bb6bb\\\\cwd\\\\fixture.txt\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "W0_LOCAL_READ_CONTENT\n",
+          "tool_call_id": "call_w0"
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "max_completion_tokens": 1024,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read",
+            "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+            "parameters": {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Path to the file to read (relative or absolute)"
+                },
+                "offset": {
+                  "type": "number",
+                  "description": "Line number to start reading from (1-indexed)"
+                },
+                "limit": {
+                  "type": "number",
+                  "description": "Maximum number of lines to read"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"W0_LOCAL_FIXTURE_OK\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4,\"total_tokens\":11}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-completions",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "max_completion_tokens": 8192,
+      "reasoning_effort": "low"
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"W0_LOCAL_FIXTURE_OK\",\"reasoning_content\":\"W0_SYNTHETIC_THOUGHT\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4,\"total_tokens\":11}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-completions",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\pi--e5fb919e89\\cwd\\pixel.png\"></file>\nUse only the local fixture."
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP4z8DwnwGM/zMwAAAf7gP9NRsAMwAAAABJRU5ErkJggg=="
+              }
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "max_completion_tokens": 1024
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"W0_LOCAL_FIXTURE_OK\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4,\"total_tokens\":11}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-responses",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-3c8f-75d2-a9c8-19afbbab7b7c",
+      "store": false,
+      "max_output_tokens": 1024,
+      "tools": [
+        {
+          "type": "function",
+          "name": "read",
+          "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+          "parameters": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to read (relative or absolute)"
+              },
+              "offset": {
+                "type": "number",
+                "description": "Line number to start reading from (1-indexed)"
+              },
+              "limit": {
+                "type": "number",
+                "description": "Maximum number of lines to read"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"total_tokens\":12}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_w0\",\"call_id\":\"call_w0\",\"name\":\"read\",\"arguments\":\"\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_w0\",\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\pi--dc05e2a3b7\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"sequence_number\":2}\n\nevent: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_w0\",\"output_index\":0,\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\pi--dc05e2a3b7\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"sequence_number\":3}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_w0\",\"call_id\":\"call_w0\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\pi--dc05e2a3b7\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"status\":\"completed\"},\"sequence_number\":4}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_w0\",\"call_id\":\"call_w0\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\pi--dc05e2a3b7\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"total_tokens\":12}},\"sequence_number\":5}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-responses",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "id": "fc_w0",
+          "call_id": "call_w0",
+          "name": "read",
+          "arguments": "{\"path\":\"D:\\\\OrcaProjects\\\\aio-coding-hub-fork\\\\omp-pi-channel-integration\\\\.trellis\\\\.runtime\\\\research\\\\omp-pi\\\\runs\\\\extended-2026-09-26T08-45-32-903Z\\\\pi--dc05e2a3b7\\\\cwd\\\\fixture.txt\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_w0",
+          "output": "W0_LOCAL_READ_CONTENT\n"
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-3c8f-75d2-a9c8-19afbbab7b7c",
+      "store": false,
+      "max_output_tokens": 1024,
+      "tools": [
+        {
+          "type": "function",
+          "name": "read",
+          "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+          "parameters": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to the file to read (relative or absolute)"
+              },
+              "offset": {
+                "type": "number",
+                "description": "Line number to start reading from (1-indexed)"
+              },
+              "limit": {
+                "type": "number",
+                "description": "Maximum number of lines to read"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":1}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":2}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"delta\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":3}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"text\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":4}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]},\"sequence_number\":5}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]},\"sequence_number\":6}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":7}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-responses",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-3de1-709b-9d00-651738868517",
+      "store": false,
+      "max_output_tokens": 8192,
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      },
+      "include": ["reasoning.encrypted_content"]
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_w0\",\"summary\":[]}}\n\nevent: response.reasoning_summary_part.added\ndata: {\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"\"}}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"delta\":\"W0_SYNTHETIC_THOUGHT\"}\n\nevent: response.reasoning_summary_text.done\ndata: {\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"text\":\"W0_SYNTHETIC_THOUGHT\"}\n\nevent: response.reasoning_summary_part.done\ndata: {\"type\":\"response.reasoning_summary_part.done\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"W0_SYNTHETIC_THOUGHT\"}}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_w0\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"W0_SYNTHETIC_THOUGHT\"}]}}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":1}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":2}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"delta\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":3}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"text\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":4}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]},\"sequence_number\":5}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]},\"sequence_number\":6}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_w0\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"W0_SYNTHETIC_THOUGHT\"}]},{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":7}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "openai-responses",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\pi--091b52a813\\cwd\\pixel.png\"></file>\nUse only the local fixture."
+            },
+            {
+              "type": "input_image",
+              "detail": "auto",
+              "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP4z8DwnwGM/zMwAAAf7gP9NRsAMwAAAABJRU5ErkJggg=="
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-3f10-7217-80a0-7e598dff0884",
+      "store": false,
+      "max_output_tokens": 1024
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":1}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":2}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"delta\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":3}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"text\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":4}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]},\"sequence_number\":5}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]},\"sequence_number\":6}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":7}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "google-generative-ai",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "Use only the local fixture."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read",
+              "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+              "parametersJsonSchema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path to the file to read (relative or absolute)"
+                  },
+                  "offset": {
+                    "type": "number",
+                    "description": "Line number to start reading from (1-indexed)"
+                  },
+                  "limit": {
+                    "type": "number",
+                    "description": "Maximum number of lines to read"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 1024
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"D:\\\\OrcaProjects\\\\aio-coding-hub-fork\\\\omp-pi-channel-integration\\\\.trellis\\\\.runtime\\\\research\\\\omp-pi\\\\runs\\\\extended-2026-09-26T08-45-32-903Z\\\\pi--77849ca7d7\\\\cwd\\\\fixture.txt\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":5,\"totalTokenCount\":12}}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "google-generative-ai",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "Use only the local fixture."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "path": "C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\pi--77849ca7d7\\cwd\\fixture.txt"
+                },
+                "name": "read"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "read",
+                "response": {
+                  "output": "W0_LOCAL_READ_CONTENT\n"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read",
+              "description": "Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+              "parametersJsonSchema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path to the file to read (relative or absolute)"
+                  },
+                  "offset": {
+                    "type": "number",
+                    "description": "Line number to start reading from (1-indexed)"
+                  },
+                  "limit": {
+                    "type": "number",
+                    "description": "Maximum number of lines to read"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 1024
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"W0_LOCAL_FIXTURE_OK\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"w0-model\",\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":4,\"totalTokenCount\":11}}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "google-generative-ai",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "Use only the local fixture."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 8192,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": -1
+        }
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"W0_SYNTHETIC_THOUGHT\",\"thought\":true},{\"text\":\"W0_LOCAL_FIXTURE_OK\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"w0-model\",\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":4,\"totalTokenCount\":11}}\n\n"
+  },
+  {
+    "client": "pi",
+    "protocol": "google-generative-ai",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\pi--47bab4ccaf\\cwd\\pixel.png\"></file>\nUse only the local fixture."
+            },
+            {
+              "inlineData": {
+                "data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP4z8DwnwGM/zMwAAAf7gP9NRsAMwAAAABJRU5ErkJggg==",
+                "mimeType": "image/png"
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 1024
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"W0_LOCAL_FIXTURE_OK\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"w0-model\",\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":4,\"totalTokenCount\":11}}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "anthropic-messages",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1/messages",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-33d180ca25/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "Use only the local fixture.",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "i": {
+                "type": "string",
+                "description": "concise intent"
+              },
+              "path": {
+                "type": "string",
+                "description": "Local path, internal URI, or URL; selectors inline."
+              }
+            },
+            "required": ["path", "i"],
+            "additionalProperties": false
+          },
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ],
+      "metadata": {
+        "user_id": "{\"session_id\":\"01a0dce4-5b2d-7000-9d71-e53a7f6759df\"}"
+      },
+      "max_tokens": 1024,
+      "stream": true
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_w0\",\"name\":\"read\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\omp-33d180ca25\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "anthropic-messages",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1/messages",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-33d180ca25/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_w0",
+              "name": "read",
+              "input": {
+                "path": "C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\omp-33d180ca25\\cwd\\fixture.txt"
+              },
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "toolu_w0",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "W0_LOCAL_READ_CONTENT"
+                }
+              ],
+              "is_error": false,
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "name": "read",
+          "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "i": {
+                "type": "string",
+                "description": "concise intent"
+              },
+              "path": {
+                "type": "string",
+                "description": "Local path, internal URI, or URL; selectors inline."
+              }
+            },
+            "required": ["path", "i"],
+            "additionalProperties": false
+          },
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ],
+      "metadata": {
+        "user_id": "{\"session_id\":\"01a0dce4-5b2d-7000-9d71-e53a7f6759df\"}"
+      },
+      "max_tokens": 1024,
+      "stream": true
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"W0_LOCAL_FIXTURE_OK\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "anthropic-messages",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1/messages",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-cd6bb2a735/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "Use only the local fixture.",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "metadata": {
+        "user_id": "{\"session_id\":\"01a0dce4-60eb-7000-b9a8-7df507bc4901\"}"
+      },
+      "max_tokens": 8192,
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 2048,
+        "display": "summarized"
+      },
+      "context_management": {
+        "edits": [
+          {
+            "type": "clear_thinking_20251015",
+            "keep": "all"
+          }
+        ]
+      },
+      "stream": true
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"W0_SYNTHETIC_THOUGHT\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"w0-fake-signature\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"W0_LOCAL_FIXTURE_OK\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "anthropic-messages",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1/messages",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-012569abf5/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\omp-012569abf5\\cwd\\pixel.png\">[Image: original 2x2, displayed at 200x200. Multiply coordinates by 0.01 to map to original image.]</file>\nUse only the local fixture."
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/webp",
+                "data": "UklGRqAAAABXRUJQVlA4IJQAAADQDACdASrIAMgAPm02mUmkIyKhIEgAgA2JaW7hdrEe3AfgAAAnteirhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLOAAA/v9wPf//+QXLC65Gv//5Af8gP+QH/8fFNNpxC5wIAAAAAAAA"
+              },
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "metadata": {
+        "user_id": "{\"session_id\":\"01a0dce4-665c-7000-b584-1afd3c8d2ee1\"}"
+      },
+      "max_tokens": 1024,
+      "stream": true
+    },
+    "response": "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_w0\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"w0-model\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"W0_LOCAL_FIXTURE_OK\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":4}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-completions",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-71cc2b0162/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read",
+            "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "i": {
+                  "type": "string",
+                  "description": "concise intent"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Local path, internal URI, or URL; selectors inline."
+                }
+              },
+              "required": ["path", "i"],
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "max_completion_tokens": 1024
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_w0\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\omp-71cc2b0162\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-completions",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-71cc2b0162/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_w0",
+              "type": "function",
+              "function": {
+                "name": "read",
+                "arguments": "{\"path\":\"D:\\\\OrcaProjects\\\\aio-coding-hub-fork\\\\omp-pi-channel-integration\\\\.trellis\\\\.runtime\\\\research\\\\omp-pi\\\\runs\\\\extended-2026-09-26T08-45-32-903Z\\\\omp-71cc2b0162\\\\cwd\\\\fixture.txt\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "W0_LOCAL_READ_CONTENT",
+          "tool_call_id": "call_w0"
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "read",
+            "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "i": {
+                  "type": "string",
+                  "description": "concise intent"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Local path, internal URI, or URL; selectors inline."
+                }
+              },
+              "required": ["path", "i"],
+              "additionalProperties": false
+            }
+          }
+        }
+      ],
+      "max_completion_tokens": 1024
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"W0_LOCAL_FIXTURE_OK\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4,\"total_tokens\":11}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-completions",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-4d061afbb9/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "max_completion_tokens": 8192,
+      "reasoning_effort": "low"
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"W0_LOCAL_FIXTURE_OK\",\"reasoning_content\":\"W0_SYNTHETIC_THOUGHT\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4,\"total_tokens\":11}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-completions",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1/chat/completions",
+    "body": {
+      "model": "w0-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-28113f7519/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "text",
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\omp-28113f7519\\cwd\\pixel.png\">[Image: original 2x2, displayed at 200x200. Multiply coordinates by 0.01 to map to original image.]</file>\nUse only the local fixture."
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/webp;base64,UklGRqAAAABXRUJQVlA4IJQAAADQDACdASrIAMgAPm02mUmkIyKhIEgAgA2JaW7hdrEe3AfgAAAnteirhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLOAAA/v9wPf//+QXLC65Gv//5Af8gP+QH/8fFNNpxC5wIAAAAAAAA"
+              }
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "store": false,
+      "max_completion_tokens": 1024
+    },
+    "response": "data: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"W0_LOCAL_FIXTURE_OK\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"chatcmpl_w0\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"w0-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":4,\"total_tokens\":11}}\n\ndata: [DONE]\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-responses",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-c850d30f91/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "input_text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-e3dc-7000-adb9-a078366fe0db",
+      "store": false,
+      "max_output_tokens": 1024,
+      "tools": [
+        {
+          "type": "function",
+          "name": "read",
+          "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "i": {
+                "type": "string",
+                "description": "concise intent"
+              },
+              "path": {
+                "type": "string",
+                "description": "Local path, internal URI, or URL; selectors inline."
+              }
+            },
+            "required": ["path", "i"],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"total_tokens\":12}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_w0\",\"call_id\":\"call_w0\",\"name\":\"read\",\"arguments\":\"\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_w0\",\"output_index\":0,\"delta\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\omp-c850d30f91\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"sequence_number\":2}\n\nevent: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_w0\",\"output_index\":0,\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\omp-c850d30f91\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"sequence_number\":3}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_w0\",\"call_id\":\"call_w0\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\omp-c850d30f91\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"status\":\"completed\"},\"sequence_number\":4}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_w0\",\"call_id\":\"call_w0\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\OrcaProjects\\\\\\\\aio-coding-hub-fork\\\\\\\\omp-pi-channel-integration\\\\\\\\.trellis\\\\\\\\.runtime\\\\\\\\research\\\\\\\\omp-pi\\\\\\\\runs\\\\\\\\extended-2026-09-26T08-45-32-903Z\\\\\\\\omp-c850d30f91\\\\\\\\cwd\\\\\\\\fixture.txt\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"total_tokens\":12}},\"sequence_number\":5}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-responses",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-c850d30f91/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "input_text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_w0",
+          "name": "read",
+          "arguments": "{\"path\":\"D:\\\\OrcaProjects\\\\aio-coding-hub-fork\\\\omp-pi-channel-integration\\\\.trellis\\\\.runtime\\\\research\\\\omp-pi\\\\runs\\\\extended-2026-09-26T08-45-32-903Z\\\\omp-c850d30f91\\\\cwd\\\\fixture.txt\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_w0",
+          "output": "W0_LOCAL_READ_CONTENT"
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-e3dc-7000-adb9-a078366fe0db",
+      "store": false,
+      "max_output_tokens": 1024,
+      "tools": [
+        {
+          "type": "function",
+          "name": "read",
+          "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "i": {
+                "type": "string",
+                "description": "concise intent"
+              },
+              "path": {
+                "type": "string",
+                "description": "Local path, internal URI, or URL; selectors inline."
+              }
+            },
+            "required": ["path", "i"],
+            "additionalProperties": false
+          }
+        }
+      ]
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":1}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":2}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"delta\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":3}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"text\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":4}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]},\"sequence_number\":5}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]},\"sequence_number\":6}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":7}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-responses",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-824cab21e0/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "input_text",
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-edc2-7000-a33d-503e8518b04a",
+      "store": false,
+      "max_output_tokens": 8192,
+      "tools": [],
+      "include": ["reasoning.encrypted_content"],
+      "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+      }
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_w0\",\"summary\":[]}}\n\nevent: response.reasoning_summary_part.added\ndata: {\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"\"}}\n\nevent: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"delta\":\"W0_SYNTHETIC_THOUGHT\"}\n\nevent: response.reasoning_summary_text.done\ndata: {\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"text\":\"W0_SYNTHETIC_THOUGHT\"}\n\nevent: response.reasoning_summary_part.done\ndata: {\"type\":\"response.reasoning_summary_part.done\",\"item_id\":\"rs_w0\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"W0_SYNTHETIC_THOUGHT\"}}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_w0\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"W0_SYNTHETIC_THOUGHT\"}]}}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":1}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":2}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"delta\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":3}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"text\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":4}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_w0\",\"output_index\":1,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]},\"sequence_number\":5}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]},\"sequence_number\":6}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_w0\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"W0_SYNTHETIC_THOUGHT\"}]},{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":7}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "openai-responses",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1/responses",
+    "body": {
+      "model": "w0-model",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-9052817cfa/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "type": "input_text",
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\omp-9052817cfa\\cwd\\pixel.png\">[Image: original 2x2, displayed at 200x200. Multiply coordinates by 0.01 to map to original image.]</file>\nUse only the local fixture."
+            },
+            {
+              "type": "input_image",
+              "detail": "auto",
+              "image_url": "data:image/webp;base64,UklGRqAAAABXRUJQVlA4IJQAAADQDACdASrIAMgAPm02mUmkIyKhIEgAgA2JaW7hdrEe3AfgAAAnteirhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLOAAA/v9wPf//+QXLC65Gv//5Af8gP+QH/8fFNNpxC5wIAAAAAAAA"
+            }
+          ]
+        }
+      ],
+      "stream": true,
+      "prompt_cache_key": "01a0dce4-f34e-7000-9a15-a61ee2f24e69",
+      "store": false,
+      "max_output_tokens": 1024,
+      "tools": []
+    },
+    "response": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"w0-model\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]},\"sequence_number\":1}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":2}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"delta\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":3}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"text\":\"W0_LOCAL_FIXTURE_OK\",\"sequence_number\":4}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_w0\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]},\"sequence_number\":5}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]},\"sequence_number\":6}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_w0\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"w0-model\",\"output\":[{\"id\":\"msg_w0\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"W0_LOCAL_FIXTURE_OK\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}},\"sequence_number\":7}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "google-generative-ai",
+    "scenario": "tool",
+    "turn": 0,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-8a7538ad4b/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read",
+              "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+              "parametersJsonSchema": {
+                "type": "object",
+                "properties": {
+                  "i": {
+                    "type": "string",
+                    "description": "concise intent"
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Local path, internal URI, or URL; selectors inline."
+                  }
+                },
+                "required": ["path", "i"],
+                "propertyOrdering": ["i", "path"]
+              }
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 1024
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"read\",\"args\":{\"path\":\"D:\\\\OrcaProjects\\\\aio-coding-hub-fork\\\\omp-pi-channel-integration\\\\.trellis\\\\.runtime\\\\research\\\\omp-pi\\\\runs\\\\extended-2026-09-26T08-45-32-903Z\\\\omp-8a7538ad4b\\\\cwd\\\\fixture.txt\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":5,\"totalTokenCount\":12}}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "google-generative-ai",
+    "scenario": "tool",
+    "turn": 1,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-8a7538ad4b/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "text": "Use only the local fixture."
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "functionCall": {
+                "name": "read",
+                "args": {
+                  "path": "C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\omp-8a7538ad4b\\cwd\\fixture.txt"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "read",
+                "response": {
+                  "output": "W0_LOCAL_READ_CONTENT"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "name": "read",
+              "description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+              "parametersJsonSchema": {
+                "type": "object",
+                "properties": {
+                  "i": {
+                    "type": "string",
+                    "description": "concise intent"
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Local path, internal URI, or URL; selectors inline."
+                  }
+                },
+                "required": ["path", "i"],
+                "propertyOrdering": ["i", "path"]
+              }
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 1024
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"W0_LOCAL_FIXTURE_OK\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"w0-model\",\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":4,\"totalTokenCount\":11}}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "google-generative-ai",
+    "scenario": "thinking",
+    "turn": 0,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-6bda262a52/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "text": "Use only the local fixture."
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 8192,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": 2048
+        }
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"W0_SYNTHETIC_THOUGHT\",\"thought\":true},{\"text\":\"W0_LOCAL_FIXTURE_OK\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"w0-model\",\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":4,\"totalTokenCount\":11}}\n\n"
+  },
+  {
+    "client": "omp",
+    "protocol": "google-generative-ai",
+    "scenario": "image",
+    "turn": 0,
+    "path": "/v1beta/models/w0-model:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "<system-reminder>\nToday: 2026-09-26; current working directory: 'C:/native-fixture/.trellis/.runtime/research/omp-pi/runs/extended-2026-09-26T08-45-32-903Z/omp-5e88cad513/cwd'. Do not repeat this information in your reply.\n</system-reminder>"
+            },
+            {
+              "text": "<file name=\"C:/native-fixture/.trellis\\.runtime\\research\\omp-pi\\runs\\extended-2026-09-26T08-45-32-903Z\\omp-5e88cad513\\cwd\\pixel.png\">[Image: original 2x2, displayed at 200x200. Multiply coordinates by 0.01 to map to original image.]</file>\nUse only the local fixture."
+            },
+            {
+              "inlineData": {
+                "mimeType": "image/webp",
+                "data": "UklGRqAAAABXRUJQVlA4IJQAAADQDACdASrIAMgAPm02mUmkIyKhIEgAgA2JaW7hdrEe3AfgAAAnteirhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLhBkENVSa7bRcIMghqqTXbaLOAAA/v9wPf//+QXLC65Gv//5Af8gP+QH/8fFNNpxC5wIAAAAAAAA"
+              }
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "maxOutputTokens": 1024
+      }
+    },
+    "response": "data: {\"candidates\":[{\"index\":0,\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"W0_LOCAL_FIXTURE_OK\"}]},\"finishReason\":\"STOP\"}],\"modelVersion\":\"w0-model\",\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":4,\"totalTokenCount\":11}}\n\n"
+  }
+]

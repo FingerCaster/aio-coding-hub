@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
+mod metadata;
+pub(crate) use metadata::ModelCapabilitySuggestion;
+
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 const DISCOVERY_BODY_LIMIT: usize = 8 * 1024 * 1024;
 
@@ -50,6 +53,9 @@ pub(crate) enum ProviderModelDiscoveryErrorCode {
 pub(crate) enum ProviderModelDiscoveryResult {
     Ready {
         models: Vec<String>,
+        // Kept internally for native channel drafts; the existing discovery IPC stays compatible.
+        #[serde(skip)]
+        details: Vec<ModelCapabilitySuggestion>,
         origin: String,
         base_url_index: Option<u32>,
     },
@@ -429,6 +435,7 @@ async fn fetch_model_catalog_with_descriptor(
         }
     } else {
         ProviderModelDiscoveryResult::Ready {
+            details: metadata::parse_capabilities(descriptor.format(), &body),
             models,
             origin,
             base_url_index,
@@ -927,6 +934,7 @@ mod tests {
         let saved = crate::providers::upsert(
             &db,
             crate::providers::ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: "codex".to_string(),
                 name: "stored-key-discovery".to_string(),
@@ -1018,6 +1026,7 @@ mod tests {
         let saved = crate::providers::upsert(
             &db,
             crate::providers::ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: "codex".to_string(),
                 name: "oauth-read-only-discovery".to_string(),
@@ -1430,6 +1439,7 @@ mod tests {
                 models,
                 origin,
                 base_url_index,
+                ..
             } => {
                 assert_eq!(models, vec!["astra", "models/astra", "z-future-model"]);
                 assert_eq!(origin, expected_origin);

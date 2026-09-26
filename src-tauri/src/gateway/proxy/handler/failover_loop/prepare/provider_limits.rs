@@ -640,6 +640,7 @@ mod tests {
 
     fn provider_with_5h_limit(id: i64) -> providers::ProviderForGateway {
         providers::ProviderForGateway {
+            gateway_protocol: None,
             id,
             name: "overflow-provider".to_string(),
             base_urls: vec!["https://example.com".to_string()],
@@ -797,6 +798,7 @@ INSERT INTO request_logs (
         let ctx = CommonCtx::from(CommonCtxArgs {
             state: &state,
             cli_key: &cli_key,
+            wire_protocol: None,
             forwarded_path: &forwarded_path,
             observe: true,
             method_hint: &method_hint,

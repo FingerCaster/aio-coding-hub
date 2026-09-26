@@ -1,12 +1,13 @@
 // Usage: Shared CLI definitions and derived UI filter helpers.
 
-export const CLI_KEYS = ["claude", "codex", "gemini", "grok"] as const;
+export const CLI_KEYS = ["claude", "codex", "gemini", "grok", "pi", "omp"] as const;
 
 export type CliKey = (typeof CLI_KEYS)[number];
 
 export type CliCapability =
   | "gateway"
   | "provider"
+  | "nativeProvider"
   | "logs"
   | "usage"
   | "pricing"
@@ -32,6 +33,7 @@ export type CliItem = {
 const NO_CAPABILITIES: CliCapabilities = {
   gateway: false,
   provider: false,
+  nativeProvider: false,
   logs: false,
   usage: false,
   pricing: false,
@@ -83,6 +85,22 @@ const GROK_CAPABILITIES = capabilities(
   "workspaces"
 );
 
+const NATIVE_CLI_CAPABILITIES = capabilities(
+  "nativeProvider",
+  "cliManager",
+  "gateway",
+  "provider",
+  "logs",
+  "usage",
+  "pricing"
+);
+
+export type NativeCliKey = Extract<CliKey, "pi" | "omp">;
+
+export function isNativeCliKey(value: unknown): value is NativeCliKey {
+  return value === "pi" || value === "omp";
+}
+
 export const CLI_REGISTRY: readonly CliItem[] = [
   {
     key: "claude",
@@ -108,6 +126,8 @@ export const CLI_REGISTRY: readonly CliItem[] = [
     desc: "xAI Grok CLI",
     capabilities: GROK_CAPABILITIES,
   },
+  { key: "pi", name: "Pi", desc: "Pi Coding Agent", capabilities: NATIVE_CLI_CAPABILITIES },
+  { key: "omp", name: "OMP", desc: "Oh My Pi", capabilities: NATIVE_CLI_CAPABILITIES },
 ];
 
 export const CLIS = CLI_REGISTRY;
@@ -144,6 +164,8 @@ const CLI_SHORT_LABELS: Record<CliKey, string> = {
   codex: "Codex",
   gemini: "Gemini",
   grok: "Grok",
+  pi: "Pi",
+  omp: "OMP",
 };
 
 export const CLI_SHORT_ITEMS: Array<{ key: CliKey; label: string }> = CLIS.map((cli) => ({

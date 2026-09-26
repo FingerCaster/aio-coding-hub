@@ -94,6 +94,7 @@ export type ProviderDeleteOptions = {
 };
 
 type ProviderUpsertFieldMap = {
+  gatewayProtocol: "gatewayProtocol";
   providerId: "providerId";
   cliKey: "cliKey";
   name: "name";
@@ -199,6 +200,7 @@ function toProviderUpsertPayload(input: ProviderUpsertInput): ProviderUpsertTran
   const payloadBase = {
     providerId,
     cliKey,
+    gatewayProtocol: input.gatewayProtocol ?? null,
     name: input.name,
     baseUrls: input.baseUrls,
     baseUrlMode: input.baseUrlMode,

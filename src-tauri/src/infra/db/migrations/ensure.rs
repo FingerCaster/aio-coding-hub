@@ -30,6 +30,8 @@ pub(super) fn apply_ensure_patches(conn: &mut Connection) -> crate::shared::erro
     ensure_skills_update_columns(conn)?;
     ensure_plugin_tables(conn)?;
     ensure_infinite_retry_provider_usage(conn)?;
+    super::v46_to_v47::ensure_schema(conn)?;
+    super::v47_to_v48::ensure_schema(conn)?;
     Ok(())
 }
 

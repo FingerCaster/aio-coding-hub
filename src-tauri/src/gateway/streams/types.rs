@@ -168,6 +168,7 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) is_compact_request: bool,
     pub(in crate::gateway) trace_id: String,
     pub(in crate::gateway) cli_key: String,
+    pub(in crate::gateway) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub(in crate::gateway) method: String,
     pub(in crate::gateway) path: String,
     pub(in crate::gateway) observe: bool,

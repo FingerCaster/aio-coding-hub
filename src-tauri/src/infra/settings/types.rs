@@ -594,6 +594,9 @@ pub struct AppSettings {
     #[serde(default = "default_codex_infinite_retry_test_interval_ms")]
     pub codex_infinite_retry_test_interval_ms: u32,
     pub grok_proxy_preferences: Option<crate::grok_config::GrokProxyPreferences>,
+    // Owned by native CLI target selection; ordinary settings patches preserve it.
+    #[serde(default)]
+    pub pi_omp_native_targets: Vec<crate::domain::native_cli::NativeTargetSelection>,
     // Image generation storage directory override. None/empty = default
     // `<app data dir>/image-gen`.
     pub image_gen_storage_dir: Option<String>,
@@ -706,6 +709,7 @@ impl Default for AppSettings {
             codex_infinite_retry_test_enabled: DEFAULT_CODEX_INFINITE_RETRY_TEST_ENABLED,
             codex_infinite_retry_test_interval_ms: DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
             grok_proxy_preferences: None,
+            pi_omp_native_targets: Vec::new(),
             image_gen_storage_dir: None,
             image_gen_storage_roots: Vec::new(),
             auto_start: false,

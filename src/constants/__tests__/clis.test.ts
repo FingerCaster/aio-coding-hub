@@ -19,7 +19,7 @@ import {
 
 describe("constants/clis", () => {
   it("exports filter items derived from CLIS", () => {
-    expect(CLI_KEYS).toEqual(["claude", "codex", "gemini", "grok"]);
+    expect(CLI_KEYS).toEqual(["claude", "codex", "gemini", "grok", "pi", "omp"]);
     expect(CLIS.map((cli) => cli.key)).toEqual(CLI_KEYS);
     expect(CLI_FILTER_ITEMS[0]).toEqual({ key: "all", label: "全部" });
     expect(CLI_FILTER_ITEMS.map((item) => item.key)).toContain("claude");
@@ -28,6 +28,8 @@ describe("constants/clis", () => {
       { key: "codex", label: "Codex" },
       { key: "gemini", label: "Gemini" },
       { key: "grok", label: "Grok" },
+      { key: "pi", label: "Pi" },
+      { key: "omp", label: "OMP" },
     ]);
     expect(CLI_FILTER_SHORT_ITEMS[0]).toEqual({ key: "all", label: "全部" });
     expect(CLI_FILTER_SHORT_ITEMS.slice(1)).toEqual(CLI_SHORT_ITEMS);
@@ -38,6 +40,7 @@ describe("constants/clis", () => {
     expect(grok?.capabilities).toEqual({
       gateway: true,
       provider: true,
+      nativeProvider: false,
       logs: true,
       usage: true,
       pricing: true,
@@ -54,6 +57,7 @@ describe("constants/clis", () => {
     const legacyCapabilities = {
       gateway: true,
       provider: true,
+      nativeProvider: false,
       logs: true,
       usage: true,
       pricing: true,
@@ -72,7 +76,7 @@ describe("constants/clis", () => {
         legacyCapabilities
       );
     }
-    expect(cliKeysWith("provider")).toEqual(["claude", "codex", "gemini", "grok"]);
+    expect(cliKeysWith("provider")).toEqual(["claude", "codex", "gemini", "grok", "pi", "omp"]);
     expect(cliKeysWith("wsl")).toEqual(["claude", "codex", "gemini"]);
     expect(cliFilterItemsWith("usage").map((item) => item.key)).toEqual([
       "all",
@@ -80,7 +84,37 @@ describe("constants/clis", () => {
       "codex",
       "gemini",
       "grok",
+      "pi",
+      "omp",
     ]);
+  });
+
+  it("isolates Pi/OMP native management from legacy proxy and unsupported tools", () => {
+    expect(cliKeysWith("nativeProvider")).toEqual(["pi", "omp"]);
+    for (const key of ["pi", "omp"] as const) {
+      const cli = CLI_REGISTRY.find((row) => row.key === key)!;
+      for (const capability of [
+        "gateway",
+        "provider",
+        "logs",
+        "usage",
+        "pricing",
+        "cliManager",
+        "nativeProvider",
+      ] as const)
+        expect(cli.capabilities[capability]).toBe(true);
+      for (const capability of [
+        "cliProxy",
+        "mcp",
+        "skills",
+        "prompts",
+        "workspaces",
+        "wsl",
+        "managedUpdate",
+        "providerPluginTarget",
+      ] as const)
+        expect(cli.capabilities[capability]).toBe(false);
+    }
   });
 
   it("handles key and label helpers", () => {

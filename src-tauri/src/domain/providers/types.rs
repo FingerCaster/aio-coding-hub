@@ -71,6 +71,7 @@ fn take_first_chars(value: &str, max_chars: usize) -> String {
 
 #[derive(Clone)]
 pub struct ProviderUpsertParams {
+    pub gateway_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub provider_id: Option<i64>,
     pub cli_key: String,
     pub name: String,
@@ -255,6 +256,7 @@ pub struct ProviderExtensionValuesInput {
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ProviderSummary {
+    pub gateway_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub id: i64,
     pub provider_uuid: String,
     pub cli_key: String,
@@ -321,6 +323,7 @@ pub struct ProviderRouteRow {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderForGateway {
+    pub gateway_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub id: i64,
     pub provider_uuid: String,
     pub account_usage_route_target:
@@ -400,6 +403,7 @@ impl ProviderForGateway {
 
 #[derive(Debug, Clone)]
 pub(super) struct DecodedProviderRow {
+    pub gateway_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub id: i64,
     pub name: String,
     pub base_urls: Vec<String>,

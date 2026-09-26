@@ -321,6 +321,15 @@ export async function cliManagerClaudeInfoGet() {
   });
 }
 
+export async function cliManagerNativeInfoGet(client: "pi" | "omp") {
+  return invokeGeneratedIpc<SimpleCliInfo>({
+    title: "读取 CLI 安装状态失败",
+    cmd: client === "pi" ? "cli_manager_pi_info_get" : "cli_manager_omp_info_get",
+    invoke: () =>
+      client === "pi" ? commands.cliManagerPiInfoGet() : commands.cliManagerOmpInfoGet(),
+  });
+}
+
 export async function cliManagerCodexInfoGet() {
   return invokeGeneratedIpc<SimpleCliInfo>({
     title: "获取 Codex CLI 信息失败",

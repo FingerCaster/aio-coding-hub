@@ -276,7 +276,7 @@ async fn try_oauth_reactive_refresh<R: tauri::Runtime>(
                 .providers
                 .iter()
                 .find(|p| p.id == prepared.provider_id)
-                .map(|p| (p, input.cli_key.as_str()))
+                .map(|p| (p, input.source_cli_key()))
         } else if prepared.active_bridge_type.is_some() {
             prepared.bridge_source.as_ref().and_then(|(src, src_key)| {
                 if src.auth_mode == "oauth" {

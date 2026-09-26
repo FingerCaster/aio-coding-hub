@@ -2,6 +2,7 @@
 // - Render as the right side column in `HomeOverviewPanel` to show realtime traces + request logs list.
 // - Selection state is controlled by parent; the detail dialog is rendered outside the grid layout.
 
+import { NativeChannelRouteBadge } from "./NativeChannelRouteBadge";
 import { memo, useRef, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -279,6 +280,10 @@ const RequestLogCard = memo(function RequestLogCard({
                 </span>
               </span>
 
+              <NativeChannelRouteBadge
+                cliKey={log.cli_key}
+                specialSettingsJson={log.special_settings_json}
+              />
               <ReasoningEffortBadge value={reasoningEffort} />
 
               {modelDisplayMeta.isConfiguredRoute ? (

@@ -139,6 +139,8 @@ export function useHomeOAuthQuota({
       codex: readOAuthProviders(codexProvidersQuery.data),
       gemini: readOAuthProviders(geminiProvidersQuery.data),
       grok: [],
+      pi: [],
+      omp: [],
     };
 
     const orderedProviders = cliPriorityOrder.flatMap((cliKey) => providersByCli[cliKey] ?? []);

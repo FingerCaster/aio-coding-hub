@@ -73,7 +73,31 @@ impl UpstreamErrorResponseRewrite {
         cli_key: &str,
         trace_id: &str,
     ) -> Option<Response> {
-        let payload = self.client_error_payload(cli_key)?;
+        self.build_response_for_protocol(cli_key, None, trace_id)
+    }
+
+    pub(in crate::gateway) fn client_error_payload_for_protocol(
+        &self,
+        cli_key: &str,
+        protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
+    ) -> Option<serde_json::Value> {
+        match protocol.filter(|_| super::protocol::is_native_client(cli_key)) {
+            Some(protocol) => Some(super::protocol::error_payload(
+                protocol,
+                self.client_status.as_u16(),
+                &self.message,
+            )),
+            None => self.client_error_payload(cli_key),
+        }
+    }
+
+    pub(in crate::gateway) fn build_response_for_protocol(
+        &self,
+        cli_key: &str,
+        protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
+        trace_id: &str,
+    ) -> Option<Response> {
+        let payload = self.client_error_payload_for_protocol(cli_key, protocol)?;
         let body = serde_json::to_vec(&payload).ok()?;
         let trace_header = HeaderValue::from_str(trace_id).ok()?;
         let mut builder = Response::builder()

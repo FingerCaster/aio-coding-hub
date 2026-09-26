@@ -462,6 +462,7 @@ pub fn provider_upsert_bridge_json<R: tauri::Runtime>(
     let provider = crate::providers::upsert(
         &db,
         crate::providers::ProviderUpsertParams {
+            gateway_protocol: None,
             provider_id,
             cli_key,
             name,

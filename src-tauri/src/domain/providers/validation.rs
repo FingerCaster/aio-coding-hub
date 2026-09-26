@@ -2,6 +2,32 @@
 
 use std::collections::HashSet;
 
+pub(crate) fn validate_gateway_protocol(
+    cli_key: &str,
+    protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
+    auth_mode: &str,
+    api_key: Option<&str>,
+    source_provider_id: Option<i64>,
+    bridge_type: Option<&str>,
+) -> crate::shared::error::AppResult<()> {
+    if matches!(cli_key, "pi" | "omp") {
+        if protocol.is_none() {
+            return Err("SEC_INVALID_INPUT: Pi/OMP requires an explicit gateway protocol".into());
+        }
+        if auth_mode != "api_key" || source_provider_id.is_some() || bridge_type.is_some() {
+            return Err(
+                "SEC_INVALID_INPUT: Pi/OMP gateway supports direct API-key providers only".into(),
+            );
+        }
+        if let Some(key) = api_key {
+            crate::domain::native_gateway::validate_explicit_api_key(key)?;
+        }
+    } else if protocol.is_some() {
+        return Err("SEC_INVALID_INPUT: gateway_protocol is only supported for Pi/OMP".into());
+    }
+    Ok(())
+}
+
 pub(super) const MAX_LIMIT_USD: f64 = 1_000_000_000.0;
 pub(super) const MAX_STREAM_IDLE_TIMEOUT_SECONDS: u32 = 60 * 60;
 pub(super) const MAX_PROVIDER_BASE_URLS: usize = 32;

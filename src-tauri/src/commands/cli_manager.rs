@@ -7,6 +7,30 @@ use crate::{
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn cli_manager_pi_info_get(
+    app: tauri::AppHandle,
+) -> Result<cli_manager::SimpleCliInfo, String> {
+    blocking::run("cli_manager_pi_info_get", move || {
+        cli_manager::native_cli_info_get(&app, "pi")
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_manager_omp_info_get(
+    app: tauri::AppHandle,
+) -> Result<cli_manager::SimpleCliInfo, String> {
+    blocking::run("cli_manager_omp_info_get", move || {
+        cli_manager::native_cli_info_get(&app, "omp")
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn cli_manager_claude_info_get(
     app: tauri::AppHandle,
 ) -> Result<cli_manager::ClaudeCliInfo, String> {

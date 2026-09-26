@@ -112,8 +112,13 @@ fn decode_provider_row(
     let claude_models_json: String = row.get("claude_models_json")?;
     let daily_reset_mode_raw: String = row.get("daily_reset_mode")?;
     let daily_reset_time_raw: String = row.get("daily_reset_time")?;
+    let gateway_protocol = row
+        .get::<_, Option<String>>("gateway_protocol")?
+        .map(|raw| raw.parse().map_err(|_| rusqlite::Error::InvalidQuery))
+        .transpose()?;
 
     Ok(DecodedProviderRow {
+        gateway_protocol,
         id: row.get("id")?,
         name: row.get("name")?,
         base_urls: base_urls_from_row(&base_url_fallback, &base_urls_json),
@@ -158,6 +163,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
     let decoded = decode_provider_row(row, &cli_key)?;
 
     Ok(ProviderSummary {
+        gateway_protocol: decoded.gateway_protocol,
         id: decoded.id,
         provider_uuid: row.get("provider_uuid")?,
         cli_key,
@@ -501,6 +507,7 @@ SELECT
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  gateway_protocol,
   model_routing_policy_json,
   CASE WHEN COALESCE(api_key_plaintext, '') = '' THEN 0 ELSE 1 END AS api_key_configured
 FROM providers
@@ -1014,6 +1021,7 @@ SELECT
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  gateway_protocol,
   model_routing_policy_json,
   CASE WHEN COALESCE(api_key_plaintext, '') = '' THEN 0 ELSE 1 END AS api_key_configured
 FROM providers
@@ -1056,6 +1064,7 @@ fn map_gateway_provider_row(
     let decoded = decode_provider_row(row, cli_key)?;
 
     Ok(ProviderForGateway {
+        gateway_protocol: decoded.gateway_protocol,
         id: decoded.id,
         provider_uuid: row.get("provider_uuid")?,
         account_usage_route_target: None,
@@ -1117,6 +1126,7 @@ SELECT
   p.bridge_type,
   p.stream_idle_timeout_seconds,
   p.upstream_retry_policy_json,
+  p.gateway_protocol,
   p.model_routing_policy_json
 FROM sort_mode_providers mp
 JOIN providers p ON p.id = mp.provider_id
@@ -1177,6 +1187,7 @@ SELECT
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  gateway_protocol,
   model_routing_policy_json
 FROM providers
 WHERE cli_key = ?1
@@ -1217,6 +1228,14 @@ pub(crate) fn list_enabled_for_gateway_using_active_mode(
 ) -> crate::shared::error::AppResult<GatewayProvidersSelection> {
     validate_cli_key(cli_key)?;
     let conn = db.open_connection()?;
+    list_enabled_for_gateway_using_connection(&conn, cli_key)
+}
+
+pub(crate) fn list_enabled_for_gateway_using_connection(
+    conn: &rusqlite::Connection,
+    cli_key: &str,
+) -> crate::shared::error::AppResult<GatewayProvidersSelection> {
+    validate_cli_key(cli_key)?;
 
     let active_mode_id: Option<i64> = conn
         .query_row(
@@ -1229,14 +1248,14 @@ pub(crate) fn list_enabled_for_gateway_using_active_mode(
         .flatten();
 
     if let Some(mode_id) = active_mode_id {
-        let providers = list_enabled_for_gateway_in_sort_mode(&conn, cli_key, mode_id)?;
+        let providers = list_enabled_for_gateway_in_sort_mode(conn, cli_key, mode_id)?;
         return Ok(GatewayProvidersSelection {
             sort_mode_id: Some(mode_id),
             providers,
         });
     }
 
-    let providers = list_enabled_for_gateway_default(&conn, cli_key)?;
+    let providers = list_enabled_for_gateway_default(conn, cli_key)?;
     Ok(GatewayProvidersSelection {
         sort_mode_id: None,
         providers,
@@ -1321,6 +1340,7 @@ SELECT
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  gateway_protocol,
   model_routing_policy_json
 FROM providers
 WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS NULL
@@ -1412,6 +1432,7 @@ SELECT
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  gateway_protocol,
   model_routing_policy_json
 FROM providers
 WHERE id = ?1
@@ -1598,6 +1619,7 @@ pub(crate) fn upsert_with_provider_uuid(
     provider_uuid_override: Option<String>,
 ) -> crate::shared::error::AppResult<ProviderSummary> {
     let ProviderUpsertParams {
+        gateway_protocol,
         provider_id,
         cli_key,
         name,
@@ -1655,6 +1677,19 @@ pub(crate) fn upsert_with_provider_uuid(
 
     let requested_auth_mode = auth_mode.unwrap_or(ProviderAuthMode::ApiKey);
     let is_oauth = requested_auth_mode == ProviderAuthMode::Oauth;
+    validate_gateway_protocol(
+        cli_key,
+        gateway_protocol,
+        requested_auth_mode.as_str(),
+        api_key.as_deref().filter(|key| !key.trim().is_empty()),
+        source_provider_id,
+        bridge_type.as_deref(),
+    )?;
+    if matches!(cli_key, "pi" | "omp") {
+        for url in &base_urls {
+            crate::domain::native_gateway::validate_static_base_url(url)?;
+        }
+    }
 
     if cli_key != "claude" && claude_models.as_ref().is_some_and(ClaudeModels::has_any) {
         return Err(
@@ -1942,12 +1977,20 @@ INSERT INTO providers(
             })?;
 
             let id = tx.last_insert_rowid();
+            tx.execute(
+                "UPDATE providers SET gateway_protocol = ?1 WHERE id = ?2",
+                params![gateway_protocol.map(|p| p.as_str()), id],
+            )
+            .map_err(|e| db_err!("failed to store gateway protocol: {e}"))?;
             crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
                 &tx,
                 extension_values.as_deref(),
             )?;
             replace_extension_values(&tx, id, extension_values.as_deref())?;
             if let Some(source_provider_id) = account_usage_credentials_copy_from_provider_id {
+                // Duplication preserves explicit Pi/OMP declarations as well as credentials.
+                tx.execute("INSERT INTO native_gateway_model_specs(provider_id,request_model_id,metadata_json,updated_at) SELECT ?1,request_model_id,metadata_json,?2 FROM native_gateway_model_specs WHERE provider_id=?3",params![id,now,source_provider_id])
+                    .map_err(|e|db_err!("failed to copy native model declarations: {e}"))?;
                 crate::domain::provider_account_usage::copy_account_usage_credentials(
                     &tx,
                     source_provider_id,
@@ -2040,6 +2083,33 @@ INSERT INTO providers(
                 return Err("SEC_INVALID_INPUT: api_key is required".to_string().into());
             }
             let next_priority = priority.unwrap_or(existing_priority);
+            validate_gateway_protocol(
+                cli_key,
+                gateway_protocol,
+                next_auth_mode,
+                Some(next_api_key),
+                source_provider_id,
+                bridge_type.as_deref(),
+            )?;
+            let previous_protocol: Option<String> = tx
+                .query_row(
+                    "SELECT gateway_protocol FROM providers WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| db_err!("failed to read gateway protocol: {e}"))?;
+            if previous_protocol.as_deref() != gateway_protocol.map(|p| p.as_str()) {
+                tx.execute(
+                    "DELETE FROM native_gateway_model_specs WHERE provider_id = ?1",
+                    params![id],
+                )
+                .map_err(|e| db_err!("failed to invalidate native model specs: {e}"))?;
+            }
+            tx.execute(
+                "UPDATE providers SET gateway_protocol = ?1 WHERE id = ?2",
+                params![gateway_protocol.map(|p| p.as_str()), id],
+            )
+            .map_err(|e| db_err!("failed to store gateway protocol: {e}"))?;
 
             let existing_claude_models = if cli_key == "claude" {
                 claude_models_from_json(&existing_claude_models_json)
@@ -2235,6 +2305,26 @@ pub fn set_enabled(
     enabled: bool,
 ) -> crate::shared::error::AppResult<ProviderSummary> {
     let conn = db.open_connection()?;
+    if enabled {
+        let current = get_by_id(&conn, provider_id)?;
+        if matches!(current.cli_key.as_str(), "pi" | "omp") {
+            let key: String = conn
+                .query_row(
+                    "SELECT api_key_plaintext FROM providers WHERE id=?1",
+                    [provider_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| db_err!("failed to inspect provider credentials: {e}"))?;
+            validate_gateway_protocol(
+                &current.cli_key,
+                current.gateway_protocol,
+                &current.auth_mode,
+                Some(&key),
+                current.source_provider_id,
+                current.bridge_type.as_deref(),
+            )?;
+        }
+    }
     let now = now_unix_seconds();
     let changed = conn
         .execute(

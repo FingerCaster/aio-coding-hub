@@ -2,6 +2,7 @@
 
 import { lazy, Suspense } from "react";
 import { CliManagerGeneralTab } from "../components/cli-manager/tabs/GeneralTab";
+import { NativeCliTab } from "../components/cli-manager/tabs/NativeCliTab";
 import { PageHeader } from "../ui/PageHeader";
 import { TabList } from "../ui/TabList";
 import {
@@ -63,6 +64,9 @@ export function CliManagerPage() {
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto scrollbar-overlay">
+        {model.tab === "pi" || model.tab === "omp" ? (
+          <NativeCliTab key={model.tab} client={model.tab} />
+        ) : null}
         {model.tab === "general" ? <CliManagerGeneralTab {...model.generalTabProps} /> : null}
 
         {model.tab === "claude" ? (

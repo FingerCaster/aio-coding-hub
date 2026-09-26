@@ -59,6 +59,9 @@ import {
   providersKeys,
 } from "./keys";
 import { sortModeProvidersQueryPrefix } from "./sortModes";
+import { isNativeCliKey } from "../constants/clis";
+import { invalidateNativeGatewayPreviews } from "./nativeCli";
+import { nativeGatewayModelsKey } from "./nativeGateway";
 
 export function useProvidersListQuery(cliKey: CliKey, options?: { enabled?: boolean }) {
   const normalizedCliKey = validateProviderCliKey(cliKey);
@@ -267,6 +270,7 @@ export function useProviderSetEnabledMutation() {
       providerSetEnabled(input.providerId, input.enabled),
     onSuccess: (updated) => {
       if (!updated) return;
+      if (isNativeCliKey(updated.cli_key)) void invalidateNativeGatewayPreviews(queryClient);
 
       queryClient.setQueryData<ProviderSummary[] | null>(
         providersKeys.list(updated.cli_key),
@@ -331,6 +335,14 @@ export function useProviderUpsertMutation() {
       );
 
       queryClient.removeQueries({ queryKey: providerAccountUsageKeys.detail(saved.id) });
+      if (isNativeCliKey(saved.cli_key)) {
+        const key = nativeGatewayModelsKey(saved.id, saved.provider_uuid);
+        await queryClient.cancelQueries({ queryKey: key });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: key }),
+          invalidateNativeGatewayPreviews(queryClient),
+        ]);
+      }
       await invalidateProviderModelCatalog(queryClient, saved.id, saved.provider_uuid, {
         advanceGeneration: providerModelConnectionChanged(previous, saved, variables.input),
       });
@@ -389,6 +401,11 @@ export function useProviderDeleteMutation() {
       });
 
       await Promise.all([routeInvalidations, providerModelCancellation]);
+      if (isNativeCliKey(cliKey)) {
+        await queryClient.cancelQueries({ queryKey: ["native-gateway-models", providerId] });
+        queryClient.removeQueries({ queryKey: ["native-gateway-models", providerId] });
+        await invalidateNativeGatewayPreviews(queryClient);
+      }
       queryClient.removeQueries({
         queryKey: providerModelsKeys.catalogsByProvider(providerId),
       });

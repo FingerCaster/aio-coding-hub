@@ -505,6 +505,7 @@ fn claude_models_from_json_empty_object() {
 
 fn default_provider_params(name: &str) -> ProviderUpsertParams {
     ProviderUpsertParams {
+        gateway_protocol: None,
         provider_id: None,
         cli_key: "claude".to_string(),
         name: name.to_string(),
@@ -546,6 +547,107 @@ fn cx2cc_provider_params(name: &str, claude_models: ClaudeModels) -> ProviderUps
     params.bridge_type = Some(CX2CC_BRIDGE_TYPE.to_string());
     params.claude_models = Some(claude_models);
     params
+}
+
+#[test]
+fn native_provider_protocol_is_explicit_and_round_trips_without_changing_cli_identity() {
+    use crate::shared::gateway_protocol::GatewayProtocol as P;
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::db::init_for_tests(&dir.path().join("native.db")).unwrap();
+    for client in ["pi", "omp"] {
+        for protocol in [
+            P::AnthropicMessages,
+            P::OpenaiCompletions,
+            P::OpenaiResponses,
+            P::GoogleGenerativeAi,
+        ] {
+            let mut input = default_provider_params(protocol.as_str());
+            input.cli_key = client.into();
+            input.gateway_protocol = Some(protocol);
+            let provider = upsert(&db, input.clone()).unwrap();
+            assert_eq!(provider.cli_key, client);
+            assert_eq!(provider.gateway_protocol, Some(protocol));
+            input.provider_id = Some(provider.id);
+            input.api_key = Some(String::new());
+            assert_eq!(upsert(&db, input).unwrap().gateway_protocol, Some(protocol));
+        }
+        let ids = list_by_cli(&db, client)
+            .unwrap()
+            .into_iter()
+            .map(|provider| provider.id)
+            .collect();
+        default_route_set_order(&db, client, ids).unwrap();
+        let selected = list_enabled_for_gateway_using_active_mode(&db, client).unwrap();
+        assert_eq!(selected.providers.len(), 4);
+        assert!(selected
+            .providers
+            .iter()
+            .all(|p| p.gateway_protocol.is_some()));
+    }
+    for client in ["claude", "codex", "gemini", "grok"] {
+        let mut input = default_provider_params("legacy");
+        input.cli_key = client.into();
+        assert!(upsert(&db, input).unwrap().gateway_protocol.is_none());
+    }
+}
+
+#[test]
+fn native_provider_rejects_missing_protocol_oauth_bridges_and_dynamic_api_keys() {
+    use crate::shared::gateway_protocol::GatewayProtocol as P;
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::db::init_for_tests(&dir.path().join("native-invalid.db")).unwrap();
+    let mut input = default_provider_params("native");
+    input.cli_key = "pi".into();
+    assert!(upsert(&db, input.clone()).is_err());
+    input.gateway_protocol = Some(P::OpenaiResponses);
+    for key in ["!echo secret", "$ENV_SECRET", "%TOKEN%", "`command`"] {
+        let mut bad = input.clone();
+        bad.api_key = Some(key.into());
+        assert!(upsert(&db, bad).is_err());
+    }
+    let mut bad = input.clone();
+    bad.auth_mode = Some(ProviderAuthMode::Oauth);
+    assert!(upsert(&db, bad).is_err());
+    let mut bad = input.clone();
+    bad.source_provider_id = Some(1);
+    assert!(upsert(&db, bad).is_err());
+    let mut bad = input.clone();
+    bad.bridge_type = Some("cx2cc".into());
+    assert!(upsert(&db, bad).is_err());
+    let mut bad = input.clone();
+    bad.cli_key = "codex".into();
+    assert!(upsert(&db, bad).is_err());
+    let mut bad = input;
+    bad.base_urls = vec!["https://user:secret@example.test/v1".into()];
+    assert!(upsert(&db, bad).is_err());
+}
+
+#[test]
+fn native_provider_duplication_preserves_explicit_model_declarations() {
+    use crate::domain::native_gateway as native;
+    use crate::shared::gateway_protocol::GatewayProtocol;
+    let dir = tempfile::tempdir().unwrap();
+    let db = crate::db::init_for_tests(&dir.path().join("native-copy.db")).unwrap();
+    let mut input = default_provider_params("source");
+    input.cli_key = "pi".into();
+    input.gateway_protocol = Some(GatewayProtocol::OpenaiResponses);
+    let source = upsert(&db, input.clone()).unwrap();
+    native::seed_native_gateway_for_test(
+        &db,
+        source.id,
+        "pi",
+        GatewayProtocol::OpenaiResponses,
+        "m",
+        &crate::settings::ModelRoutingPolicy::default(),
+    )
+    .unwrap();
+    input.name = "copy".into();
+    input.account_usage_credentials_copy_from_provider_id = Some(source.id);
+    let copy = upsert(&db, input).unwrap();
+    assert_ne!(copy.provider_uuid, source.provider_uuid);
+    let snapshot = native::models_get(&db, copy.id, &copy.provider_uuid).unwrap();
+    assert!(!snapshot.stale);
+    assert_eq!(snapshot.models[0].request_model_id, "m");
 }
 
 #[test]
@@ -1944,6 +2046,7 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
     upsert(
         db,
         ProviderUpsertParams {
+            gateway_protocol: None,
             provider_id: None,
             cli_key: "codex".to_string(),
             name: name.to_string(),

@@ -186,7 +186,7 @@ pub(super) async fn resolve_base_url<R: tauri::Runtime>(
     match select_provider_base_url_for_request(
         &input.state,
         provider,
-        &input.cli_key,
+        input.source_cli_key(),
         input.provider_base_url_ping_cache_ttl_seconds,
     )
     .await
@@ -260,7 +260,7 @@ pub(super) fn resolve_oauth<R: tauri::Runtime>(
         return Some(None);
     }
     match resolve_oauth_adapter_for_provider(
-        &input.cli_key,
+        input.source_cli_key(),
         provider.id,
         provider.oauth_provider_type.as_deref(),
     ) {

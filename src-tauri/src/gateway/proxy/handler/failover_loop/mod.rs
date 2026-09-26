@@ -286,6 +286,7 @@ where
     let ctx = CommonCtx::from(CommonCtxArgs {
         state: &input.state,
         cli_key: &input.cli_key,
+        wire_protocol: input.wire_protocol,
         forwarded_path: &input.forwarded_path,
         observe: input.observe_request,
         method_hint: &input.method_hint,
@@ -422,6 +423,7 @@ where
         attempts: std::mem::take(&mut run_state.attempts),
         last_outcome: run_state.last_outcome,
         cli_key: owned.cli_key,
+        wire_protocol: input.wire_protocol,
         method_hint: owned.method_hint,
         forwarded_path: owned.forwarded_path,
         query: owned.query,
@@ -430,7 +432,11 @@ where
         created_at_ms,
         created_at,
         session_id: owned.session_id,
-        requested_model: run_state.active_requested_model.or(owned.requested_model),
+        requested_model: if crate::gateway::proxy::protocol::is_native_client(&input.cli_key) {
+            owned.requested_model
+        } else {
+            run_state.active_requested_model.or(owned.requested_model)
+        },
         special_settings: owned.special_settings,
         verbose_provider_error: input.verbose_provider_error,
     })
@@ -450,6 +456,7 @@ where
     let ctx = CommonCtx::from(CommonCtxArgs {
         state: &input.state,
         cli_key: &input.cli_key,
+        wire_protocol: input.wire_protocol,
         forwarded_path: &input.forwarded_path,
         observe: input.observe_request,
         method_hint: &input.method_hint,

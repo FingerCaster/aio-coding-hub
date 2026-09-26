@@ -1,3 +1,5 @@
+import { isNativeCliKey } from "../../constants/clis";
+import { isNativeGatewayProtocol } from "../../constants/nativeGateway";
 import {
   createProviderEditorDialogSchema,
   validateProviderClaudeModels,
@@ -20,6 +22,12 @@ export function buildProviderEditorUpsertInput(
 ):
   | { ok: true; value: ProviderEditorPayloadBuildSuccess }
   | { ok: false; error: ProviderEditorPayloadBuildError } {
+  if (isNativeCliKey(ctx.cliKey) && !isNativeGatewayProtocol(ctx.gatewayProtocol)) {
+    return {
+      ok: false,
+      error: { kind: "message", message: "请选择 AIO 网关协议；不同协议不会相互失败切换。" },
+    };
+  }
   const parsed = createProviderEditorDialogSchema({
     mode: ctx.mode,
     skipApiKeyCheck: ctx.authMode === "cx2cc",
@@ -158,6 +166,7 @@ export function buildProviderEditorUpsertInput(
   const payload = {
     ...(ctx.editingProviderId ? { providerId: ctx.editingProviderId } : {}),
     cliKey: ctx.cliKey,
+    ...(isNativeCliKey(ctx.cliKey) ? { gatewayProtocol: ctx.gatewayProtocol } : {}),
     name: parsed.data.name,
     baseUrls: finalBaseUrls,
     baseUrlMode: finalBaseUrlMode,

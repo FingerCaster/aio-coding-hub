@@ -44,7 +44,6 @@ use crate::gateway::response_fixer;
 use crate::gateway::streams::GunzipStream;
 use crate::gateway::util::{now_unix_seconds, strip_hop_headers};
 use crate::shared::mutex_ext::MutexExt;
-use crate::usage;
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderValue};
 
@@ -900,7 +899,13 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     let failed_usage = response_rule_body
         .as_deref()
         .or(abort_body_bytes.as_deref())
-        .and_then(|body| usage::parse_usage_from_json_or_sse_bytes(ctx.cli_key.as_str(), body));
+        .and_then(|body| {
+            crate::gateway::proxy::protocol::parse_usage(
+                ctx.cli_key.as_str(),
+                ctx.wire_protocol,
+                body,
+            )
+        });
     observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, failed_usage.as_ref(), None);
 
     attempts.push(FailoverAttempt {
@@ -1017,8 +1022,11 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
             );
 
             if let Some(rewrite) = error_response_rewrite.as_ref() {
-                if let Some(response) = rewrite.build_response(cli_key.as_str(), trace_id.as_str())
-                {
+                if let Some(response) = rewrite.build_response_for_protocol(
+                    cli_key.as_str(),
+                    ctx.wire_protocol,
+                    trace_id.as_str(),
+                ) {
                     response_fixer::push_special_setting(
                         &special_settings,
                         rewrite.special_setting(),

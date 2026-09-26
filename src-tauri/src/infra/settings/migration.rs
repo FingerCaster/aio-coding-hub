@@ -2940,7 +2940,9 @@ mod tests {
                 "codex".to_string(),
                 "claude".to_string(),
                 "gemini".to_string(),
-                "grok".to_string()
+                "grok".to_string(),
+                "pi".to_string(),
+                "omp".to_string()
             ]
         );
     }

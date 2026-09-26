@@ -95,6 +95,7 @@ fn should_release_ready_slot(retry_index: u32, outcome: &AttemptSendOutcome) -> 
         && matches!(
             outcome,
             AttemptSendOutcome::ProviderDisabled(_)
+                | AttemptSendOutcome::NativeCandidateRejected
                 | AttemptSendOutcome::ProviderEnableCheckFailed
                 | AttemptSendOutcome::ProviderTargetRejected(_)
         )
@@ -151,6 +152,7 @@ where
         AttemptSendOutcome::UrlBuildFailed(ctrl) => ctrl,
         AttemptSendOutcome::OAuthInjectFailed => LoopControl::BreakRetry,
         AttemptSendOutcome::DispatchRejected => LoopControl::BreakRetry,
+        AttemptSendOutcome::NativeCandidateRejected => LoopControl::BreakRetryNeutral,
         AttemptSendOutcome::ProviderDisabled(disabled_provider_id) => {
             push_pre_send_gate_skip(
                 input,
@@ -462,6 +464,14 @@ mod tests {
 
     #[test]
     fn only_first_local_pre_send_rejection_releases_ready_slot() {
+        assert!(should_release_ready_slot(
+            1,
+            &AttemptSendOutcome::NativeCandidateRejected
+        ));
+        assert!(!should_release_ready_slot(
+            2,
+            &AttemptSendOutcome::NativeCandidateRejected
+        ));
         assert!(should_release_ready_slot(
             1,
             &AttemptSendOutcome::ProviderDisabled(7)

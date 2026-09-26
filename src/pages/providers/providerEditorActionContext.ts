@@ -1,3 +1,4 @@
+import type { GatewayProtocol } from "../../generated/bindings";
 import type {
   ClaudeModels,
   CliKey,
@@ -81,6 +82,7 @@ export type FormActionContext = {
 };
 
 export type ProviderEditorPayloadContext = {
+  gatewayProtocol?: GatewayProtocol | null;
   mode: "create" | "edit";
   cliKey: CliKey;
   editingProviderId: number | null;

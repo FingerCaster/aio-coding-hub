@@ -521,6 +521,7 @@ mod tests {
         providers::upsert(
             db,
             ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: "codex".to_string(),
                 name: name.to_string(),

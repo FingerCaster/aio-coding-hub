@@ -20,6 +20,7 @@ pub(crate) enum CliCapability {
     Wsl = 1 << 11,
     ManagedUpdate = 1 << 12,
     ProviderPluginTarget = 1 << 13,
+    NativeProvider = 1 << 14,
 }
 
 const GROK_CAPABILITIES: u32 = CliCapability::Gateway as u32
@@ -38,6 +39,16 @@ const LEGACY_CLI_CAPABILITIES: u32 = GROK_CAPABILITIES
     | CliCapability::ManagedUpdate as u32
     | CliCapability::ProviderPluginTarget as u32;
 
+// Pi/OMP publish independent native provider nodes. They do not participate in
+// the legacy whole-client cliProxy takeover or its startup/exit restoration.
+const NATIVE_CLI_CAPABILITIES: u32 = CliCapability::Gateway as u32
+    | CliCapability::Provider as u32
+    | CliCapability::Logs as u32
+    | CliCapability::Usage as u32
+    | CliCapability::Pricing as u32
+    | CliCapability::CliManager as u32
+    | CliCapability::NativeProvider as u32;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CliSpec {
     pub(crate) key: CliKey,
@@ -50,7 +61,7 @@ impl CliSpec {
     }
 }
 
-pub(crate) const CLI_REGISTRY: [CliSpec; 4] = [
+pub(crate) const CLI_REGISTRY: [CliSpec; 6] = [
     CliSpec {
         key: CliKey::Claude,
         capabilities: LEGACY_CLI_CAPABILITIES,
@@ -67,6 +78,14 @@ pub(crate) const CLI_REGISTRY: [CliSpec; 4] = [
         key: CliKey::Grok,
         capabilities: GROK_CAPABILITIES,
     },
+    CliSpec {
+        key: CliKey::Pi,
+        capabilities: NATIVE_CLI_CAPABILITIES,
+    },
+    CliSpec {
+        key: CliKey::Omp,
+        capabilities: NATIVE_CLI_CAPABILITIES,
+    },
 ];
 
 pub(crate) const SUPPORTED_CLI_KEYS: [&str; CLI_REGISTRY.len()] = [
@@ -74,6 +93,8 @@ pub(crate) const SUPPORTED_CLI_KEYS: [&str; CLI_REGISTRY.len()] = [
     CLI_REGISTRY[1].key.as_str(),
     CLI_REGISTRY[2].key.as_str(),
     CLI_REGISTRY[3].key.as_str(),
+    CLI_REGISTRY[4].key.as_str(),
+    CLI_REGISTRY[5].key.as_str(),
 ];
 
 pub(crate) fn cli_keys_with(capability: CliCapability) -> impl Iterator<Item = &'static str> {
@@ -113,6 +134,8 @@ pub(crate) enum CliKey {
     Codex,
     Gemini,
     Grok,
+    Pi,
+    Omp,
 }
 
 #[allow(dead_code)]
@@ -124,6 +147,8 @@ impl CliKey {
             "codex" => Ok(Self::Codex),
             "gemini" => Ok(Self::Gemini),
             "grok" => Ok(Self::Grok),
+            "pi" => Ok(Self::Pi),
+            "omp" => Ok(Self::Omp),
             _ => Err(AppError::new(
                 "SEC_INVALID_INPUT",
                 format!("unknown cli_key={s}"),
@@ -138,6 +163,8 @@ impl CliKey {
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::Grok => "grok",
+            Self::Pi => "pi",
+            Self::Omp => "omp",
         }
     }
 
@@ -192,7 +219,7 @@ impl PartialEq<CliKey> for &str {
 mod tests {
     use super::*;
 
-    const EVERY_CAPABILITY: [CliCapability; 14] = [
+    const EVERY_CAPABILITY: [CliCapability; 15] = [
         CliCapability::Gateway,
         CliCapability::Provider,
         CliCapability::Logs,
@@ -207,6 +234,7 @@ mod tests {
         CliCapability::Wsl,
         CliCapability::ManagedUpdate,
         CliCapability::ProviderPluginTarget,
+        CliCapability::NativeProvider,
     ];
 
     // ---- existing tests (string-based helpers) ----
@@ -240,6 +268,8 @@ mod tests {
         assert_eq!(CliKey::parse("codex").unwrap(), CliKey::Codex);
         assert_eq!(CliKey::parse("gemini").unwrap(), CliKey::Gemini);
         assert_eq!(CliKey::parse("grok").unwrap(), CliKey::Grok);
+        assert_eq!(CliKey::parse("pi").unwrap(), CliKey::Pi);
+        assert_eq!(CliKey::parse("omp").unwrap(), CliKey::Omp);
     }
 
     #[test]
@@ -268,7 +298,7 @@ mod tests {
 
     #[test]
     fn registry_capability_matrix_is_exact() {
-        let expected_without_grok_exclusions = EVERY_CAPABILITY.to_vec();
+        let expected_without_grok_exclusions = EVERY_CAPABILITY[..14].to_vec();
         for cli_key in [CliKey::Claude, CliKey::Codex, CliKey::Gemini] {
             let actual = EVERY_CAPABILITY
                 .into_iter()
@@ -286,6 +316,30 @@ mod tests {
 
     #[test]
     fn capability_keys_are_derived_from_registry() {
+        assert_eq!(
+            cli_keys_with(CliCapability::NativeProvider).collect::<Vec<_>>(),
+            vec!["pi", "omp"]
+        );
+        for cli in [CliKey::Pi, CliKey::Omp] {
+            assert!(cli.supports(CliCapability::Gateway));
+            assert!(cli.supports(CliCapability::Provider));
+            assert!(cli.supports(CliCapability::Logs));
+            assert!(cli.supports(CliCapability::Usage));
+            assert!(cli.supports(CliCapability::Pricing));
+            assert!(cli.supports(CliCapability::CliManager));
+            for unsupported in [
+                CliCapability::CliProxy,
+                CliCapability::Mcp,
+                CliCapability::Skills,
+                CliCapability::Prompts,
+                CliCapability::Workspaces,
+                CliCapability::Wsl,
+                CliCapability::ManagedUpdate,
+                CliCapability::ProviderPluginTarget,
+            ] {
+                assert!(!cli.supports(unsupported), "{cli} {unsupported:?}");
+            }
+        }
         assert_eq!(
             cli_keys_with(CliCapability::Mcp).collect::<Vec<_>>(),
             vec!["claude", "codex", "gemini", "grok"]

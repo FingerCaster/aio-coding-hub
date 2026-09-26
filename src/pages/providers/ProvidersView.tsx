@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Search, Upload } from "lucide-react";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CLIS } from "../../constants/clis";
+import { NativeGatewayModelsDialog } from "./native/NativeGatewayModelsDialog";
+import { CLIS, isNativeCliKey } from "../../constants/clis";
 import type { CliKey } from "../../services/providers/providers";
 import { Button } from "../../ui/Button";
 import { Dialog } from "../../ui/Dialog";
@@ -139,6 +140,9 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
     null
   );
   const [clearUsageStatsOnDelete, setClearUsageStatsOnDelete] = useState(false);
+  const [nativeModelsTarget, setNativeModelsTarget] = useState<(typeof providers)[number] | null>(
+    null
+  );
   const [shareTarget, setShareTarget] = useState<(typeof providers)[number] | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [modelCatalogTarget, setModelCatalogTarget] = useState<(typeof providers)[number] | null>(
@@ -294,6 +298,12 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
 
             <Button
               onClick={() => setImportDialogOpen(true)}
+              disabled={isNativeCliKey(activeCli)}
+              title={
+                isNativeCliKey(activeCli)
+                  ? "Pi/OMP 请从原生配置进行显式导入；共享文件尚不承载完整模型语义"
+                  : undefined
+              }
               variant="secondary"
               size="sm"
               className="h-9"
@@ -407,16 +417,26 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
                             provider.cli_key === "claude" ? copyTerminalLaunchCommand : undefined
                           }
                           terminalLaunchCopying={Boolean(terminalCopyingByProviderId[provider.id])}
-                          onTestAvailability={(provider) => {
-                            if (!testingByProviderId[provider.id]) setTestTarget(provider);
-                          }}
+                          onTestAvailability={
+                            isNativeCliKey(provider.cli_key)
+                              ? undefined
+                              : (provider) => {
+                                  if (!testingByProviderId[provider.id]) setTestTarget(provider);
+                                }
+                          }
                           testAvailabilityLoading={Boolean(testingByProviderId[provider.id])}
                           onManageModels={
-                            isCodexDirectProvider(provider) ? setModelCatalogTarget : undefined
+                            isNativeCliKey(provider.cli_key)
+                              ? setNativeModelsTarget
+                              : isCodexDirectProvider(provider)
+                                ? setModelCatalogTarget
+                                : undefined
                           }
-                          onDuplicate={duplicateProvider}
+                          onDuplicate={
+                            isNativeCliKey(provider.cli_key) ? undefined : duplicateProvider
+                          }
                           duplicateLoading={Boolean(duplicatingByProviderId[provider.id])}
-                          onShare={setShareTarget}
+                          onShare={isNativeCliKey(provider.cli_key) ? undefined : setShareTarget}
                           onEdit={setEditTarget}
                           onDelete={openDeleteDialog}
                         />
@@ -666,6 +686,14 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
             captureProvidersListScrollPosition(cliKey);
           }}
           onModelFetchFailedAfterSave={setEditTarget}
+        />
+      ) : null}
+
+      {nativeModelsTarget ? (
+        <NativeGatewayModelsDialog
+          key={nativeModelsTarget.provider_uuid}
+          provider={nativeModelsTarget}
+          onClose={() => setNativeModelsTarget(null)}
         />
       ) : null}
 

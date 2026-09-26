@@ -17,6 +17,7 @@ fn provider_for_base_url_test(
     oauth_provider_type: Option<&str>,
 ) -> providers::ProviderForGateway {
     providers::ProviderForGateway {
+        gateway_protocol: None,
         id: 1,
         provider_uuid: "00000000-0000-4000-8000-000000000001".to_string(),
         account_usage_route_target: None,

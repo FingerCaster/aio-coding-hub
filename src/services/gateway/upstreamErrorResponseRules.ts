@@ -1,3 +1,5 @@
+import { cliKeysWith } from "../../constants/clis";
+
 export const MAX_UPSTREAM_ERROR_RESPONSE_RULES = 32;
 export const MAX_UPSTREAM_ERROR_RESPONSE_RULE_NAME_CHARS = 100;
 export const MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS = 256;
@@ -8,7 +10,7 @@ export const MAX_UPSTREAM_ERROR_RESPONSE_RULE_PROVIDER_IDS = 128;
 export const MAX_UPSTREAM_ERROR_RESPONSE_RULE_PRIORITY = 9999;
 export const MAX_UPSTREAM_ERROR_RESPONSE_RULE_MESSAGE_CHARS = 4096;
 
-export const UPSTREAM_ERROR_RESPONSE_RULE_CLI_KEYS = ["claude", "codex", "gemini", "grok"] as const;
+export const UPSTREAM_ERROR_RESPONSE_RULE_CLI_KEYS = cliKeysWith("gateway");
 
 export type UpstreamErrorResponseRuleCliKey =
   (typeof UPSTREAM_ERROR_RESPONSE_RULE_CLI_KEYS)[number];

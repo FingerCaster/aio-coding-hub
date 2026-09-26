@@ -668,6 +668,12 @@ fn normalize_provider_share_v5(
     }
 
     let provider = &mut envelope.provider;
+    if matches!(provider.cli_key.as_str(), "pi" | "omp") {
+        return Err(AppError::new(
+            "PROVIDER_SHARE_NATIVE_UNSUPPORTED",
+            "Pi/OMP protocol and model metadata cannot be represented by this share schema",
+        ));
+    }
     if provider.cli_key.trim() != provider.cli_key {
         return Err(AppError::new(
             "SEC_INVALID_INPUT",
@@ -1243,6 +1249,12 @@ pub(crate) fn export_provider_share_v5(
         .transaction()
         .map_err(|error| db_err!("failed to start provider share snapshot: {error}"))?;
     let row = query_provider_share_row(&tx, provider_id)?;
+    if matches!(row.cli_key.as_str(), "pi" | "omp") {
+        return Err(AppError::new(
+            "PROVIDER_SHARE_NATIVE_UNSUPPORTED",
+            "Pi/OMP protocol and model metadata cannot be represented by this share schema",
+        ));
+    }
     if row.source_provider_id.is_some() {
         return Err(AppError::new(
             "PROVIDER_SHARE_REFERENCED_PROVIDER",
@@ -1902,6 +1914,7 @@ mod tests {
 
     fn provider_params(name: &str, cli_key: &str) -> super::super::types::ProviderUpsertParams {
         super::super::types::ProviderUpsertParams {
+            gateway_protocol: None,
             provider_id: None,
             cli_key: cli_key.to_string(),
             name: name.to_string(),
@@ -1973,6 +1986,31 @@ mod tests {
                 },
                 extensions: Vec::new(),
             },
+        }
+    }
+
+    #[test]
+    fn native_share_is_explicitly_rejected_until_metadata_round_trip_is_supported() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&directory.path().join("native-share.db")).unwrap();
+        for client in ["pi", "omp"] {
+            let mut share = minimal_share();
+            share.provider.cli_key = client.into();
+            assert_eq!(
+                normalize_provider_share_v5(share).err().unwrap().code(),
+                "PROVIDER_SHARE_NATIVE_UNSUPPORTED"
+            );
+            let mut input = provider_params("native", client);
+            input.gateway_protocol =
+                Some(crate::shared::gateway_protocol::GatewayProtocol::OpenaiResponses);
+            let provider = super::super::queries::upsert(&db, input).unwrap();
+            assert_eq!(
+                export_provider_share_v5(&db, provider.id)
+                    .err()
+                    .unwrap()
+                    .code(),
+                "PROVIDER_SHARE_NATIVE_UNSUPPORTED"
+            );
         }
     }
 

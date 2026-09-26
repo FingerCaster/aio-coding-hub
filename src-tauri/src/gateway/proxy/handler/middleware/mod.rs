@@ -65,6 +65,8 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     // -- immutable request metadata (set at construction) --
     pub(super) state: GatewayAppState<R>,
     pub(super) cli_key: String,
+    pub(super) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
+    pub(super) channel: Option<crate::domain::native_channels::ChannelIdentity>,
     pub(super) forwarded_path: String,
     pub(super) req_method: Method,
     pub(super) method_hint: String,
@@ -140,6 +142,8 @@ impl<R: tauri::Runtime> ProxyContext<R> {
         RequestContextParts {
             state: self.state,
             cli_key: self.cli_key,
+            wire_protocol: self.wire_protocol,
+            channel: self.channel,
             forwarded_path: self.forwarded_path,
             observe_request: self.observe_request,
             req_method: self.req_method,

@@ -5,6 +5,10 @@ TypeScript bindings, frontend adapters, and React UI.
 
 ## Topics
 
+- [Pi / OMP native gateway contract](./pi-omp-native-gateway-contract.md): controlled
+  native targets, node ownership, explicit capability snapshots, independent AIO
+  entry publication, protocol-separated routing and real CLI verification.
+
 - [Codex config contract](./codex-config-contract.md): typed config fields,
   patch semantics, raw TOML validation, generated bindings, and UI behavior.
 - [Codex managed model route contract](./codex-managed-model-route-contract.md):

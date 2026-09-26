@@ -18,6 +18,16 @@ Persisted provider-model catalogs and managed profiles keep their separate
   response DTO. Missing optional overrides preserve old callers.
 - `cli_manager::codex_discovery_version(app, deadline)` returns a bounded version
   observation or None, consumed only by discovery identity construction.
+- `native_channel_models_discover(targetId, providerId, providerUuid, protocol)`
+  returns a target/provider/revision-bound read-only suggestion set plus the
+  existing tagged discovery outcome. Its query cache is independent of saved
+  model declarations so saving a draft does not trigger or await another fetch.
+- `ChannelModelDiscovery` contains `targetId, providerId, providerUuid, protocol,
+  revision, models: ModelCapabilitySuggestion[], discovery`. Suggestions contain
+  `modelId` and nullable `displayName/input/contextWindow/maxTokens/supportsTools/
+  reasoning/reasoningEfforts/defaultReasoningEffort/thinkingMode/supportsDisplay/
+  requiresEffort/nativeThinking`, plus `sources` (`upstream`, `configured`, `upstream_conflict`,
+  `routing_confirmation`). Neither DTO contains credentials or raw responses.
 
 ## 3. Contracts
 
@@ -42,6 +52,21 @@ Persisted provider-model catalogs and managed profiles keep their separate
   The view maps failures to fixed messages, and IPC diagnostic arguments are
   redacted. Credentials, raw upstream error bodies and account tokens must
   never become candidate/error text.
+- Native suggestions retain only allowlisted explicit capability fields from
+  the same bounded response; unknown fields stay unknown. Configured, non-stale
+  provider model capabilities take precedence. Duplicate conflicting rows do
+  not widen capabilities. A parallel-tool flag is not ordinary tool support.
+- Native discovery snapshots bind provider UUID, protocol, URL, credential/account,
+  capability declarations and global routing. URLs and API keys are read from
+  one SQLite snapshot; locks and transactions are released during the fetch.
+  The source and selected native target are rechecked before returning.
+- Reuse gateway rule matching to identify model/effort rewrites. Such candidates
+  require explicit capability confirmation instead of inheriting metadata for
+  a different upstream model. Do not infer alias-to-model identity by name.
+- Native editors auto-fill only untouched drafts. Preserve cleared/manual fields,
+  saved declarations and JSON drafts; isolate remounted targets by target, provider
+  UUID and protocol. Pi/OMP thinking dropdowns must serialize the validated native
+  schema; no guessed effort template or invalid OMP mode is permitted.
 - Probe model priority is explicit override, saved availability model, then
   CLI-specific existing fallback (including Codex config). Empty overrides
   select the old defaults; the default prompt is `hi`. Model validation and
@@ -66,11 +91,19 @@ Persisted provider-model catalogs and managed profiles keep their separate
 | Probe blank model/prompt | Existing model fallback / `hi` |
 | Probe wildcard/control model or oversized prompt | Reject before request |
 | Discovery completes after dialog replacement | Ignore stale completion |
+| Native provider UUID/protocol changed | Reject before using the source |
+| Native snapshot, credential/account or global routing changes during fetch | `NATIVE_GATEWAY_MODELS_CONFLICT`; keep draft |
+| Native source is blocked, including unverified Gemini OAuth | `NATIVE_CHANNEL_SOURCE_BLOCKED`; no discovery request |
+| Native model has a model/effort rewrite or conflicting metadata | Keep candidate; clear only unedited automatic capability fields and require confirmation |
+| Saved declaration or manual/cleared/JSON field | Preserve it when suggestions arrive or refresh |
 
 ## 5. Examples
 
 Good: discover candidates for saved provider 7, choose a concrete remote ID,
 then confirm a one-time probe while preserving provider/model UUIDs.
+For native drafts: a catalog returning only `low/high` produces only those
+automatic effort mappings; other Pi levels stay null. A missing output capacity
+or tool flag stays unfilled unless an exact bundled catalog match supplies a default; otherwise saving requires explicit supplementation.
 Boundary: discovery fails after the user types a model; keep the draft and
 allow manual confirmation. Bad: write discovery output directly into the
 managed picker catalog or refresh expired OAuth tokens during suggestion load.
@@ -79,6 +112,12 @@ managed picker catalog or refresh expired OAuth tokens during suggestion load.
 
 - `app::provider_model_discovery::tests`: descriptors, stored credentials,
   bounded/no-redirect parsing, OAuth read-only behavior and dynamic version.
+- `provider_model_discovery::metadata` and `native_channel_discovery`: explicit
+  metadata, conflicts, read-only snapshots, configured/stale capability selection,
+  UUID/protocol/credential checks, eligibility and shared route matching.
+- NativeChannelDiscovery and nativeChannels service tests: automatic fields,
+  Pi/OMP dropdown serialization, manual/cleared/JSON preservation, refresh failure,
+  model/target identity replacement and response revision checks.
 - `wsl::provider_model_discovery::tests`: manifest/distro/version fallback.
 - `domain::provider_availability::tests`: bounded overrides, defaults and
   actual Claude/Codex/Grok/Gemini request shapes.
@@ -90,5 +129,16 @@ managed picker catalog or refresh expired OAuth tokens during suggestion load.
 
 Wrong: infer that suggestions own persisted catalog rows, use an unbounded
 shell version command, or make a probe while the dialog is cancelled.
+Also wrong: infer tools from parallel-tool support, map a routed alias by name,
+or insert an OMP `thought` mode / guessed low-medium-high template.
 Correct: keep discovery read-only and bounded, use the existing version launch
 path, and call availability only after confirmation through its action guard.
+
+## 8. Native catalog defaults and batch selection
+
+- Versioned Pi/OMP catalog defaults may enrich only existing upstream or non-stale saved candidates, by exact consumer/source-provider/auth/protocol/model identity. Never publish the whole bundled catalog as available models; never use prefix/alias guesses or cross-protocol borrowing.
+- Retain source versions, commits, input digests, reproducible generator and distributed licenses. A documented native-catalog omission (e.g. OMP tools support) must never be applied to arbitrary upstream JSON.
+- Explicit configured/upstream capabilities take precedence. Preserve native non-identity thinking mappings and narrow them by explicit supported efforts. Conflicts and routed aliases bypass defaults. A catalog capacity is an editable suggestion, not a live upstream guarantee.
+- Additional sources are configured_candidate, pi_catalog:<version>:<provider> and omp_catalog:<version>:<provider>. nativeThinking contains the validated consumer-specific mapping and default; it is not parsed from arbitrary upstream JSON.
+- Batch picker supports search, select visible, clear and deduplicated append; hidden selections survive filtering. Complete drafts may collapse, incomplete drafts remain editable. Outer import retains explicit model selection and publish preview.
+- Refresh updates untouched automatic fields but preserves saved/manual/cleared/JSON values and all existing identity/revision protections. OMP defaults prefer explicit values, then medium/low/first supported effort; Pi preserves its native map without changing session defaults.

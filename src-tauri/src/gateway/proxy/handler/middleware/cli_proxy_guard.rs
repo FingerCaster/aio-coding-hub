@@ -16,7 +16,10 @@ impl CliProxyGuardMiddleware {
     pub(in crate::gateway::proxy::handler) async fn run<R: tauri::Runtime>(
         ctx: ProxyContext<R>,
     ) -> MiddlewareAction<R> {
-        let bypass = ctx.forced_provider_id.is_some();
+        // Native entries coexist with direct providers and have node-owned manifests,
+        // not the legacy whole-file proxy enabled switch. Provider gates still apply.
+        let bypass = ctx.forced_provider_id.is_some()
+            || crate::gateway::proxy::protocol::is_native_client(&ctx.cli_key);
         if !crate::shared::cli_key::is_supported_cli_key(&ctx.cli_key) || bypass {
             return MiddlewareAction::Continue(Box::new(ctx));
         }

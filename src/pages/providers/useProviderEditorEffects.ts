@@ -1,3 +1,4 @@
+import type { GatewayProtocol } from "../../generated/bindings";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { FREE_TAG } from "../../constants/providers";
@@ -66,6 +67,7 @@ export type EffectDeps = {
   setStreamIdleTimeoutSeconds: (v: string) => void;
   setUpstreamRetryPolicyOverrideEnabled: (v: boolean) => void;
   setUpstreamRetryPolicyDraft: (v: UpstreamRetryPolicy) => void;
+  setGatewayProtocol: (v: GatewayProtocol | null) => void;
   setModelRoutingMode: (v: ProviderModelRoutingMode) => void;
   setModelRoutingPolicyDraft: (v: ModelRoutingPolicy) => void;
   setAuthMode: (v: "api_key" | "oauth" | "cx2cc") => void;
@@ -117,6 +119,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setStreamIdleTimeoutSeconds,
     setUpstreamRetryPolicyOverrideEnabled,
     setUpstreamRetryPolicyDraft,
+    setGatewayProtocol,
     setModelRoutingMode,
     setModelRoutingPolicyDraft,
     setAuthMode,
@@ -154,6 +157,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     baseUrlRowSeqRef.current = 1;
 
     if (mode === "create") {
+      setGatewayProtocol(createInitialValues?.gateway_protocol ?? null);
       const initialCx2ccSourceValue = deriveCx2ccSourceValue(createInitialValues);
       setBaseUrlMode(createInitialValues?.base_url_mode ?? "order");
       setBaseUrlRows(buildBaseUrlRows(createInitialValues, newBaseUrlRow));
@@ -204,6 +208,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
       };
     }
 
+    setGatewayProtocol(snapshot.gateway_protocol ?? null);
     const initialAuthMode = deriveAuthMode(snapshot);
     const initialCx2ccSourceValue = deriveCx2ccSourceValue(snapshot);
     setAuthMode(initialAuthMode);
@@ -283,6 +288,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setStreamIdleTimeoutSeconds,
     setUpstreamRetryPolicyDraft,
     setUpstreamRetryPolicyOverrideEnabled,
+    setGatewayProtocol,
     setModelRoutingMode,
     setModelRoutingPolicyDraft,
     setTagInput,

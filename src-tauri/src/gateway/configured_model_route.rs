@@ -54,7 +54,9 @@ pub(in crate::gateway) fn resolve(
     }
 
     let requested_model = requested_model.filter(|value| !value.is_empty())?;
-    if requested_model.starts_with("aio/") {
+    if requested_model.starts_with("aio/")
+        && !crate::gateway::proxy::protocol::is_native_client(cli_key)
+    {
         return None;
     }
 
@@ -83,6 +85,29 @@ pub(in crate::gateway) fn resolve(
             }
         }),
         reasoning_effort: rule.reasoning_effort.clone(),
+    })
+}
+
+/// A catalog describes the upstream ID. A routed request may use a different
+/// model/effort; do not silently attach the original ID's capabilities to it.
+pub(crate) fn discovery_requires_model_confirmation(
+    model: &str,
+    global: &crate::settings::ModelRoutingPolicy,
+    provider: Option<&crate::settings::ModelRoutingPolicy>,
+) -> bool {
+    let Some((rule, capture)) = matching_rule(provider.unwrap_or(global), model) else {
+        return false;
+    };
+    if rule.reasoning_effort.is_some() {
+        return true;
+    }
+    rule.target_model.as_ref().is_some_and(|target| {
+        let target = if supports_wildcard_expansion(rule) {
+            target.replace('*', capture)
+        } else {
+            target.clone()
+        };
+        target != model
     })
 }
 
@@ -171,9 +196,11 @@ pub(in crate::gateway) fn filter_providers(
     {
         return;
     }
-    let Some(model) =
-        requested_model.filter(|model| !model.is_empty() && !model.starts_with("aio/"))
-    else {
+    let Some(model) = requested_model.filter(|model| {
+        !model.is_empty()
+            && (!model.starts_with("aio/")
+                || crate::gateway::proxy::protocol::is_native_client(cli_key))
+    }) else {
         return;
     };
     let is_explicit = |provider: &crate::providers::ProviderForGateway| {
@@ -204,6 +231,7 @@ fn is_supported_inference_request(cli_key: &str, method: &str, path: &str) -> bo
         "codex" => is_responses_path(&path),
         "grok" => is_responses_path(&path) || path.ends_with("/chat/completions"),
         "gemini" => is_gemini_generate_path(&path),
+        "pi" | "omp" => classify_wire_protocol(&path).is_some(),
         _ => false,
     }
 }

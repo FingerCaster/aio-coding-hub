@@ -1140,8 +1140,11 @@ where
         };
         let outcome = format!("body_error: code={error_code}");
 
-        let failed_usage =
-            usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+        let failed_usage = crate::gateway::proxy::protocol::parse_usage(
+            common.cli_key.as_str(),
+            common.wire_protocol,
+            &body_bytes,
+        );
         observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, failed_usage.as_ref(), None);
 
         attempts.push(FailoverAttempt {
@@ -1346,8 +1349,9 @@ where
     let provider_usage = (provider_usage_cli_key.is_some()
         || common.provider_health_mode.bypasses_circuit())
     .then(|| {
-        usage::parse_usage_from_json_or_sse_bytes(
+        crate::gateway::proxy::protocol::parse_usage(
             provider_usage_cli_key.unwrap_or(common.cli_key.as_str()),
+            common.wire_protocol,
             body_bytes.as_ref(),
         )
     })
@@ -1643,8 +1647,9 @@ where
                     "plugin blocked gateway response after upstream success"
                 );
                 if defer_success_commit {
-                    let failed_usage = usage::parse_usage_from_json_or_sse_bytes(
+                    let failed_usage = crate::gateway::proxy::protocol::parse_usage(
                         common.cli_key.as_str(),
+                        common.wire_protocol,
                         body_bytes.as_ref(),
                     );
                     observe_infinite_attempt_usage(
@@ -1715,8 +1720,9 @@ where
                 err
             );
             if defer_success_commit {
-                let failed_usage = usage::parse_usage_from_json_or_sse_bytes(
+                let failed_usage = crate::gateway::proxy::protocol::parse_usage(
                     common.cli_key.as_str(),
+                    common.wire_protocol,
                     body_bytes.as_ref(),
                 );
                 observe_infinite_attempt_usage(
@@ -1771,8 +1777,11 @@ where
         }
     }
 
-    let client_usage =
-        usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+    let client_usage = crate::gateway::proxy::protocol::parse_usage(
+        common.cli_key.as_str(),
+        common.wire_protocol,
+        &body_bytes,
+    );
     if defer_success_commit {
         observe_infinite_attempt_usage(
             ctx,

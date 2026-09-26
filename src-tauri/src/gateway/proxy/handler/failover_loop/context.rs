@@ -22,7 +22,17 @@ pub(super) fn requested_model_for_audit(
     requested_model: Option<&str>,
     active_requested_model: Option<&str>,
 ) -> Option<String> {
-    if response_fixer::has_configured_model_route(special_settings) {
+    if response_fixer::has_configured_model_route(special_settings)
+        || special_settings
+            .lock()
+            .map(|settings| {
+                settings.iter().any(|value| {
+                    value.get("type").and_then(serde_json::Value::as_str)
+                        == Some("gateway_protocol")
+                })
+            })
+            .unwrap_or(false)
+    {
         return requested_model.map(str::to_string);
     }
     crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
@@ -35,6 +45,7 @@ pub(super) fn requested_model_for_audit(
 pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) state: &'a GatewayAppState<R>,
     pub(super) cli_key: &'a String,
+    pub(super) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub(super) forwarded_path: &'a String,
     pub(super) observe: bool,
     pub(super) method_hint: &'a String,
@@ -73,6 +84,7 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
 pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) state: &'a GatewayAppState<R>,
     pub(super) cli_key: &'a String,
+    pub(super) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub(super) forwarded_path: &'a String,
     pub(super) observe: bool,
     pub(super) method_hint: &'a String,
@@ -121,6 +133,7 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
         Self {
             state: args.state,
             cli_key: args.cli_key,
+            wire_protocol: args.wire_protocol,
             forwarded_path: args.forwarded_path,
             observe: args.observe,
             method_hint: args.method_hint,
@@ -165,6 +178,7 @@ impl<'a, R: tauri::Runtime> From<CommonCtxArgs<'a, R>> for CommonCtx<'a, R> {
 pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) state: &'a GatewayAppState<R>,
     pub(super) cli_key: String,
+    pub(super) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub(super) forwarded_path: String,
     pub(super) observe: bool,
     pub(super) method_hint: String,
@@ -203,6 +217,7 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
         Self {
             state: ctx.state,
             cli_key: ctx.cli_key.clone(),
+            wire_protocol: ctx.wire_protocol,
             forwarded_path: ctx.forwarded_path.clone(),
             observe: ctx.observe,
             method_hint: ctx.method_hint.clone(),
@@ -321,6 +336,7 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         is_compact_request: ctx.is_compact_request,
         trace_id: ctx.trace_id.clone(),
         cli_key: ctx.cli_key.clone(),
+        wire_protocol: ctx.wire_protocol,
         method: ctx.method_hint.clone(),
         path: ctx.forwarded_path.clone(),
         observe: ctx.observe,
@@ -355,9 +371,12 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         base_url: provider_ctx.provider_base_url_base.clone(),
         auth_mode: provider_ctx.auth_mode.clone(),
         use_upstream_usage_metrics: provider_usage_cli_key.is_some(),
-        upstream_route_tracker: Arc::new(Mutex::new(crate::usage::SseUsageTracker::new(
-            provider_usage_cli_key.unwrap_or(ctx.cli_key.as_str()),
-        ))),
+        upstream_route_tracker: Arc::new(Mutex::new(
+            crate::gateway::proxy::protocol::usage_tracker(
+                provider_usage_cli_key.unwrap_or(ctx.cli_key.as_str()),
+                ctx.wire_protocol,
+            ),
+        )),
         observed_upstream_model: Arc::new(Mutex::new(None)),
         observed_upstream_conflicting_model: Arc::new(Mutex::new(None)),
         observed_upstream_reasoning_effort: Arc::new(Mutex::new(None)),

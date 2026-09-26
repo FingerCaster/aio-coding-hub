@@ -131,6 +131,12 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     if failed_provider_ids.contains(&provider_id) {
         return PreparationOutcome::Skipped;
     }
+    if crate::gateway::proxy::protocol::is_native_client(&input.cli_key)
+        && input.channel.is_none()
+        && (provider.gateway_protocol != input.wire_protocol || provider.auth_mode != "api_key")
+    {
+        return PreparationOutcome::Skipped;
+    }
 
     let identity = provider_checks::ProviderIdentity {
         provider_id,
@@ -151,7 +157,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     let mut effective_credential = if is_cx2cc_bridge {
         String::new()
     } else {
-        match resolve_effective_credential(&input.state, &input.cli_key, provider).await {
+        match resolve_effective_credential(&input.state, input.source_cli_key(), provider).await {
             Ok(value) => value,
             Err(err) => {
                 provider_checks::skip_with_reason(
@@ -214,7 +220,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     };
 
     let mut use_codex_chatgpt_backend =
-        is_codex_chatgpt_backend(&input.cli_key, provider, &provider_base_url_base);
+        is_codex_chatgpt_backend(input.source_cli_key(), provider, &provider_base_url_base);
     let mut codex_chatgpt_account_id = if use_codex_chatgpt_backend {
         provider_checks::extract_codex_chatgpt_account_id(&input.state.db, provider.id)
     } else {

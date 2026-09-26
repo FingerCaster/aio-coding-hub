@@ -1,4 +1,8 @@
 import { ChevronDown } from "lucide-react";
+import { useState } from "react";
+import { isNativeCliKey } from "../../constants/clis";
+import { NATIVE_GATEWAY_PROTOCOLS, isNativeGatewayProtocol } from "../../constants/nativeGateway";
+import { Select } from "../../ui/Select";
 import type {
   CliKey,
   ModelRoutingPolicy,
@@ -24,6 +28,7 @@ import { CodexStreamInternalErrorFields } from "../../components/gateway/CodexSt
 import { ModelRoutingPolicyFields } from "../../components/gateway/ModelRoutingPolicyFields";
 import { cn } from "../../utils/cn";
 import { ContributionSlot } from "../../plugins/contributions/ContributionSlot";
+import { NativeGatewayModelsDialog } from "./native/NativeGatewayModelsDialog";
 
 type ProviderEditorDialogBaseProps = {
   open: boolean;
@@ -46,6 +51,7 @@ export type ProviderEditorDialogProps =
 
 export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
   const f = useProviderEditorForm(props);
+  const [modelsOpen, setModelsOpen] = useState(false);
   const saveBlocked =
     f.saving ||
     f.accountUsageCustomTestInFlight ||
@@ -63,6 +69,48 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
       className="max-w-4xl"
     >
       <div className="space-y-4">
+        {isNativeCliKey(f.cliKey) ? (
+          <FormField label="AIO 网关协议" hint="一个上游只承载一种协议；保存后请明确声明模型能力">
+            {(id) => (
+              <Select
+                id={id}
+                value={f.gatewayProtocol ?? ""}
+                disabled={f.saving}
+                onChange={(e) =>
+                  f.setGatewayProtocol(
+                    isNativeGatewayProtocol(e.target.value) ? e.target.value : null
+                  )
+                }
+              >
+                <option value="" disabled>
+                  请选择协议
+                </option>
+                {NATIVE_GATEWAY_PROTOCOLS.map((protocol) => (
+                  <option key={protocol.key} value={protocol.key}>
+                    {protocol.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </FormField>
+        ) : null}
+        {isNativeCliKey(f.cliKey) && props.mode === "edit" ? (
+          <div className="space-y-2">
+            <Button variant="secondary" disabled={f.saving} onClick={() => setModelsOpen(true)}>
+              编辑网关模型能力声明
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              模型声明绑定已保存的协议、地址与路由；如已更改这些字段，请先保存供应商再编辑声明。
+            </p>
+          </div>
+        ) : null}
+        {modelsOpen && f.open && props.mode === "edit" && isNativeCliKey(f.cliKey) ? (
+          <NativeGatewayModelsDialog
+            key={props.provider.provider_uuid}
+            provider={props.provider}
+            onClose={() => setModelsOpen(false)}
+          />
+        ) : null}
         {/* ── Auth mode selector ── */}
         {f.supportsOAuth ? (
           <FormField label="认证方式" hint="选择后下方表单会相应变化" group>
@@ -127,12 +175,14 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
 
         <ProviderAccountUsageSection form={f} />
 
-        <ContributionSlot
-          slotId="providers.editor.sections"
-          valuesByContributionKey={f.extensionValuesByContributionKey}
-          onChange={(contribution, key, value) => f.setExtensionValue(contribution, key, value)}
-          disabled={f.saving}
-        />
+        {!isNativeCliKey(f.cliKey) ? (
+          <ContributionSlot
+            slotId="providers.editor.sections"
+            valuesByContributionKey={f.extensionValuesByContributionKey}
+            onChange={(contribution, key, value) => f.setExtensionValue(contribution, key, value)}
+            disabled={f.saving}
+          />
+        ) : null}
 
         <ProviderRetryPolicySection form={f} />
         {f.authMode !== "cx2cc" ? <ProviderModelRoutingPolicySection form={f} /> : null}

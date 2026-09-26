@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CLIS, cliShortLabel, type CliFilterKey } from "../../constants/clis";
+import { clisWith, cliShortLabel, type CliFilterKey } from "../../constants/clis";
 import { useProvidersListQuery } from "../../query/providers";
 import type { CliKey, ProviderSummary } from "../../services/providers/providers";
 
@@ -24,7 +24,7 @@ function providersForCli(
   providersByCli: Record<CliKey, ProviderSummary[]>
 ): ProviderSummary[] {
   if (cliKey === "all") {
-    return CLIS.flatMap((cli) => providersByCli[cli.key]);
+    return clisWith("usage").flatMap((cli) => providersByCli[cli.key]);
   }
   return providersByCli[cliKey];
 }
@@ -36,6 +36,12 @@ export function useUsagePageProviderFilter(cliKey: CliFilterKey) {
   const codexProvidersQuery = useProvidersListQuery("codex");
   const geminiProvidersQuery = useProvidersListQuery("gemini");
   const grokProvidersQuery = useProvidersListQuery("grok");
+  const piProvidersQuery = useProvidersListQuery("pi", {
+    enabled: clisWith("provider").some((cli) => cli.key === "pi"),
+  });
+  const ompProvidersQuery = useProvidersListQuery("omp", {
+    enabled: clisWith("provider").some((cli) => cli.key === "omp"),
+  });
 
   const providerOptions = useMemo(() => {
     const providersByCli = {
@@ -43,6 +49,8 @@ export function useUsagePageProviderFilter(cliKey: CliFilterKey) {
       codex: codexProvidersQuery.data ?? EMPTY_PROVIDERS,
       gemini: geminiProvidersQuery.data ?? EMPTY_PROVIDERS,
       grok: grokProvidersQuery.data ?? EMPTY_PROVIDERS,
+      pi: piProvidersQuery.data ?? EMPTY_PROVIDERS,
+      omp: ompProvidersQuery.data ?? EMPTY_PROVIDERS,
     } satisfies Record<CliKey, ProviderSummary[]>;
 
     return providersForCli(cliKey, providersByCli).map(buildProviderOption);
@@ -52,6 +60,8 @@ export function useUsagePageProviderFilter(cliKey: CliFilterKey) {
     codexProvidersQuery.data,
     geminiProvidersQuery.data,
     grokProvidersQuery.data,
+    piProvidersQuery.data,
+    ompProvidersQuery.data,
   ]);
 
   if (providerId != null && !providerOptions.some((option) => option.id === providerId)) {
@@ -62,7 +72,9 @@ export function useUsagePageProviderFilter(cliKey: CliFilterKey) {
     claudeProvidersQuery.isFetching ||
     codexProvidersQuery.isFetching ||
     geminiProvidersQuery.isFetching ||
-    grokProvidersQuery.isFetching;
+    grokProvidersQuery.isFetching ||
+    piProvidersQuery.isFetching ||
+    ompProvidersQuery.isFetching;
 
   return { providerId, setProviderId, providerOptions, providersLoading };
 }

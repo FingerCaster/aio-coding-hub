@@ -297,6 +297,25 @@ pub fn request_log_retention_days_fail_open<R: tauri::Runtime>(app: &tauri::AppH
 }
 
 pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
+    if settings.pi_omp_native_targets.len() > 2 {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            "At most one native target per Pi/OMP client is allowed",
+        ));
+    }
+    let mut native_clients = std::collections::HashSet::new();
+    for selection in &settings.pi_omp_native_targets {
+        if !native_clients.insert(selection.client) {
+            return Err(AppError::new(
+                "SEC_INVALID_INPUT",
+                "Duplicate native target selection for one client",
+            ));
+        }
+        if let Some(directory) = &selection.agent_dir {
+            validate_non_empty_bounded_string("pi_omp_native_targets.agent_dir", directory, 4096)?;
+        }
+        crate::infra::native_cli::targets::validate_selection(selection)?;
+    }
     let mut codex_model_context_rules = settings.codex_model_context_rules.clone();
     normalize_codex_model_context_rules_for_write(&mut codex_model_context_rules)?;
     if settings.codex_infinite_retry_test_interval_ms > MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
@@ -1318,6 +1337,30 @@ mod tests {
             failover_max_attempts_per_provider: 0,
             ..Default::default()
         };
+        assert!(validate_bounds(&settings).is_err());
+    }
+
+    #[test]
+    fn native_target_settings_are_optional_bounded_and_unique_per_client() {
+        use crate::domain::native_cli::{NativeClient, NativeTargetMode, NativeTargetSelection};
+        let mut json = serde_json::to_value(AppSettings::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("pi_omp_native_targets");
+        let mut settings: AppSettings = serde_json::from_value(json).unwrap();
+        assert!(settings.pi_omp_native_targets.is_empty());
+        settings.pi_omp_native_targets = vec![
+            NativeTargetSelection::default_for(NativeClient::Pi),
+            NativeTargetSelection::default_for(NativeClient::Omp),
+        ];
+        validate_bounds(&settings).unwrap();
+        settings.pi_omp_native_targets[1].client = NativeClient::Pi;
+        assert!(validate_bounds(&settings).is_err());
+        settings.pi_omp_native_targets.truncate(1);
+        settings.pi_omp_native_targets[0].mode = NativeTargetMode::Custom;
+        settings.pi_omp_native_targets[0].agent_dir = Some("relative/path".into());
+        assert!(validate_bounds(&settings).is_err());
+        settings.pi_omp_native_targets[0].agent_dir = Some("x".repeat(4097));
         assert!(validate_bounds(&settings).is_err());
     }
 

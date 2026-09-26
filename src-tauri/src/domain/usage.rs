@@ -2,6 +2,7 @@
 
 use crate::domain::provider_models::REMOTE_MODEL_ID_MAX_BYTES;
 use crate::shared::cli_key::CliKey;
+use crate::shared::gateway_protocol::GatewayProtocol;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::sync::LazyLock;
@@ -404,7 +405,17 @@ impl UsageSemantics {
             Ok(CliKey::Codex | CliKey::Grok) => Self::OpenAi,
             Ok(CliKey::Claude) => Self::Claude,
             Ok(CliKey::Gemini) => Self::Gemini,
+            // Multi-protocol clients must supply their explicit wire protocol.
+            Ok(CliKey::Pi | CliKey::Omp) => Self::Other,
             Err(_) => Self::Other,
+        }
+    }
+
+    fn from_protocol(protocol: GatewayProtocol) -> Self {
+        match protocol {
+            GatewayProtocol::AnthropicMessages => Self::Claude,
+            GatewayProtocol::OpenaiCompletions | GatewayProtocol::OpenaiResponses => Self::OpenAi,
+            GatewayProtocol::GoogleGenerativeAi => Self::Gemini,
         }
     }
 }
@@ -856,8 +867,15 @@ fn extract_from_json_value(value: &Value, semantics: UsageSemantics) -> Option<U
 }
 
 pub fn parse_usage_from_json_bytes(cli_key: &str, body: &[u8]) -> Option<UsageExtract> {
+    parse_usage_from_json_with_semantics(UsageSemantics::from_cli_key(cli_key), body)
+}
+
+fn parse_usage_from_json_with_semantics(
+    semantics: UsageSemantics,
+    body: &[u8],
+) -> Option<UsageExtract> {
     let value: Value = serde_json::from_slice(body).ok()?;
-    let metrics = extract_from_json_value(&value, UsageSemantics::from_cli_key(cli_key))?;
+    let metrics = extract_from_json_value(&value, semantics)?;
     Some(UsageExtract {
         usage_json: normalize_usage_json(&metrics),
         metrics,
@@ -870,6 +888,45 @@ pub fn parse_usage_from_json_or_sse_bytes(cli_key: &str, body: &[u8]) -> Option<
         tracker.ingest_chunk(body);
         tracker.finalize()
     })
+}
+
+/// Parse wire usage without substituting the originating client's identity.
+pub fn parse_usage_for_protocol(protocol: GatewayProtocol, body: &[u8]) -> Option<UsageExtract> {
+    parse_usage_from_json_with_semantics(UsageSemantics::from_protocol(protocol), body)
+        .map(|extract| normalize_native_usage(protocol, extract))
+        .or_else(|| {
+            let mut tracker = SseUsageTracker::for_protocol(protocol);
+            tracker.ingest_chunk(body);
+            tracker.finalize()
+        })
+}
+
+/// Native clients persist exclusive input buckets. Keep wire metrics in usage_json
+/// for audit; legacy clients retain their existing source-specific conventions.
+fn normalize_native_usage(protocol: GatewayProtocol, mut extract: UsageExtract) -> UsageExtract {
+    let metrics = &mut extract.metrics;
+    let read = metrics.cache_read_input_tokens.unwrap_or(0).max(0);
+    let split_write = metrics
+        .cache_creation_5m_input_tokens
+        .unwrap_or(0)
+        .max(0)
+        .saturating_add(metrics.cache_creation_1h_input_tokens.unwrap_or(0).max(0));
+    let write = if split_write > 0 {
+        split_write
+    } else {
+        metrics.cache_creation_input_tokens.unwrap_or(0).max(0)
+    };
+    let included_cache = match protocol {
+        GatewayProtocol::AnthropicMessages => 0,
+        GatewayProtocol::OpenaiCompletions | GatewayProtocol::OpenaiResponses => {
+            read.saturating_add(write)
+        }
+        GatewayProtocol::GoogleGenerativeAi => read,
+    };
+    metrics.input_tokens = metrics
+        .input_tokens
+        .map(|input| input.saturating_sub(included_cache).max(0));
+    extract
 }
 
 pub fn parse_model_from_json_or_sse_bytes(cli_key: &str, body: &[u8]) -> Option<String> {
@@ -951,6 +1008,7 @@ fn merge_reasoning_tokens(base: Option<i64>, patch: Option<i64>) -> Option<i64> 
 #[derive(Debug)]
 pub struct SseUsageTracker {
     semantics: UsageSemantics,
+    protocol: Option<GatewayProtocol>,
     buffer: Vec<u8>,
     current_event: Vec<u8>,
     current_data: Vec<u8>,
@@ -1146,10 +1204,115 @@ pub(crate) fn has_codex_meaningful_output(data: &Value) -> bool {
         .any(|items| items.iter().any(is_meaningful_output_item))
 }
 
+/// Wire framing is separate from client policy: a native Responses stream does
+/// not acquire Codex's empty-response, capacity or delayed-commit policies.
+pub fn protocol_sse_completion(protocol: GatewayProtocol, event: &str, data: &Value) -> bool {
+    let kind = data.get("type").and_then(Value::as_str).unwrap_or(event);
+    match protocol {
+        GatewayProtocol::AnthropicMessages => kind == "message_stop",
+        GatewayProtocol::OpenaiCompletions => false, // terminal [DONE] is not JSON
+        GatewayProtocol::OpenaiResponses => kind == "response.completed",
+        GatewayProtocol::GoogleGenerativeAi => data
+            .get("candidates")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().all(|item| {
+                        item.get("finishReason")
+                            .is_some_and(is_non_empty_marker_value)
+                    })
+            }),
+    }
+}
+
+pub fn protocol_sse_error(protocol: GatewayProtocol, event: &str, data: &Value) -> bool {
+    if data.get("error").is_some_and(|value| !value.is_null()) {
+        return true;
+    }
+    let kind = data.get("type").and_then(Value::as_str).unwrap_or(event);
+    match protocol {
+        GatewayProtocol::AnthropicMessages => kind == "error",
+        GatewayProtocol::OpenaiResponses => {
+            matches!(kind, "error" | "response.failed" | "response.incomplete")
+        }
+        GatewayProtocol::OpenaiCompletions | GatewayProtocol::GoogleGenerativeAi => {
+            event == "error"
+        }
+    }
+}
+
+pub fn protocol_sse_meaningful_output(protocol: GatewayProtocol, data: &Value) -> bool {
+    let nonempty_string = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty())
+    };
+    match protocol {
+        GatewayProtocol::AnthropicMessages => {
+            let delta = data.get("delta");
+            ["text", "thinking", "partial_json", "signature"]
+                .iter()
+                .any(|key| nonempty_string(delta.and_then(|v| v.get(*key))))
+                || data.get("content_block").is_some_and(|block| {
+                    block.get("type").and_then(Value::as_str) == Some("tool_use")
+                        || nonempty_string(block.get("text"))
+                })
+        }
+        GatewayProtocol::OpenaiResponses => has_codex_meaningful_output(data),
+        GatewayProtocol::OpenaiCompletions => data
+            .get("choices")
+            .and_then(Value::as_array)
+            .is_some_and(|choices| {
+                choices.iter().any(|choice| {
+                    let delta = choice.get("delta");
+                    ["content", "reasoning_content", "reasoning"]
+                        .iter()
+                        .any(|key| nonempty_string(delta.and_then(|v| v.get(*key))))
+                        || delta
+                            .and_then(|v| v.get("tool_calls"))
+                            .and_then(Value::as_array)
+                            .is_some_and(|calls| !calls.is_empty())
+                        || delta
+                            .and_then(|v| v.get("function_call"))
+                            .is_some_and(|call| call.is_object())
+                })
+            }),
+        GatewayProtocol::GoogleGenerativeAi => data
+            .get("candidates")
+            .and_then(Value::as_array)
+            .is_some_and(|candidates| {
+                candidates.iter().any(|candidate| {
+                    candidate
+                        .pointer("/content/parts")
+                        .and_then(Value::as_array)
+                        .is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                nonempty_string(part.get("text"))
+                                    || part.get("functionCall").is_some()
+                                    || part.get("inlineData").is_some()
+                                    || part.get("executableCode").is_some()
+                            })
+                        })
+                })
+            }),
+    }
+}
+
 impl SseUsageTracker {
     pub fn new(cli_key: &str) -> Self {
+        Self::with_semantics(UsageSemantics::from_cli_key(cli_key))
+    }
+
+    pub fn for_protocol(protocol: GatewayProtocol) -> Self {
+        let mut tracker = Self::with_semantics(UsageSemantics::from_protocol(protocol));
+        tracker.protocol = Some(protocol);
+        tracker
+    }
+
+    fn with_semantics(semantics: UsageSemantics) -> Self {
         Self {
-            semantics: UsageSemantics::from_cli_key(cli_key),
+            semantics,
+            protocol: None,
             buffer: Vec::new(),
             current_event: Vec::new(),
             current_data: Vec::new(),
@@ -1317,7 +1480,11 @@ impl SseUsageTracker {
                 rest = &rest[1..];
             }
             if rest == b"[DONE]" {
-                self.completion_seen = true;
+                if self.protocol.is_none()
+                    || self.protocol == Some(GatewayProtocol::OpenaiCompletions)
+                {
+                    self.completion_seen = true;
+                }
                 return;
             }
 
@@ -1403,94 +1570,104 @@ impl SseUsageTracker {
             self.meaningful_output_seen = true;
         }
 
-        if is_completion_event_name(event) {
-            self.completion_seen = true;
-        }
-        if terminal_actions_enabled && is_terminal_error_event_name(event) {
-            self.terminal_error_seen = true;
-            // Fake 200: upstream returned HTTP 200 but body contains an error event.
-            // Detect patterns: SSE `event: error` with a JSON body containing "error" object
-            // or `"type":"error"` in the data payload.
-            if data.get("error").is_some()
-                || data.get("type").and_then(|v| v.as_str()) == Some("error")
-            {
+        if let Some(protocol) = self.protocol {
+            let event = std::str::from_utf8(event).unwrap_or_default();
+            self.completion_seen |= protocol_sse_completion(protocol, event, data);
+            self.meaningful_output_seen |= protocol_sse_meaningful_output(protocol, data);
+            if protocol_sse_error(protocol, event, data) {
+                self.terminal_error_seen = true;
                 self.fake_200_detected = true;
             }
-        }
-
-        if let Some(event_type) = data.get("type").and_then(|v| v.as_str()) {
-            if is_completion_event_type(event_type) {
+        } else {
+            if is_completion_event_name(event) {
                 self.completion_seen = true;
             }
-            if terminal_actions_enabled && is_terminal_error_event_type(event_type) {
+            if terminal_actions_enabled && is_terminal_error_event_name(event) {
                 self.terminal_error_seen = true;
-                // Also detect fake 200 from data.type == "error" with an error object
-                if data.get("error").is_some() {
+                // Fake 200: upstream returned HTTP 200 but body contains an error event.
+                // Detect patterns: SSE `event: error` with a JSON body containing "error" object
+                // or `"type":"error"` in the data payload.
+                if data.get("error").is_some()
+                    || data.get("type").and_then(|v| v.as_str()) == Some("error")
+                {
                     self.fake_200_detected = true;
                 }
             }
-        }
 
-        let status_fields = [
-            data.get("status").and_then(|v| v.as_str()),
-            data.get("response")
-                .and_then(|v| v.get("status"))
-                .and_then(|v| v.as_str()),
-            data.get("message")
-                .and_then(|v| v.get("status"))
-                .and_then(|v| v.as_str()),
-        ];
-        for status in status_fields.into_iter().flatten() {
-            if is_completion_status(status) {
+            if let Some(event_type) = data.get("type").and_then(|v| v.as_str()) {
+                if is_completion_event_type(event_type) {
+                    self.completion_seen = true;
+                }
+                if terminal_actions_enabled && is_terminal_error_event_type(event_type) {
+                    self.terminal_error_seen = true;
+                    // Also detect fake 200 from data.type == "error" with an error object
+                    if data.get("error").is_some() {
+                        self.fake_200_detected = true;
+                    }
+                }
+            }
+
+            let status_fields = [
+                data.get("status").and_then(|v| v.as_str()),
+                data.get("response")
+                    .and_then(|v| v.get("status"))
+                    .and_then(|v| v.as_str()),
+                data.get("message")
+                    .and_then(|v| v.get("status"))
+                    .and_then(|v| v.as_str()),
+            ];
+            for status in status_fields.into_iter().flatten() {
+                if is_completion_status(status) {
+                    self.completion_seen = true;
+                }
+                if terminal_actions_enabled && is_terminal_error_status(status) {
+                    self.terminal_error_seen = true;
+                }
+            }
+
+            let done_like = [
+                data.get("done").and_then(|v| v.as_bool()),
+                data.get("is_done").and_then(|v| v.as_bool()),
+                data.get("is_final").and_then(|v| v.as_bool()),
+                data.get("response")
+                    .and_then(|v| v.get("done"))
+                    .and_then(|v| v.as_bool()),
+                data.get("message")
+                    .and_then(|v| v.get("done"))
+                    .and_then(|v| v.as_bool()),
+            ];
+            if done_like.into_iter().flatten().any(|v| v) {
                 self.completion_seen = true;
             }
-            if terminal_actions_enabled && is_terminal_error_status(status) {
-                self.terminal_error_seen = true;
-            }
-        }
 
-        let done_like = [
-            data.get("done").and_then(|v| v.as_bool()),
-            data.get("is_done").and_then(|v| v.as_bool()),
-            data.get("is_final").and_then(|v| v.as_bool()),
-            data.get("response")
-                .and_then(|v| v.get("done"))
-                .and_then(|v| v.as_bool()),
-            data.get("message")
-                .and_then(|v| v.get("done"))
-                .and_then(|v| v.as_bool()),
-        ];
-        if done_like.into_iter().flatten().any(|v| v) {
-            self.completion_seen = true;
-        }
-
-        let finish_fields = [
-            data.get("finish_reason"),
-            data.get("finishReason"),
-            data.get("response").and_then(|v| v.get("finish_reason")),
-            data.get("response").and_then(|v| v.get("finishReason")),
-        ];
-        if finish_fields
-            .into_iter()
-            .flatten()
-            .any(is_non_empty_marker_value)
-        {
-            self.completion_seen = true;
-        }
-
-        for array_name in ["choices", "candidates"] {
-            if data
-                .get(array_name)
-                .and_then(Value::as_array)
-                .is_some_and(|items| {
-                    items.iter().any(|item| {
-                        item.get("finish_reason")
-                            .or_else(|| item.get("finishReason"))
-                            .is_some_and(is_non_empty_marker_value)
-                    })
-                })
+            let finish_fields = [
+                data.get("finish_reason"),
+                data.get("finishReason"),
+                data.get("response").and_then(|v| v.get("finish_reason")),
+                data.get("response").and_then(|v| v.get("finishReason")),
+            ];
+            if finish_fields
+                .into_iter()
+                .flatten()
+                .any(is_non_empty_marker_value)
             {
                 self.completion_seen = true;
+            }
+
+            for array_name in ["choices", "candidates"] {
+                if data
+                    .get(array_name)
+                    .and_then(Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item.get("finish_reason")
+                                .or_else(|| item.get("finishReason"))
+                                .is_some_and(is_non_empty_marker_value)
+                        })
+                    })
+                {
+                    self.completion_seen = true;
+                }
             }
         }
 
@@ -1624,9 +1801,15 @@ impl SseUsageTracker {
             self.last_generic.clone()
         }?;
 
-        Some(UsageExtract {
+        let extract = UsageExtract {
             usage_json: normalize_usage_json(&merged),
             metrics: merged,
+        };
+        // Normalize the cloned result, never the accumulated wire metrics: callers
+        // can finalize repeatedly without subtracting cache buckets twice.
+        Some(match self.protocol {
+            Some(protocol) => normalize_native_usage(protocol, extract),
+            None => extract,
         })
     }
 }

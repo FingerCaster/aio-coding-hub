@@ -417,6 +417,9 @@ CREATE INDEX IF NOT EXISTS idx_infinite_retry_provider_usage_provider
     )
     .map_err(|e| format!("failed to create baseline v25 schema: {e}"))?;
 
+    super::v46_to_v47::ensure_schema(&tx)?;
+    super::v47_to_v48::ensure_schema(&tx)?;
+
     // Seed default skill repos
     let now = now_unix_seconds();
     for (git_url, branch) in [

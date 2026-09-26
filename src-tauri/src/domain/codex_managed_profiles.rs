@@ -1013,6 +1013,7 @@ mod tests {
             let provider = crate::providers::upsert(
                 &self.db,
                 crate::providers::ProviderUpsertParams {
+                    gateway_protocol: None,
                     provider_id: None,
                     cli_key: "codex".to_string(),
                     name: "Managed Profile Provider".to_string(),

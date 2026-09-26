@@ -146,7 +146,14 @@ describe("settings/useSettingsPersistence", () => {
     expect(result.current.trayEnabled).toBe(true);
     expect(result.current.showHomeUsage).toBe(true);
     expect(result.current.homeUsagePeriod).toBe("last15");
-    expect(result.current.cliPriorityOrder).toEqual(["claude", "codex", "gemini", "grok"]);
+    expect(result.current.cliPriorityOrder).toEqual([
+      "claude",
+      "codex",
+      "gemini",
+      "grok",
+      "pi",
+      "omp",
+    ]);
   });
 
   it("marks ready and toasts when settings query errors", async () => {
