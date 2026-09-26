@@ -597,6 +597,9 @@ pub fn parse_workspace_cli_target_json<R: tauri::Runtime>(
 ) -> crate::shared::error::AppResult<McpParseResult> {
     let conn = db.open_connection()?;
     let cli_key = workspaces::get_cli_key_by_id(&conn, workspace_id)?;
+    if !CliKey::parse(&cli_key)?.supports(crate::shared::cli_key::CliCapability::Mcp) {
+        return Err("SEC_INVALID_INPUT: this CLI does not support managed MCP import".into());
+    }
 
     let bytes = crate::mcp_sync::read_target_bytes(app, &cli_key)
         .map_err(|e| format!("SYSTEM_ERROR: failed to read {cli_key} target config: {e}"))?;
@@ -620,6 +623,9 @@ pub fn parse_workspace_cli_target_json<R: tauri::Runtime>(
                 .map_err(crate::shared::error::AppError::from)?,
         },
         CliKey::Claude | CliKey::Gemini => parse_json(&text)?,
+        CliKey::Pi | CliKey::Omp => {
+            return Err("SEC_INVALID_INPUT: this CLI does not support managed MCP import".into());
+        }
     };
 
     if parsed.servers.is_empty() {

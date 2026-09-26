@@ -6,6 +6,43 @@
 /** user-defined commands **/
 
 export const commands = {
+  async ompSettingsRead(targetId: string): Promise<Result<OmpSettingsSnapshot, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("omp_settings_read", { targetId }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async ompSettingsSave(
+    input: OmpSettingsSaveInput
+  ): Promise<Result<OmpSettingsWriteResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("omp_settings_save", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async ompAgentRead(
+    targetId: string,
+    fileName: string
+  ): Promise<Result<OmpAgentDocument, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("omp_agent_read", { targetId, fileName }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async ompAgentSave(input: OmpAgentSaveInput): Promise<Result<OmpSettingsWriteResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("omp_agent_save", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async settingsGet(): Promise<Result<SettingsView, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("settings_get") };
@@ -452,6 +489,22 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async cliManagerPiInfoGet(): Promise<Result<SimpleCliInfo, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("cli_manager_pi_info_get") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async cliManagerOmpInfoGet(): Promise<Result<SimpleCliInfo, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("cli_manager_omp_info_get") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async cliManagerGrokConfigGet(): Promise<Result<GrokConfigState, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("cli_manager_grok_config_get") };
@@ -540,6 +593,30 @@ export const commands = {
   async cliUpdate(cliKey: string): Promise<Result<CliUpdateResult, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("cli_update", { cliKey }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliCheckLatestVersion(
+    client: NativeClient
+  ): Promise<Result<NativeCliVersionCheck, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_cli_check_latest_version", { client }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliUpdate(
+    client: NativeClient,
+    planId: string
+  ): Promise<Result<CliUpdateResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_update", { client, planId }) };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -726,6 +803,289 @@ export const commands = {
         status: "ok",
         data: await TAURI_INVOKE("cli_sessions_session_delete", { source, filePaths, wslDistro }),
       };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliTargetsList(client: NativeClient): Promise<Result<NativeTarget[], string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_targets_list", { client }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliTargetValidate(
+    selection: NativeTargetSelection
+  ): Promise<Result<NativeTarget, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_cli_target_validate", { selection }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliTargetSelect(
+    selection: NativeTargetSelection
+  ): Promise<Result<NativeTarget, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_target_select", { selection }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliProvidersList(targetId: string): Promise<Result<NativeProvidersList, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_providers_list", { targetId }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliProviderReadForEdit(
+    targetId: string,
+    nativeKey: string
+  ): Promise<Result<NativeProviderEdit, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_cli_provider_read_for_edit", { targetId, nativeKey }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliProviderSave(
+    input: NativeProviderSaveInput
+  ): Promise<Result<NativeMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_provider_save", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliProviderApply(
+    input: NativeProviderActionInput
+  ): Promise<Result<NativeMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_provider_apply", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliProviderRemove(
+    input: NativeProviderActionInput
+  ): Promise<Result<NativeMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_provider_remove", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeCliProviderDelete(
+    input: NativeProviderDeleteInput
+  ): Promise<Result<NativeMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_cli_provider_delete", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeChannelCatalogPreview(targetId: string): Promise<Result<ChannelCatalog, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_channel_catalog_preview", { targetId }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeChannelPreview(
+    input: ChannelLifecycleInput
+  ): Promise<Result<ChannelPreview, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_channel_preview", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeChannelApply(
+    input: ChannelLifecycleInput
+  ): Promise<Result<ChannelMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_channel_apply", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeChannelModelsGet(
+    targetId: string,
+    providerId: number,
+    providerUuid: string,
+    protocol: GatewayProtocol
+  ): Promise<Result<GatewayModelsSnapshot, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_channel_models_get", {
+          targetId,
+          providerId,
+          providerUuid,
+          protocol,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeChannelModelsDiscover(
+    targetId: string,
+    providerId: number,
+    providerUuid: string,
+    protocol: GatewayProtocol
+  ): Promise<Result<ChannelModelDiscovery, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_channel_models_discover", {
+          targetId,
+          providerId,
+          providerUuid,
+          protocol,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeChannelModelsSet(
+    targetId: string,
+    providerId: number,
+    providerUuid: string,
+    protocol: GatewayProtocol,
+    expectedRevision: string,
+    models: NativeModelSpec[]
+  ): Promise<Result<GatewayModelsSnapshot, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_channel_models_set", {
+          targetId,
+          providerId,
+          providerUuid,
+          protocol,
+          expectedRevision,
+          models,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeGatewayModelsGet(
+    providerId: number,
+    providerUuid: string
+  ): Promise<Result<GatewayModelsSnapshot, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_gateway_models_get", { providerId, providerUuid }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeGatewayModelsSet(
+    providerId: number,
+    providerUuid: string,
+    expectedRevision: string,
+    models: NativeModelSpec[]
+  ): Promise<Result<GatewayModelsSnapshot, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_gateway_models_set", {
+          providerId,
+          providerUuid,
+          expectedRevision,
+          models,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeGatewayCatalogPreview(
+    targetId: string
+  ): Promise<Result<GatewayCatalogPreview, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_gateway_catalog_preview", { targetId }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeGatewayApply(
+    input: GatewayLifecycleInput
+  ): Promise<Result<GatewayMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_gateway_apply", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeGatewayRemove(
+    input: GatewayLifecycleInput
+  ): Promise<Result<GatewayMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_gateway_remove", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeGatewayImportPreview(
+    targetId: string,
+    nativeKey: string
+  ): Promise<Result<GatewayImportPreview, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("native_gateway_import_preview", { targetId, nativeKey }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async nativeGatewayImportConfirm(
+    input: GatewayImportConfirmInput
+  ): Promise<Result<ProviderSummary[], string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("native_gateway_import_confirm", { input }) };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -2754,6 +3114,77 @@ export type AvailableSkillSummary = {
   source_subdir: string;
   installed: boolean;
 };
+export type ChannelBindingSummary = {
+  bindingId: string;
+  sourceChannel: SourceChannel;
+  protocol: GatewayProtocol;
+  nativeKey: string;
+  models: NativeModelSpec[];
+  state: string;
+  modified: boolean;
+  stale: boolean;
+};
+export type ChannelCatalog = {
+  targetId: string;
+  revision: string;
+  catalogRevision: string;
+  listenerReady: boolean;
+  sources: ChannelSource[];
+  bindings: ChannelBindingSummary[];
+};
+export type ChannelLifecycleInput = {
+  targetId: string;
+  expectedRevision: string;
+  catalogRevision: string;
+  selections: ChannelSelection[];
+  /**
+   * Explicit removal IDs only; absent selections do not remove other bindings.
+   */
+  removeBindingIds: string[];
+};
+export type ChannelModelDiscovery = {
+  targetId: string;
+  providerId: number;
+  providerUuid: string;
+  protocol: GatewayProtocol;
+  revision: string;
+  models: ModelCapabilitySuggestion[];
+  discovery: ProviderModelDiscoveryResult;
+};
+export type ChannelMutationResult = {
+  targetId: string;
+  revision: string;
+  changed: boolean;
+  backupPath: string | null;
+  bindings: ChannelBindingSummary[];
+};
+export type ChannelPreview = {
+  targetId: string;
+  revision: string;
+  catalogRevision: string;
+  entries: GeneratedEntry[];
+  removedNativeKeys: string[];
+};
+export type ChannelProvider = {
+  providerId: number;
+  providerUuid: string;
+  name: string;
+  authMode: string;
+  blockedReason: string | null;
+  modelIds: string[];
+};
+export type ChannelSelection = {
+  sourceChannel: SourceChannel;
+  protocol: GatewayProtocol;
+  modelIds: string[];
+};
+export type ChannelSource = {
+  sourceChannel: SourceChannel;
+  protocol: GatewayProtocol;
+  providers: ChannelProvider[];
+  models: NativeModelSpec[];
+  blockedReason: string | null;
+};
 export type CircuitBreakerNoticeUpdate = { enableCircuitBreakerNotice: boolean };
 export type ClaudeCliInfo = {
   found: boolean;
@@ -3273,6 +3704,16 @@ export type GatewayAttemptEvent = {
   reasoning_effort: string | null;
   upstream_sent: boolean;
 };
+export type GatewayCatalogGroup = { protocol: GatewayProtocol; models: NativeModelSpec[] };
+export type GatewayCatalogPreview = {
+  targetId: string;
+  revision: string;
+  catalogRevision: string;
+  listenerReady: boolean;
+  groups: GatewayCatalogGroup[];
+  entries: GeneratedEntry[];
+  manifests: GatewayManifestSummary[];
+};
 export type GatewayCircuitEvent = {
   trace_id: string;
   cli_key: string;
@@ -3290,6 +3731,33 @@ export type GatewayCircuitEvent = {
   trigger_error_code: string | null;
   first_byte_timeout_secs: number | null;
 };
+export type GatewayImportConfirmInput = {
+  targetId: string;
+  nativeKey: string;
+  expectedRevision: string;
+  credentials: GatewayImportCredential[];
+};
+export type GatewayImportCredential = { groupId: string; apiKey: string };
+export type GatewayImportGroup = {
+  groupId: string;
+  protocol: GatewayProtocol;
+  baseUrl: string;
+  models: NativeModelSpec[];
+};
+export type GatewayImportIssue = { modelId: string | null; code: string; blocking: boolean };
+export type GatewayImportPreview = {
+  targetId: string;
+  nativeKey: string;
+  revision: string;
+  groups: GatewayImportGroup[];
+  issues: GatewayImportIssue[];
+  canImport: boolean;
+};
+export type GatewayLifecycleInput = {
+  targetId: string;
+  expectedRevision: string;
+  catalogRevision: string;
+};
 export type GatewayListenMode = "localhost" | "wsl_auto" | "lan" | "custom";
 export type GatewayLogEvent = {
   level: string;
@@ -3299,6 +3767,33 @@ export type GatewayLogEvent = {
   bound_port: number;
   base_url: string;
 };
+export type GatewayManifestSummary = {
+  protocol: GatewayProtocol;
+  nativeKey: string;
+  generation: number;
+  state: string;
+  stale: boolean;
+  modified: boolean;
+};
+export type GatewayModelsSnapshot = {
+  providerId: number;
+  providerUuid: string;
+  revision: string;
+  models: NativeModelSpec[];
+  stale: boolean;
+};
+export type GatewayMutationResult = {
+  targetId: string;
+  revision: string;
+  changed: boolean;
+  backupPath: string | null;
+  manifests: GatewayManifestSummary[];
+};
+export type GatewayProtocol =
+  | "anthropic-messages"
+  | "openai-completions"
+  | "openai-responses"
+  | "google-generative-ai";
 export type GatewayProviderCircuitStatus = {
   provider_id: number;
   state: string;
@@ -3422,6 +3917,13 @@ export type GeminiConfigState = {
   sessionRetentionMaxAge: string | null;
   planModelRouting: boolean | null;
   securityAuthSelectedType: string | null;
+};
+export type GeneratedEntry = {
+  protocol: GatewayProtocol;
+  nativeKey: string;
+  baseUrl: string;
+  models: NativeModelSpec[];
+  node: JsonValue;
 };
 export type GrokApiBackend = "responses" | "chat_completions";
 export type GrokConfigState = {
@@ -3637,6 +4139,23 @@ export type McpServerUpsertInput = {
   headers?: McpSecretPatchInput;
 };
 export type McpServersListInput = { workspaceId: number };
+export type ModelCapabilitySuggestion = {
+  modelId: string;
+  displayName: string | null;
+  input: string[] | null;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  supportsTools: boolean | null;
+  reasoning: boolean | null;
+  reasoningEfforts: string[] | null;
+  defaultReasoningEffort: string | null;
+  thinkingMode: string | null;
+  supportsDisplay: boolean | null;
+  requiresEffort: boolean | null;
+  nativeThinking: ThinkingSpec | null;
+  sources: string[];
+};
+export type ModelInput = "text" | "image";
 export type ModelPriceAliasMatchTypeV1 = "exact" | "prefix" | "wildcard";
 export type ModelPriceAliasRuleV1 = {
   cli_key: string;
@@ -3667,8 +4186,189 @@ export type ModelRoutingRule = {
   target_model: string | null;
   reasoning_effort: string | null;
 };
+export type NativeCliVersionCheck = {
+  client: NativeClient;
+  installed: boolean;
+  installedVersion: string | null;
+  latestVersion: string;
+  updateAvailable: boolean;
+  installMethod: string;
+  installDirectory: string | null;
+  executablePath: string | null;
+  planId: string | null;
+  blockedReason: string | null;
+};
+export type NativeClient = "pi" | "omp";
+export type NativeFieldPatch = { path: string[]; value: JsonValue | null };
+export type NativeFormat = "jsonc" | "yaml" | "legacy_json";
+export type NativeModelSpec = {
+  requestModelId: string;
+  displayName: string;
+  input: ModelInput[];
+  contextWindow: number;
+  maxTokens: number;
+  reasoning: boolean;
+  thinking: ThinkingSpec | null;
+  supportsTools: boolean | null;
+};
+export type NativeMutationResult = {
+  targetId: string;
+  revision: string;
+  changed: boolean;
+  backupPath: string | null;
+  provider: NativeProviderSummary | null;
+};
+export type NativeParseStatus = "ready" | "missing" | "read_only" | "invalid" | "unreadable";
+export type NativeProviderActionInput = {
+  targetId: string;
+  nativeKey: string;
+  expectedRevision: string;
+  expectedNodeDigest: string | null;
+  expectedProfileRevision: string | null;
+};
+export type NativeProviderDeleteInput = {
+  targetId: string;
+  nativeKey: string;
+  expectedRevision: string;
+  expectedNodeDigest: string | null;
+  expectedProfileRevision: string | null;
+  removeFromNative: boolean;
+};
+/**
+ * Secret-bearing: returned only by the explicit edit command. No Debug.
+ */
+export type NativeProviderEdit = {
+  target: NativeTarget;
+  revision: string;
+  provider: NativeProviderSummary;
+  node: JsonValue;
+};
+export type NativeProviderSaveInput = {
+  targetId: string;
+  nativeKey: string;
+  displayName: string;
+  expectedRevision: string;
+  expectedNodeDigest: string | null;
+  expectedProfileRevision: string | null;
+  node: JsonValue | null;
+  patch?: NativeFieldPatch[];
+  apply: boolean;
+};
+export type NativeProviderState = "present" | "archived" | "unknown";
+/**
+ * Safe list projection. Never include credentials, headers, URLs or raw nodes.
+ */
+export type NativeProviderSummary = {
+  profileUuid: string | null;
+  nativeKey: string;
+  displayName: string;
+  state: NativeProviderState;
+  managed: boolean;
+  nodeDigest: string | null;
+  profileRevision: string | null;
+  api: string | null;
+  modelCount: number;
+  apiKeyConfigured: boolean;
+};
+export type NativeProvidersList = {
+  target: NativeTarget;
+  revision: string | null;
+  parseStatus: NativeParseStatus;
+  issue: string | null;
+  providers: NativeProviderSummary[];
+};
+export type NativeTarget = {
+  targetId: string;
+  client: NativeClient;
+  environment: string;
+  profile: string | null;
+  agentDir: string;
+  modelsPath: string;
+  source: string;
+  format: NativeFormat;
+  selected: boolean;
+  writable: boolean;
+  issue: string | null;
+  shadowedFiles: string[];
+};
+export type NativeTargetMode = "default" | "custom" | "profile";
+export type NativeTargetSelection = {
+  client: NativeClient;
+  mode?: NativeTargetMode;
+  agentDir: string | null;
+  profile: string | null;
+};
 export type NoticeLevel = "info" | "success" | "warning" | "error";
 export type NoticeSendInput = { level: NoticeLevel; title: string | null; body: string };
+export type OmpAgentDocument = {
+  targetId: string;
+  fileName: string;
+  revision: string;
+  content: string;
+};
+export type OmpAgentSaveInput = {
+  targetId: string;
+  fileName: string;
+  expectedRevision: string;
+  content: string;
+};
+export type OmpAgentSummary = {
+  name: string;
+  description: string;
+  source: string;
+  fileName: string | null;
+  model: string[];
+  thinking: string | null;
+};
+export type OmpModelOption = {
+  selector: string;
+  label: string;
+  source: string;
+  thinkingLevels: string[];
+};
+export type OmpSettingField = {
+  key: string;
+  label: string;
+  group: string;
+  kind: string;
+  defaultValue: JsonValue;
+  options: string[];
+  min: number | null;
+  max: number | null;
+};
+export type OmpSettingPatch = {
+  path: string[];
+  /**
+   * null removes the explicit value, restoring OMP's own inheritance.
+   */
+  value: JsonValue | null;
+};
+export type OmpSettingsSaveInput = {
+  targetId: string;
+  expectedRevision: string;
+  patches: OmpSettingPatch[];
+};
+export type OmpSettingsSnapshot = {
+  targetId: string;
+  configPath: string;
+  agentsDir: string;
+  revision: string;
+  writable: boolean;
+  warnings: string[];
+  fields: OmpSettingField[];
+  /**
+   * Only explicitly supported settings; auth and unknown fields stay on disk.
+   */
+  values: Partial<{ [key in string]: JsonValue }>;
+  models: OmpModelOption[];
+  agents: OmpAgentSummary[];
+};
+export type OmpSettingsWriteResult = {
+  targetId: string;
+  revision: string;
+  changed: boolean;
+  backupPath: string | null;
+};
 export type PluginAuditLog = {
   id: number;
   plugin_id: string | null;
@@ -4289,6 +4989,7 @@ export type ProviderShareImportPreview = {
   canImport: boolean;
 };
 export type ProviderSummary = {
+  gateway_protocol: GatewayProtocol | null;
   id: number;
   provider_uuid: string;
   cli_key: string;
@@ -4327,6 +5028,7 @@ export type ProviderSummary = {
   newapi_account_access_token_configured: boolean;
 };
 export type ProviderUpsertInput = {
+  gatewayProtocol: GatewayProtocol | null;
   providerId: number | null;
   cliKey: string;
   name: string;
@@ -4729,6 +5431,7 @@ export type SkillsPaths = { ssot_dir: string; repos_dir: string; cli_dir: string
 export type SortModeActiveRow = { cli_key: string; mode_id: number | null; updated_at: number };
 export type SortModeProviderRow = { provider_id: number; enabled: boolean };
 export type SortModeSummary = { id: number; name: string; created_at: number; updated_at: number };
+export type SourceChannel = "claude" | "codex" | "grok" | "gemini";
 export type StreamInternalErrorEvidence = {
   event_type: string;
   error_type: string | null;
@@ -4740,6 +5443,17 @@ export type StreamInternalErrorEvidence = {
   truncated: boolean;
 };
 export type TargetCliKey = "claude" | "codex" | "gemini";
+export type ThinkingSpec =
+  | { client: "pi"; levelMap: Partial<{ [key in string]: string | null }> }
+  | {
+      client: "omp";
+      mode: string;
+      efforts: string[];
+      defaultLevel: string | null;
+      effortMap: Partial<{ [key in string]: string }>;
+      supportsDisplay: boolean | null;
+      requiresEffort: boolean | null;
+    };
 export type UiContribution = {
   id: string;
   title?: string | null;

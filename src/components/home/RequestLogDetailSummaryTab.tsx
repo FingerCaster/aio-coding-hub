@@ -1,3 +1,4 @@
+import { NativeChannelRouteBadge } from "./NativeChannelRouteBadge";
 import type { RequestLogDetail } from "../../services/gateway/requestLogs";
 import type { RequestLogErrorObservation } from "./requestLogErrorDetails";
 import { Card } from "../../ui/Card";
@@ -64,6 +65,10 @@ export function RequestLogDetailSummaryTab({
 
   return (
     <div className="space-y-3">
+      <NativeChannelRouteBadge
+        cliKey={selectedLog.cli_key}
+        specialSettingsJson={selectedLog.special_settings_json}
+      />
       {/* Error observation card (request-level) */}
       <RequestLogErrorObservationCard observation={errorObservation} />
 

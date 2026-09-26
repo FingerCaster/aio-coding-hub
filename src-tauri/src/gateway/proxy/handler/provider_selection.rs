@@ -24,9 +24,30 @@ pub(in crate::gateway::proxy) fn select_providers_with_session_binding<R: tauri:
     binding_request: Option<session_manager::SessionBindingRequest>,
     created_at: i64,
 ) -> crate::shared::error::AppResult<ProviderSelection> {
+    select_providers_for_source_with_session_binding(
+        state,
+        cli_key,
+        cli_key,
+        session_id,
+        binding_request,
+        created_at,
+    )
+}
+
+pub(in crate::gateway::proxy) fn select_providers_for_source_with_session_binding<
+    R: tauri::Runtime,
+>(
+    state: &GatewayAppState<R>,
+    cli_key: &str,
+    source_cli_key: &str,
+    session_id: Option<&str>,
+    binding_request: Option<session_manager::SessionBindingRequest>,
+    created_at: i64,
+) -> crate::shared::error::AppResult<ProviderSelection> {
     let session_snapshot =
         session_id.and_then(|sid| state.session.routing_snapshot(cli_key, sid, created_at));
-    let selection = providers::list_enabled_for_gateway_using_active_mode(&state.db, cli_key)?;
+    let selection =
+        providers::list_enabled_for_gateway_using_active_mode(&state.db, source_cli_key)?;
     let active_sort_mode_id = selection.sort_mode_id;
     let effective_sort_mode_id = selection.sort_mode_id;
     let providers = selection.providers;

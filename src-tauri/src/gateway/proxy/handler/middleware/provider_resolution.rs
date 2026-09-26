@@ -15,7 +15,8 @@ use crate::gateway::proxy::handler::provider_selection::probe_planner::{
 };
 use crate::gateway::proxy::handler::provider_selection::{
     resolve_session_bound_provider_id, resolve_session_bound_provider_id_without_circuit,
-    resolve_session_routing_decision, select_providers_with_session_binding, ProviderSelection,
+    resolve_session_routing_decision, select_providers_for_source_with_session_binding,
+    select_providers_with_session_binding, ProviderSelection,
 };
 use crate::gateway::response_fixer;
 use crate::session_manager::{SessionProbeTrigger, SessionRouteFingerprint};
@@ -36,7 +37,14 @@ impl ProviderResolutionMiddleware {
             ctx.introspection_json.as_ref(),
             ctx.is_claude_count_tokens,
         );
-        ctx.session_id = decision.session_id;
+        ctx.session_id = decision.session_id.map(|id| match &ctx.channel {
+            Some(owner) => format!(
+                "channel:{}:{}",
+                owner.binding_id,
+                crate::domain::native_gateway::hash(id)
+            ),
+            None => id,
+        });
         ctx.allow_session_reuse = decision.allow_session_reuse && ctx.managed_model_route.is_none();
         if ctx.session_id.is_none() {
             ctx.session_binding_request = None;
@@ -48,6 +56,13 @@ impl ProviderResolutionMiddleware {
         let selection_result = {
             let state = ctx.state.clone();
             let cli_key = ctx.cli_key.clone();
+            let wire_protocol = ctx.wire_protocol;
+            let channel = ctx.channel.clone();
+            let requested_model = ctx.requested_model.clone();
+            let model_routing_policy = ctx
+                .runtime_settings
+                .as_ref()
+                .map(|settings| settings.model_routing_policy.clone());
             let session_id = ctx.session_id.clone();
             let session_binding_request = ctx.session_binding_request;
             let bypass_circuit = ctx.provider_health_mode.bypasses_circuit();
@@ -56,37 +71,95 @@ impl ProviderResolutionMiddleware {
                 .managed_model_route
                 .as_ref()
                 .map(|route| (route.provider_id, route.provider_uuid.clone()));
-            crate::blocking::run("gateway_provider_selection", move || {
-                if let Some((provider_id, provider_uuid)) = managed_provider_identity {
-                    let providers =
-                        crate::providers::get_enabled_direct_codex_for_gateway_by_identity(
-                            &state.db,
-                            provider_id,
-                            &provider_uuid,
-                        )?
-                        .into_iter()
-                        .collect();
-                    Ok(ProviderSelection {
-                        effective_sort_mode_id: None,
-                        providers,
-                        bound_provider_order: None,
-                        active_sort_mode_id: None,
-                        session_bound_sort_mode_id: None,
-                        latest_provider_order: Vec::new(),
-                        route_changed: false,
-                    })
-                } else {
-                    select_providers_with_session_binding(
-                        &state,
-                        &cli_key,
-                        session_id.as_deref(),
-                        (!bypass_circuit)
+            crate::blocking::run(
+                "gateway_provider_selection",
+                move || -> crate::shared::error::AppResult<ProviderSelection> {
+                    if let Some((provider_id, provider_uuid)) = managed_provider_identity {
+                        let providers =
+                            crate::providers::get_enabled_direct_codex_for_gateway_by_identity(
+                                &state.db,
+                                provider_id,
+                                &provider_uuid,
+                            )?
+                            .into_iter()
+                            .collect();
+                        Ok(ProviderSelection {
+                            effective_sort_mode_id: None,
+                            providers,
+                            bound_provider_order: None,
+                            active_sort_mode_id: None,
+                            session_bound_sort_mode_id: None,
+                            latest_provider_order: Vec::new(),
+                            route_changed: false,
+                        })
+                    } else {
+                        let request_binding = (!bypass_circuit)
                             .then_some(session_binding_request)
-                            .flatten(),
-                        created_at,
-                    )
-                }
-            })
+                            .flatten();
+                        let mut selection = if let Some(owner) = &channel {
+                            select_providers_for_source_with_session_binding(
+                                &state,
+                                &cli_key,
+                                owner.source_channel.as_str(),
+                                session_id.as_deref(),
+                                request_binding,
+                                created_at,
+                            )?
+                        } else {
+                            select_providers_with_session_binding(
+                                &state,
+                                &cli_key,
+                                session_id.as_deref(),
+                                request_binding,
+                                created_at,
+                            )?
+                        };
+                        // Native eligibility is a read-only pre-gate filter. Incompatible
+                        // providers must consume neither an attempt nor a circuit lease.
+                        if crate::gateway::proxy::protocol::is_native_client(&cli_key) {
+                            let conn = state.db.open_connection()?;
+                            let snapshot = conn.unchecked_transaction().map_err(|error| {
+                                crate::shared::error::db_err!("native candidate snapshot: {error}")
+                            })?;
+                            let mut eligible = Vec::with_capacity(selection.providers.len());
+                            if let (Some(protocol), Some(model), Some(policy)) = (
+                                wire_protocol,
+                                requested_model.as_deref(),
+                                model_routing_policy.as_ref(),
+                            ) {
+                                for provider in selection.providers {
+                                    let allowed = if let Some(owner) = &channel {
+                                        crate::domain::native_channels::channel_candidate_eligible(
+                                            &snapshot,
+                                            &owner.binding_id,
+                                            &cli_key,
+                                            provider.id,
+                                            model,
+                                            policy,
+                                        )?
+                                    } else {
+                                        provider.gateway_protocol == Some(protocol)
+                                            && provider.auth_mode == "api_key"
+                                            && crate::domain::native_gateway::candidate_eligible(
+                                                &snapshot,
+                                                provider.id,
+                                                &cli_key,
+                                                protocol,
+                                                model,
+                                                policy,
+                                            )?
+                                    };
+                                    if allowed {
+                                        eligible.push(provider);
+                                    }
+                                }
+                            }
+                            selection.providers = eligible;
+                        }
+                        Ok(selection)
+                    }
+                },
+            )
             .await
         };
         let selection = match selection_result {
@@ -492,6 +565,14 @@ fn is_model_generation_request(
             path,
             "/responses" | "/v1/responses" | "/chat/completions" | "/v1/chat/completions"
         ),
+        "pi" | "omp" => [
+            crate::shared::gateway_protocol::GatewayProtocol::AnthropicMessages,
+            crate::shared::gateway_protocol::GatewayProtocol::OpenaiCompletions,
+            crate::shared::gateway_protocol::GatewayProtocol::OpenaiResponses,
+            crate::shared::gateway_protocol::GatewayProtocol::GoogleGenerativeAi,
+        ]
+        .into_iter()
+        .any(|protocol| crate::gateway::proxy::protocol::is_inference(protocol, method, path)),
         _ => false,
     }
 }

@@ -39,7 +39,12 @@ export function Dialog({
           </div>
 
           <DialogClose asChild>
-            <Button variant="secondary" size="sm" aria-label="关闭" className="text-xs">
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-label="关闭"
+              className="shrink-0 whitespace-nowrap text-xs"
+            >
               关闭
             </Button>
           </DialogClose>

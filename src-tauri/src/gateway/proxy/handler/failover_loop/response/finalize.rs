@@ -208,6 +208,7 @@ pub(super) struct AllFailedInput<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) attempts: Vec<FailoverAttempt>,
     pub(super) last_outcome: Option<AttemptOutcome>,
     pub(super) cli_key: String,
+    pub(super) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub(super) method_hint: String,
     pub(super) forwarded_path: String,
     pub(super) query: Option<String>,
@@ -231,6 +232,7 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
         attempts,
         last_outcome,
         cli_key,
+        wire_protocol,
         method_hint,
         forwarded_path,
         query,
@@ -267,7 +269,11 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
         .as_ref()
         .and_then(|outcome| outcome.error_response_rewrite.as_ref())
         .and_then(|rewrite| {
-            let response = rewrite.build_response(cli_key.as_str(), trace_id.as_str())?;
+            let response = rewrite.build_response_for_protocol(
+                cli_key.as_str(),
+                wire_protocol,
+                trace_id.as_str(),
+            )?;
             client_status = rewrite.client_status;
             response_fixer::push_special_setting(&special_settings, rewrite.special_setting());
             Some(response)

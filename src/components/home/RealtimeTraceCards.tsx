@@ -2,6 +2,7 @@
 // - Render in Home page "概览 / 使用记录" area to show up-to-date in-flight traces.
 // - Accepts projected realtime cards; visibility is decided by requestActivityProjection.
 
+import { NativeChannelRouteBadge } from "./NativeChannelRouteBadge";
 import { memo, useMemo } from "react";
 import { cliShortLabel } from "../../constants/clis";
 import { GatewayErrorCodes } from "../../constants/gatewayErrorCodes";
@@ -412,6 +413,10 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                     </span>
                   </span>
 
+                  <NativeChannelRouteBadge
+                    cliKey={trace.cli_key}
+                    specialSettingsJson={specialSettingsJson}
+                  />
                   <ReasoningEffortBadge value={reasoningEffort} />
 
                   {modelDisplayMeta.isConfiguredRoute ? (

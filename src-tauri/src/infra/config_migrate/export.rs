@@ -46,6 +46,7 @@ pub(super) fn export_providers(
     conn: &Connection,
     provider_cli_key_by_id: &HashMap<i64, String>,
 ) -> AppResult<Vec<ProviderExport>> {
+    super::ensure_portable_gateway_state_supported(conn)?;
     let mut stmt = conn
         .prepare_cached(
             r#"

@@ -58,4 +58,10 @@ describe("services/gateway/upstreamErrorResponseRules", () => {
     ).toEqual([validRule()]);
     expect(cloneUpstreamErrorResponseRules(null)).toEqual([]);
   });
+
+  it.each(["pi", "omp"])("preserves scoped %s rules when settings are edited", (client) => {
+    const rule = { ...validRule(), cli_keys: [client] };
+    expect(validateUpstreamErrorResponseRules([rule])).toBeNull();
+    expect(cloneUpstreamErrorResponseRules([rule])).toEqual([rule]);
+  });
 });

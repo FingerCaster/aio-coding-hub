@@ -9,6 +9,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
 
+pub(crate) mod native;
+
 const NPM_LATEST_TIMEOUT: Duration = Duration::from_secs(10);
 const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
 const NPM_INSTALL_OUTPUT_STREAM_LIMIT: usize = 32 * 1024;
@@ -366,16 +368,20 @@ async fn collect_output_task(
     task: Option<OutputReadTask>,
     stream_name: &str,
 ) -> Result<LimitedCommandOutput, String> {
-    let Some(task) = task else {
+    let Some(mut task) = task else {
         return Ok(LimitedCommandOutput::empty(NPM_INSTALL_OUTPUT_STREAM_LIMIT));
     };
 
-    match task.await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(error)) => Err(format!("failed to read npm update {stream_name}: {error}")),
-        Err(error) => Err(format!(
-            "failed to join npm update {stream_name} reader: {error}"
+    match tokio::time::timeout(Duration::from_secs(5), &mut task).await {
+        Ok(Ok(Ok(output))) => Ok(output),
+        Ok(Ok(Err(error))) => Err(format!("failed to read CLI update {stream_name}: {error}")),
+        Ok(Err(error)) => Err(format!(
+            "failed to join CLI update {stream_name} reader: {error}"
         )),
+        Err(_) => {
+            task.abort();
+            Err(format!("CLI update {stream_name} reader timed out"))
+        }
     }
 }
 
@@ -383,9 +389,11 @@ async fn collect_update_output(
     stdout_task: Option<OutputReadTask>,
     stderr_task: Option<OutputReadTask>,
 ) -> Result<(LimitedCommandOutput, LimitedCommandOutput), String> {
-    let stdout = collect_output_task(stdout_task, "stdout").await?;
-    let stderr = collect_output_task(stderr_task, "stderr").await?;
-    Ok((stdout, stderr))
+    let (stdout, stderr) = tokio::join!(
+        collect_output_task(stdout_task, "stdout"),
+        collect_output_task(stderr_task, "stderr")
+    );
+    Ok((stdout?, stderr?))
 }
 
 pub async fn cli_update(app: &tauri::AppHandle, cli_key: String) -> CliUpdateResult {
@@ -399,7 +407,7 @@ pub async fn cli_update(app: &tauri::AppHandle, cli_key: String) -> CliUpdateRes
         };
     };
 
-    let mut command = match build_cli_update_command(app, &normalized_cli_key, npm_package) {
+    let command = match build_cli_update_command(app, &normalized_cli_key, npm_package) {
         Ok(command) => command,
         Err(error) => {
             return CliUpdateResult {
@@ -410,10 +418,20 @@ pub async fn cli_update(app: &tauri::AppHandle, cli_key: String) -> CliUpdateRes
             };
         }
     };
+    run_update_command(command, normalized_cli_key, NPM_INSTALL_TIMEOUT).await
+}
+
+async fn run_update_command(
+    mut command: Command,
+    normalized_cli_key: String,
+    timeout: Duration,
+) -> CliUpdateResult {
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     command.kill_on_drop(true);
+    #[cfg(unix)]
+    crate::shared::process::configure_unix_process_group(command.as_std_mut());
 
     #[cfg(windows)]
     {
@@ -443,7 +461,7 @@ pub async fn cli_update(app: &tauri::AppHandle, cli_key: String) -> CliUpdateRes
         .take()
         .map(|stderr| tokio::spawn(read_limited_output(stderr, NPM_INSTALL_OUTPUT_STREAM_LIMIT)));
 
-    let wait_result = tokio::time::timeout(NPM_INSTALL_TIMEOUT, child.wait()).await;
+    let wait_result = tokio::time::timeout(timeout, child.wait()).await;
     match wait_result {
         Ok(Ok(status)) => {
             let output_result = collect_update_output(stdout_task, stderr_task).await;
@@ -479,6 +497,7 @@ pub async fn cli_update(app: &tauri::AppHandle, cli_key: String) -> CliUpdateRes
             }
         }
         Ok(Err(error)) => {
+            terminate_update_process(&mut child).await;
             let _ = collect_update_output(stdout_task, stderr_task).await;
             CliUpdateResult {
                 cli_key: normalized_cli_key,
@@ -488,19 +507,29 @@ pub async fn cli_update(app: &tauri::AppHandle, cli_key: String) -> CliUpdateRes
             }
         }
         Err(_) => {
-            let _ = child.kill().await;
+            terminate_update_process(&mut child).await;
             let _ = collect_update_output(stdout_task, stderr_task).await;
             CliUpdateResult {
                 cli_key: normalized_cli_key,
                 success: false,
                 output: String::new(),
-                error: Some(format!(
-                    "npm update timed out after {}s",
-                    NPM_INSTALL_TIMEOUT.as_secs()
-                )),
+                error: Some(format!("npm update timed out after {}s", timeout.as_secs())),
             }
         }
     }
+}
+
+async fn terminate_update_process(child: &mut tokio::process::Child) {
+    if let Some(id) = child.id() {
+        let _ = tokio::task::spawn_blocking(move || {
+            #[cfg(windows)]
+            crate::shared::process::terminate_windows_process_tree(id);
+            #[cfg(unix)]
+            crate::shared::process::terminate_unix_process_group(id);
+        })
+        .await;
+    }
+    let _ = child.kill().await;
 }
 
 #[cfg(test)]

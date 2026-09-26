@@ -1,3 +1,4 @@
+import { isNativeGatewayProtocol } from "../../constants/nativeGateway";
 // Usage: MSW handlers emulating Tauri commands via `http://tauri.local/<command>` fetch bridge.
 
 import { http, HttpResponse } from "msw";
@@ -245,6 +246,9 @@ export const handlers = [
         ? (input.accountUsageCredentials as Record<string, unknown>)
         : null;
     const summary: ProviderSummary = {
+      gateway_protocol: isNativeGatewayProtocol(input.gatewayProtocol)
+        ? input.gatewayProtocol
+        : null,
       id: nextId,
       provider_uuid:
         existing?.provider_uuid ?? `00000000-0000-4000-8000-${String(nextId).padStart(12, "0")}`,

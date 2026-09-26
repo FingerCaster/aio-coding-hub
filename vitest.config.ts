@@ -1,7 +1,7 @@
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 const ROOT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,7 +18,7 @@ export default defineConfig({
     testTimeout: 15000,
     setupFiles: ["src/test/setup.ts"],
     restoreMocks: true,
-    exclude: ["**/node_modules/**", ".codex-temp/**", "packages/**"],
+    exclude: [...configDefaults.exclude, ".codex-temp/**", "packages/**", ".trellis/.runtime/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],

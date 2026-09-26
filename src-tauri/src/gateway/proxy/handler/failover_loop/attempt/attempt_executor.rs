@@ -147,6 +147,8 @@ pub(super) enum AttemptSendOutcome {
     ConfiguredModelRouteApplyFailed(
         crate::gateway::configured_model_route::ConfiguredModelRouteApplyError,
     ),
+    /// A native protocol/model manifest changed after candidate selection.
+    NativeCandidateRejected,
     /// Dispatch ownership became stale at the transport boundary; no network
     /// call was made and the outer loop may continue with the stable provider.
     DispatchRejected,
@@ -178,6 +180,7 @@ pub(super) enum PreparedSendOutcome {
     ConfiguredModelRouteApplyFailed(
         crate::gateway::configured_model_route::ConfiguredModelRouteApplyError,
     ),
+    NativeCandidateRejected,
     DispatchRejected,
     ProviderDisabled(i64),
     ProviderEnableCheckFailed,
@@ -253,6 +256,7 @@ where
             AttemptSendOutcome::ConfiguredModelRouteApplyFailed(error)
         }
         PreparedSendOutcome::DispatchRejected => AttemptSendOutcome::DispatchRejected,
+        PreparedSendOutcome::NativeCandidateRejected => AttemptSendOutcome::NativeCandidateRejected,
         PreparedSendOutcome::ProviderDisabled(provider_id) => {
             AttemptSendOutcome::ProviderDisabled(provider_id)
         }
@@ -455,6 +459,58 @@ where
     // enabled-state read so the outer Provider switch remains the master gate.
     // The enabled-state read is therefore also the final async preparation step.
     let target_validation = crate::gateway::http_client::validate_gateway_target(&url).await;
+    // Recheck native declaration/manifest at every send, including same-provider
+    // retries. Rejection has no attempt, network or health side effect.
+    if crate::gateway::proxy::protocol::is_native_client(&input.cli_key) {
+        let db = ctx.state.db.clone();
+        let cli_key = input.cli_key.clone();
+        let protocol = input.wire_protocol;
+        let channel = input.channel.clone();
+        let model = input.requested_model.clone();
+        let model_routing_policy = input.model_routing_policy.clone();
+        let provider_id = prepared.provider_id;
+        let eligible = crate::blocking::run(
+            "native_gateway_send_eligibility",
+            move || -> crate::shared::error::AppResult<bool> {
+                let conn = db.open_connection()?;
+                let snapshot = conn.unchecked_transaction().map_err(|error| {
+                    crate::shared::error::db_err!("channel send snapshot: {error}")
+                })?;
+                if let Some(owner) = channel {
+                    return match model {
+                        Some(model) => crate::domain::native_channels::channel_candidate_eligible(
+                            &snapshot,
+                            &owner.binding_id,
+                            &cli_key,
+                            provider_id,
+                            &model,
+                            &model_routing_policy,
+                        ),
+                        None => Ok(false),
+                    };
+                }
+                match (protocol, model) {
+                    (Some(protocol), Some(model)) => {
+                        crate::domain::native_gateway::candidate_eligible(
+                            &conn,
+                            provider_id,
+                            &cli_key,
+                            protocol,
+                            &model,
+                            &model_routing_policy,
+                        )
+                    }
+                    _ => Ok(false),
+                }
+            },
+        )
+        .await;
+        match eligible {
+            Ok(true) => {}
+            Ok(false) => return PreparedSendOutcome::NativeCandidateRejected,
+            Err(_) => return PreparedSendOutcome::ProviderEnableCheckFailed,
+        }
+    }
     let attempt_target =
         AttemptTarget::after_validation(internal_reentry_intent_matched, &target_validation);
     let db = ctx.state.db.clone();
@@ -720,7 +776,10 @@ fn should_sync_final_wire_model(
     managed_model_route: bool,
     configured_model_route: bool,
 ) -> bool {
-    managed_model_route || configured_model_route || cli_key == "codex"
+    managed_model_route
+        || configured_model_route
+        || cli_key == "codex"
+        || crate::gateway::proxy::protocol::is_native_client(cli_key)
 }
 
 fn validate_managed_wire_model(

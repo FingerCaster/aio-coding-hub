@@ -267,6 +267,7 @@ mod tests {
         providers::upsert(
             db,
             providers::ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: cli_key.to_string(),
                 name: name.to_string(),

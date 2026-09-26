@@ -186,6 +186,23 @@ pub(crate) fn resolve_transport_base_url(
         }
 
         #[cfg(test)]
+        if let Ok(base_url) = std::env::var("AIO_CODING_HUB_TEST_SOURCE_OAUTH_BASE_URL") {
+            let parsed = reqwest::Url::parse(base_url.trim())
+                .map_err(|e| format!("invalid test OAuth endpoint: {e}"))?;
+            let local = parsed.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host
+                        .trim_matches(['[', ']'])
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+            if !local || parsed.scheme() != "http" {
+                return Err("test OAuth endpoint must use loopback HTTP".into());
+            }
+            return Ok(base_url.trim().to_string());
+        }
+
+        #[cfg(test)]
         if adapter.provider_type() == "codex_oauth" {
             if let Ok(base_url) = std::env::var("AIO_CODING_HUB_TEST_CODEX_OAUTH_BASE_URL") {
                 let base_url = base_url.trim();

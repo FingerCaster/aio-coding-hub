@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) state: GatewayAppState<R>,
     pub(super) cli_key: String,
+    pub(super) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
+    pub(super) channel: Option<crate::domain::native_channels::ChannelIdentity>,
     pub(super) forwarded_path: String,
     pub(super) observe_request: bool,
     pub(super) req_method: Method,
@@ -82,6 +84,12 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
 }
 
 impl<R: tauri::Runtime> RequestContext<R> {
+    pub(super) fn source_cli_key(&self) -> &str {
+        self.channel
+            .as_ref()
+            .map(|route| route.source_channel.as_str())
+            .unwrap_or(&self.cli_key)
+    }
     // abort_guard 由调用方在任何 await 之前构造并武装（见 handler/mod.rs
     // post-chain 注释）：登记到活跃注册表的请求必须已有武装的 guard 兜底，
     // 否则 handler future 在中间的 await 点被取消时注册表条目会永久泄漏。
@@ -92,6 +100,8 @@ impl<R: tauri::Runtime> RequestContext<R> {
         let RequestContextParts {
             state,
             cli_key,
+            wire_protocol,
+            channel,
             forwarded_path,
             observe_request,
             req_method,
@@ -173,6 +183,8 @@ impl<R: tauri::Runtime> RequestContext<R> {
         Self {
             state,
             cli_key,
+            wire_protocol,
+            channel,
             forwarded_path,
             observe_request,
             req_method,
@@ -316,6 +328,8 @@ pub(super) fn effective_first_byte_timeout_secs(
 pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) state: GatewayAppState<R>,
     pub(super) cli_key: String,
+    pub(super) wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
+    pub(super) channel: Option<crate::domain::native_channels::ChannelIdentity>,
     pub(super) forwarded_path: String,
     pub(super) observe_request: bool,
     pub(super) req_method: Method,

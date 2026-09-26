@@ -96,7 +96,7 @@ const CLI_PROXY_ORDER: readonly CliKey[] = ["claude", "codex", "grok", "gemini"]
 const CLI_PROXY_ITEMS = [...clisWith("cliProxy")].sort(
   (left, right) => CLI_PROXY_ORDER.indexOf(left.key) - CLI_PROXY_ORDER.indexOf(right.key)
 );
-const CLI_PROXY_LOGOS: Record<CliKey, string> = {
+const CLI_PROXY_LOGOS: Partial<Record<CliKey, string>> = {
   claude: claudeFavicon,
   codex: codexLogo,
   grok: grokLogo,

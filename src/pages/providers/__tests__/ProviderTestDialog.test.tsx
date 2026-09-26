@@ -32,6 +32,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     oauth_last_error: null,
     source_provider_id: null,
     bridge_type: null,
+    gateway_protocol: null,
     provider_uuid: "33333333-3333-4333-8333-333333333333",
     availability_test_model: "deepseek-v4-flash",
     upstream_retry_policy_override: null,

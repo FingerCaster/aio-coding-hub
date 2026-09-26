@@ -382,7 +382,8 @@ where
         idle_timeout: Option<Duration>,
         initial_first_byte_ms: Option<u128>,
     ) -> Self {
-        let tracker = usage::SseUsageTracker::new(&ctx.cli_key);
+        let tracker =
+            crate::gateway::proxy::protocol::usage_tracker(&ctx.cli_key, ctx.wire_protocol);
         let tracker = if ctx.detect_stream_internal_errors {
             tracker.with_stream_internal_error_classifier(
                 ctx.upstream_retry_policy.stream_internal_errors.enabled,
@@ -437,9 +438,10 @@ where
     /// whenever nothing should change — no rules configured, no rule matched, or no known frame
     /// shape for this protocol — in which case the caller keeps its current behavior byte for byte.
     fn build_synthetic_tail(&mut self, error_code: GatewayErrorCode) -> Option<Bytes> {
-        if self.ctx.upstream_error_response_rules.is_empty() {
-            return None;
-        }
+        let native_protocol = self
+            .ctx
+            .wire_protocol
+            .filter(|_| crate::gateway::proxy::protocol::is_native_client(&self.ctx.cli_key));
 
         let rewrite = upstream_error_response_rules::match_synthetic_failure_rule(
             &self.ctx.upstream_error_response_rules,
@@ -450,9 +452,20 @@ where
             // Post-commit headers are already on the wire, so no upstream header can be
             // honored here; an empty map keeps `Retry-After` extraction from inventing one.
             &HeaderMap::new(),
-        )?;
-        let payload = rewrite.client_error_payload(&self.ctx.cli_key)?;
-        let frame = synthetic_tail_frame(&self.ctx.cli_key, &self.ctx.path, &payload)?;
+        );
+        let Some(rewrite) = rewrite else {
+            return native_protocol.map(|protocol| {
+                crate::gateway::proxy::protocol::error_frame(protocol, 502, error_code.as_str())
+            });
+        };
+        let payload =
+            rewrite.client_error_payload_for_protocol(&self.ctx.cli_key, native_protocol)?;
+        let frame = match native_protocol {
+            Some(protocol) => {
+                crate::gateway::proxy::protocol::error_payload_frame(protocol, payload)
+            }
+            None => synthetic_tail_frame(&self.ctx.cli_key, &self.ctx.path, &payload)?,
+        };
 
         response_fixer::push_special_setting(
             &self.ctx.special_settings,
@@ -524,8 +537,19 @@ where
                 // error, skip finalization here — the relay task will decide the
                 // final error_code with Codex-specific tolerance logic.
                 if finalize_terminal && !self.defer_terminal_error {
+                    self.tracker.finalize();
+                    let native_incomplete =
+                        crate::gateway::proxy::protocol::is_native_client(&self.ctx.cli_key)
+                            && !self.tracker.completion_seen();
+                    let tail = native_incomplete
+                        .then(|| self.build_synthetic_tail(GatewayErrorCode::StreamError))
+                        .flatten();
                     self.finalize(
-                        self.ctx.error_code,
+                        if native_incomplete {
+                            Some(GatewayErrorCode::StreamError.as_str())
+                        } else {
+                            self.ctx.error_code
+                        },
                         StreamTerminalEvidence::new(
                             StreamTerminalOrigin::NormalEof,
                             self.tracker.completion_seen(),
@@ -534,6 +558,10 @@ where
                             self.tracker.terminal_error_seen(),
                         ),
                     );
+                    if let Some(tail) = tail {
+                        self.stop_after_tail = true;
+                        return Poll::Ready(Some(Ok(B::from(tail))));
+                    }
                 }
                 Poll::Ready(None)
             }
@@ -597,7 +625,9 @@ where
                                 true,
                             ),
                         );
-                        if is_plugin_stream_error_chunk(chunk.as_ref()) {
+                        if is_plugin_stream_error_chunk(chunk.as_ref())
+                            || crate::gateway::proxy::protocol::is_native_client(&self.ctx.cli_key)
+                        {
                             self.stop_after_terminal_error = true;
                             return Poll::Ready(Some(Ok(chunk)));
                         }
@@ -1469,7 +1499,11 @@ where
         let usage = if self.truncated || self.buffer.is_empty() {
             None
         } else {
-            usage::parse_usage_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
+            crate::gateway::proxy::protocol::parse_usage(
+                &self.ctx.cli_key,
+                self.ctx.wire_protocol,
+                &self.buffer,
+            )
         };
         terminal_evidence.usage_seen |= usage.is_some();
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
@@ -1625,8 +1659,12 @@ where
         if !self.finalized {
             let usage_seen = !self.truncated
                 && !self.buffer.is_empty()
-                && usage::parse_usage_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
-                    .is_some();
+                && crate::gateway::proxy::protocol::parse_usage(
+                    &self.ctx.cli_key,
+                    self.ctx.wire_protocol,
+                    &self.buffer,
+                )
+                .is_some();
 
             let codex_successish = is_codex_body_buffer_drop_successish(
                 &self.ctx.cli_key,
@@ -1710,6 +1748,7 @@ mod tests {
             is_compact_request: false,
             trace_id: "trace-usage-tee-drain".to_string(),
             cli_key: "codex".to_string(),
+            wire_protocol: None,
             method: "POST".to_string(),
             path: "/v1/responses".to_string(),
             observe: true,

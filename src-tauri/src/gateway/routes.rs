@@ -121,6 +121,7 @@ where
 #[cfg(test)]
 #[allow(clippy::await_holding_lock, clippy::field_reassign_with_default)]
 mod tests {
+    include!("native_protocol_route_tests.rs");
     use super::build_router;
     use crate::app::plugins::official;
     use crate::domain::plugin_contributions::PluginContributes;
@@ -1052,6 +1053,7 @@ mod tests {
         let provider_id = providers::upsert(
             db,
             providers::ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: cli_key.to_string(),
                 name: name.to_string(),
@@ -1162,6 +1164,7 @@ mod tests {
         let provider_id = providers::upsert_with_provider_uuid(
             db,
             providers::ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: "codex".to_string(),
                 name: name.to_string(),
@@ -1324,6 +1327,7 @@ INSERT INTO codex_managed_profiles(
         let provider_id = providers::upsert(
             db,
             providers::ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: "codex".to_string(),
                 name: name.to_string(),
@@ -1382,6 +1386,7 @@ INSERT INTO codex_managed_profiles(
         let provider_id = providers::upsert(
             db,
             providers::ProviderUpsertParams {
+                gateway_protocol: None,
                 provider_id: None,
                 cli_key: "claude".to_string(),
                 name: "CX2CC Bridge Stub".to_string(),

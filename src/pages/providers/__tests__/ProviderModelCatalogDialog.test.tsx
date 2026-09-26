@@ -75,6 +75,7 @@ function deferred<T>() {
 function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: 7,
+    gateway_protocol: null,
     provider_uuid: partial.provider_uuid ?? PROVIDER_UUID,
     cli_key: "codex",
     name: "Grok Provider",

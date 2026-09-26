@@ -1,3 +1,5 @@
+import type { GatewayProtocol } from "../../generated/bindings";
+import { isNativeCliKey } from "../../constants/clis";
 import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -344,6 +346,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const [upstreamRetryPolicyDraft, setUpstreamRetryPolicyDraft] = useState<UpstreamRetryPolicy>(
     DEFAULT_UPSTREAM_RETRY_POLICY
   );
+  const [gatewayProtocol, setGatewayProtocol] = useState<GatewayProtocol | null>(null);
   const [modelRoutingMode, setModelRoutingMode] = useState<ProviderModelRoutingMode>("inherit");
   const [modelRoutingPolicyDraft, setModelRoutingPolicyDraft] = useState<ModelRoutingPolicy>(
     DEFAULT_MODEL_ROUTING_POLICY
@@ -382,8 +385,12 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const providerUpsertMutation = useProviderUpsertMutation();
   const providerDeleteMutation = useProviderDeleteMutation();
   const providerModelsRefreshMutation = useProviderModelsRefreshMutation();
-  const { contributions: providerEditorContributions } = useContributionsForSlot(
+  const { contributions: availableProviderEditorContributions } = useContributionsForSlot(
     "providers.editor.sections"
+  );
+  const providerEditorContributions = useMemo(
+    () => (isNativeCliKey(cliKey) ? [] : availableProviderEditorContributions),
+    [cliKey, availableProviderEditorContributions]
   );
   const claudeMetaEnabled = open && cliKey === "claude";
   const settingsQuery = useSettingsQuery({ enabled: claudeMetaEnabled });
@@ -940,6 +947,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setStreamIdleTimeoutSeconds,
     setUpstreamRetryPolicyOverrideEnabled,
     setUpstreamRetryPolicyDraft,
+    setGatewayProtocol,
     setModelRoutingMode,
     setModelRoutingPolicyDraft,
     setAuthMode,
@@ -994,6 +1002,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
       upstreamRetryPolicyDraft,
+      gatewayProtocol,
       modelRoutingMode,
       modelRoutingPolicyDraft,
       apiKeyConfigured,
@@ -1043,6 +1052,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
       upstreamRetryPolicyDraft,
+      gatewayProtocol,
       modelRoutingMode,
       modelRoutingPolicyDraft,
       apiKeyConfigured,
@@ -1298,7 +1308,9 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setUpstreamRetryPolicyOverrideEnabled,
     upstreamRetryPolicyDraft,
     setUpstreamRetryPolicyDraft,
+    gatewayProtocol,
     modelRoutingMode,
+    setGatewayProtocol,
     setModelRoutingMode,
     modelRoutingPolicyDraft,
     setModelRoutingPolicyDraft,

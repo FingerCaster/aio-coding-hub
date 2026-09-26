@@ -33,6 +33,7 @@ docs/*
 !docs/plugin-system-rfc.md
 !docs/plugin-manifest-v1.md
 !docs/release-homebrew.md
+!docs/pi-omp.md
 !docs/plugins/
 !docs/plugins/**
 docs/superpowers/

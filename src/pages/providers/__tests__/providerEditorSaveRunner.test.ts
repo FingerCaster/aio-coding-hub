@@ -12,6 +12,7 @@ vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
 function makeSavedProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: partial.id ?? 1,
+    gateway_protocol: null,
     provider_uuid: partial.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: partial.cli_key ?? "claude",
     name: partial.name ?? "Saved Provider",

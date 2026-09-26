@@ -150,6 +150,27 @@ fn request_log_insert_from_args(
     // Raw usage belongs to the final client-visible attempt, while the token
     // columns may intentionally contain a cumulative internal aggregate.
     let usage_json = usage.as_ref().map(|extract| extract.usage_json.clone());
+    let special_settings_json = if super::protocol::is_native_client(&cli_key) {
+        special_settings_json.map(|original| {
+            let Ok(mut markers) = serde_json::from_str::<Vec<Value>>(&original) else {
+                return original;
+            };
+            let wire_input = usage_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|raw| raw.get("input_tokens").cloned())
+                .unwrap_or(Value::Null);
+            for marker in &mut markers {
+                if marker.get("type").and_then(Value::as_str) == Some("gateway_protocol") {
+                    marker["input_semantics"] = Value::String("exclusive".into());
+                    marker["wire_input_tokens"] = wire_input.clone();
+                }
+            }
+            serde_json::to_string(&markers).unwrap_or(original)
+        })
+    } else {
+        special_settings_json
+    };
     let metrics = usage_metrics
         .or_else(|| usage.map(|extract| extract.metrics))
         .unwrap_or_default();

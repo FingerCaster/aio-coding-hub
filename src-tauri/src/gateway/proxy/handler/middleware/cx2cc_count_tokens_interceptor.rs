@@ -94,6 +94,7 @@ mod tests {
 
     fn provider(id: i64) -> providers::ProviderForGateway {
         providers::ProviderForGateway {
+            gateway_protocol: None,
             id,
             provider_uuid: format!("00000000-0000-4000-8000-{id:012}"),
             account_usage_route_target: None,
@@ -122,6 +123,7 @@ mod tests {
 
     fn cx2cc_provider(id: i64) -> providers::ProviderForGateway {
         providers::ProviderForGateway {
+            gateway_protocol: None,
             source_provider_id: Some(99),
             bridge_type: Some("cx2cc".to_string()),
             ..provider(id)

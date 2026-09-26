@@ -598,7 +598,11 @@ const ProviderCard = memo(function ProviderCard({
                   variant="secondary"
                   size="sm"
                   className="gap-1.5 px-2 py-1 text-[11px]"
-                  title="管理模型目录和 Codex Profile"
+                  title={
+                    provider.cli_key === "pi" || provider.cli_key === "omp"
+                      ? "管理明确的网关模型能力声明"
+                      : "管理模型目录和 Codex Profile"
+                  }
                 >
                   <Library className="h-3.5 w-3.5" aria-hidden="true" />
                   模型

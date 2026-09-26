@@ -1,0 +1,6 @@
+{
+  "version": "18.3.2",
+  "isolation": "temporary HOME/agent/cwd, inherited environment cleared",
+  "checkedFields": 25,
+  "mismatches": []
+}

@@ -59,6 +59,7 @@ vi.mock("@dnd-kit/utilities", () => ({
 function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: 1,
+    gateway_protocol: null,
     provider_uuid: partial.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: "claude",
     name: "Test Provider",

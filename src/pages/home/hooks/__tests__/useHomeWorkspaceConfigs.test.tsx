@@ -75,7 +75,11 @@ beforeEach(() => {
   setQueryState();
 
   vi.mocked(useWorkspacesListQuery).mockImplementation(((cliKey: CliKey) =>
-    asMockedQueryResult(queryState.workspaces[cliKey])) as typeof useWorkspacesListQuery);
+    asMockedQueryResult(
+      cliKey === "pi" || cliKey === "omp"
+        ? { data: null, isLoading: false }
+        : queryState.workspaces[cliKey]
+    )) as typeof useWorkspacesListQuery);
   vi.mocked(usePromptsListSummaryQuery).mockImplementation(((workspaceId: number | null) =>
     asMockedQueryResult(
       queryState.prompts.get(workspaceId) ?? { data: null, isLoading: false }

@@ -396,6 +396,21 @@ fn validate_provider_context_windows(provider: &ProviderExport) -> AppResult<()>
 
 // --- Public entry points ---
 
+fn ensure_portable_gateway_state_supported(conn: &rusqlite::Connection) -> AppResult<()> {
+    let unsupported: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM providers WHERE cli_key IN ('pi','omp')) OR EXISTS(SELECT 1 FROM native_gateway_manifests) OR EXISTS(SELECT 1 FROM native_channel_bindings) OR EXISTS(SELECT 1 FROM native_channel_model_specs)",
+        [],
+        |row| row.get(0),
+    ).map_err(|error| db_err!("failed to inspect native gateway bundle compatibility: {error}"))?;
+    if unsupported {
+        return Err(crate::shared::error::AppError::new(
+            "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED",
+            "Portable bundles cannot yet preserve Pi/OMP gateway protocols, model capabilities and entry ownership; withdraw generated entries and remove Pi/OMP upstreams before using complete configuration migration",
+        ));
+    }
+    Ok(())
+}
+
 pub fn config_export<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     db: &db::Db,
@@ -415,11 +430,14 @@ pub fn config_export<R: tauri::Runtime>(
         // and the retired compatibility key so a portable bundle owns neither.
         portable_settings.remove("codex_model_context_rules");
         portable_settings.remove("codex_gpt56_372k_context_enabled");
+        // Native file destinations and their archives/manifests are device-local.
+        portable_settings.remove("pi_omp_native_targets");
     }
     let settings_string = serde_json::to_string(&portable_settings)
         .map_err(|e| format!("SYSTEM_ERROR: failed to serialize settings: {e}"))?;
 
     let conn = db.open_connection()?;
+    ensure_portable_gateway_state_supported(&conn)?;
     let provider_cli_key_by_id = export::load_provider_cli_key_by_id(&conn)?;
     let mut skill_export_budget = skill_fs::SkillExportBudget::default();
 
@@ -512,6 +530,16 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         image_gen_configs,
     } = bundle;
 
+    if providers
+        .iter()
+        .any(|provider| matches!(provider.cli_key.as_str(), "pi" | "omp"))
+    {
+        return Err(crate::shared::error::AppError::new(
+            "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED",
+            "This bundle format cannot preserve Pi/OMP protocol and model declarations",
+        ));
+    }
+
     if providers.iter().any(|provider| {
         provider
             .bridge_type
@@ -574,6 +602,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         // an import rejection surface.
         object.remove("codex_model_context_rules");
         object.remove("codex_gpt56_372k_context_enabled");
+        object.remove("pi_omp_native_targets");
     }
     let schema_version_present = raw_settings.get("schema_version").is_some();
     let mut settings_to_write: settings::AppSettings = serde_json::from_value(raw_settings)
@@ -700,6 +729,11 @@ pub fn config_import<R: tauri::Runtime>(
     #[cfg(test)]
     run_after_config_import_lock_acquired_test_hook();
 
+    {
+        let conn = db.open_connection()?;
+        ensure_portable_gateway_state_supported(&conn)?;
+    }
+
     let PreparedConfigImport {
         bundle_schema_version,
         imports_full_skill_payload,
@@ -720,6 +754,7 @@ pub fn config_import<R: tauri::Runtime>(
     let previous_settings = settings::read(app)?;
     settings_to_write.codex_model_context_rules =
         previous_settings.codex_model_context_rules.clone();
+    settings_to_write.pi_omp_native_targets = previous_settings.pi_omp_native_targets.clone();
     let codex_home_changed =
         crate::codex_paths::codex_home_dir_for_settings(app, &previous_settings)?
             != crate::codex_paths::codex_home_dir_for_settings(app, &settings_to_write)?;
@@ -759,6 +794,9 @@ pub fn config_import<R: tauri::Runtime>(
     let tx = conn
         .transaction()
         .map_err(|e| db_err!("failed to start transaction: {e}"))?;
+    // Recheck inside the write transaction: a concurrent native provider/entry
+    // must not disappear through an unsupported whole-configuration import.
+    ensure_portable_gateway_state_supported(&tx)?;
 
     let legacy_skill_state = if imports_full_skill_payload {
         None

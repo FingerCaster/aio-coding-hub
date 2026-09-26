@@ -229,6 +229,8 @@ curl http://127.0.0.1:37123/health
 # {"status":"ok"}
 ```
 
+Pi / OMP 使用独立 AIO 供应商入口，与原生供应商并存，入口发布后需在 CLI 中选择 AIO 模型。配置步骤、四协议支持和兼容边界见 [Pi / OMP 接入指南](docs/pi-omp.md)。
+
 ### 插件开发文档
 
 插件系统面向社区扩展，社区插件统一使用 Extension Host。开发入口：

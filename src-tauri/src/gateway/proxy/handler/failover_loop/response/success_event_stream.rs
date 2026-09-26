@@ -390,6 +390,7 @@ impl BufferedStreamPrefixState {
 
 struct BufferedStreamPrefixConfig<'a> {
     cli_key: &'a str,
+    wire_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     path: &'a str,
     status: u16,
     active_bridge_type: Option<&'a str>,
@@ -403,6 +404,9 @@ fn inspect_buffered_event_stream_prefix(
     state: &mut BufferedStreamPrefixState,
     raw: &[u8],
 ) -> BufferedStreamPrefixDecision {
+    let native_protocol = config
+        .wire_protocol
+        .filter(|_| crate::gateway::proxy::protocol::is_native_client(config.cli_key));
     let inspect_empty_success = is_native_codex_responses_event_stream_path(
         config.cli_key,
         config.path,
@@ -437,9 +441,31 @@ fn inspect_buffered_event_stream_prefix(
         state.cursor = event_end;
 
         let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(frame) else {
+            if native_protocol
+                == Some(crate::shared::gateway_protocol::GatewayProtocol::OpenaiCompletions)
+                && frame.lines().any(|line| {
+                    line.strip_prefix("data:")
+                        .is_some_and(|data| data.trim() == "[DONE]")
+                })
+            {
+                state.completion_seen = true;
+            }
             continue;
         };
-        if inspect_empty_success {
+        if let Some(protocol) = native_protocol {
+            if usage::protocol_sse_error(protocol, &event_name, &data) {
+                return BufferedStreamPrefixDecision::ProviderFailure {
+                    error_code: GatewayErrorCode::Fake200.as_str(),
+                    evidence: None,
+                };
+            }
+            if usage::protocol_sse_meaningful_output(protocol, &data) {
+                state
+                    .meaningful_output_started_at
+                    .get_or_insert_with(Instant::now);
+            }
+            state.completion_seen |= usage::protocol_sse_completion(protocol, &event_name, &data);
+        } else if inspect_empty_success {
             if let Some(evidence) = usage::classify_codex_stream_internal_error(
                 &event_name,
                 &data,
@@ -480,6 +506,16 @@ fn inspect_buffered_event_stream_prefix(
         }
 
         saw_non_error_frame = true;
+    }
+
+    if native_protocol.is_some() {
+        return if state.meaningful_output_started_at.is_some() || state.completion_seen {
+            BufferedStreamPrefixDecision::StartStreaming {
+                guard_cap_reached: false,
+            }
+        } else {
+            BufferedStreamPrefixDecision::NeedMore
+        };
     }
 
     if inspect_empty_success && state.completion_seen {
@@ -1302,9 +1338,11 @@ where
     );
     let upstream = gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
     let provider_usage_cli_key = protocol_bridge::provider_usage_cli_key(active_bridge_type);
-    let upstream_usage_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new(
-        provider_usage_cli_key.unwrap_or(common.cli_key.as_str()),
-    )));
+    let upstream_usage_tracker =
+        Arc::new(Mutex::new(crate::gateway::proxy::protocol::usage_tracker(
+            provider_usage_cli_key.unwrap_or(common.cli_key.as_str()),
+            common.wire_protocol,
+        )));
     let upstream: DecodedEventStream = if provider_usage_cli_key.is_some() {
         Box::pin(UpstreamModelObserverStream::new(
             upstream,
@@ -1411,8 +1449,11 @@ where
         }
     };
 
-    let client_usage =
-        usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &final_bytes);
+    let client_usage = crate::gateway::proxy::protocol::parse_usage(
+        common.cli_key.as_str(),
+        common.wire_protocol,
+        &final_bytes,
+    );
     let provider_usage = finalize_provider_usage(provider_usage_cli_key, &upstream_usage_tracker);
     observe_infinite_attempt_usage(
         ctx,
@@ -1933,6 +1974,7 @@ where
             let mut prefix_state = BufferedStreamPrefixState::default();
             let prefix_config = BufferedStreamPrefixConfig {
                 cli_key: common.cli_key.as_str(),
+                wire_protocol: common.wire_protocol,
                 path: common.forwarded_path.as_str(),
                 status: status.as_u16(),
                 active_bridge_type,
@@ -2169,6 +2211,27 @@ where
                 };
 
                 let Some(chunk) = next_chunk else {
+                    if crate::gateway::proxy::protocol::is_native_client(&common.cli_key) {
+                        return record_buffered_provider_failure(
+                            ctx,
+                            provider_ctx,
+                            attempt_ctx,
+                            LoopState {
+                                attempts,
+                                failed_provider_ids,
+                                last_outcome,
+                                active_requested_model,
+                                circuit_snapshot,
+                                abort_guard,
+                            },
+                            status,
+                            &buffered_prefix,
+                            GatewayErrorCode::StreamError.as_str(),
+                            None,
+                            retry_state,
+                        )
+                        .await;
+                    }
                     first_chunk =
                         (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
                     break;
@@ -2585,6 +2648,7 @@ mod tests {
     ) -> BufferedStreamPrefixConfig<'_> {
         BufferedStreamPrefixConfig {
             cli_key: "codex",
+            wire_protocol: Some(crate::shared::gateway_protocol::GatewayProtocol::OpenaiResponses),
             path: "/v1/responses",
             status: 200,
             active_bridge_type: None,

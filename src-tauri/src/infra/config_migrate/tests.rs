@@ -431,6 +431,11 @@ fn config_export_serializes_stable_channel_and_omits_local_context_rules() {
     let mut beta = settings::read(&app).expect("settings");
     beta.update_channel = settings::UpdateChannel::Beta;
     beta.codex_model_context_rules = vec![codex_model_context_rule("gpt-5.6-sol", true)];
+    beta.pi_omp_native_targets = vec![
+        crate::domain::native_cli::NativeTargetSelection::default_for(
+            crate::domain::native_cli::NativeClient::Pi,
+        ),
+    ];
     settings::write(&app, &beta).expect("seed beta settings");
 
     let bundle = config_export(&app, &test_app.db).expect("config export");
@@ -441,6 +446,8 @@ fn config_export_serializes_stable_channel_and_omits_local_context_rules() {
     assert_eq!(exported.update_channel, settings::UpdateChannel::Stable);
     assert!(exported.codex_model_context_rules.is_empty());
     assert!(exported_json.get("codex_model_context_rules").is_none());
+    assert!(exported_json.get("pi_omp_native_targets").is_none());
+    assert!(exported.pi_omp_native_targets.is_empty());
     assert!(exported_json
         .get("codex_gpt56_372k_context_enabled")
         .is_none());
@@ -500,6 +507,11 @@ fn config_import_does_not_own_codex_model_context_rules() {
     let mut previous = settings::read(&app).expect("previous settings");
     previous.codex_model_context_rules =
         vec![codex_model_context_rule("device-local-model", false)];
+    previous.pi_omp_native_targets = vec![
+        crate::domain::native_cli::NativeTargetSelection::default_for(
+            crate::domain::native_cli::NativeClient::Omp,
+        ),
+    ];
     settings::write(&app, &previous).expect("seed local context rules");
 
     let imported_log_retention_days = previous.log_retention_days.saturating_add(1);
@@ -508,6 +520,7 @@ fn config_import_does_not_own_codex_model_context_rules() {
         "not": "a rule collection"
     });
     imported["codex_gpt56_372k_context_enabled"] = serde_json::json!([true]);
+    imported["pi_omp_native_targets"] = serde_json::json!({"untrusted": "device-path"});
     imported["log_retention_days"] = serde_json::json!(imported_log_retention_days);
     let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
     bundle.settings = serde_json::to_string(&imported).expect("import settings");
@@ -520,6 +533,49 @@ fn config_import_does_not_own_codex_model_context_rules() {
         previous.codex_model_context_rules
     );
     assert_eq!(canonical.log_retention_days, imported_log_retention_days);
+    assert_eq!(
+        canonical.pi_omp_native_targets,
+        previous.pi_omp_native_targets
+    );
+}
+
+#[test]
+fn portable_bundle_rejects_native_gateway_semantics_before_replacement() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let provider = seed_direct_codex_provider(&test_app, "native-bundle-boundary");
+    let mut bundle = config_export(&app, &test_app.db).expect("legacy export");
+    bundle.providers[0].cli_key = "pi".into();
+    let error = prepare_config_import(bundle)
+        .err()
+        .expect("native bundle rejected");
+    assert_eq!(error.code(), "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED");
+
+    let conn = test_app.db.open_connection().unwrap();
+    conn.execute(
+        "UPDATE providers SET cli_key='pi',gateway_protocol='openai-responses' WHERE id=?1",
+        [provider.id],
+    )
+    .unwrap();
+    let error = config_export(&app, &test_app.db)
+        .err()
+        .expect("native export rejected");
+    assert_eq!(error.code(), "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED");
+    let error = config_import(
+        &app,
+        &test_app.db,
+        make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION),
+    )
+    .expect_err("native state cannot be replaced by an incomplete portable format");
+    assert_eq!(error.code(), "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED");
+    let retained: String = conn
+        .query_row(
+            "SELECT cli_key FROM providers WHERE id=?1",
+            [provider.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, "pi");
 }
 
 #[test]
@@ -1074,6 +1130,7 @@ fn seed_direct_codex_provider(
     crate::providers::upsert(
         &test_app.db,
         crate::providers::ProviderUpsertParams {
+            gateway_protocol: None,
             provider_id: None,
             cli_key: "codex".to_string(),
             name: name.to_string(),
@@ -1117,6 +1174,7 @@ fn seed_standalone_cx2cc_provider(
     crate::providers::upsert(
         &test_app.db,
         crate::providers::ProviderUpsertParams {
+            gateway_protocol: None,
             provider_id: None,
             cli_key: "claude".to_string(),
             name: name.to_string(),
@@ -1279,6 +1337,7 @@ fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
     let provider = crate::providers::upsert(
         &test_app.db,
         crate::providers::ProviderUpsertParams {
+            gateway_protocol: None,
             provider_id: None,
             cli_key: "codex".to_string(),
             name: "account-backup".to_string(),
@@ -4916,4 +4975,56 @@ fn export_skill_dir_files_rejects_special_file() {
     assert!(err
         .to_string()
         .contains("SKILL_EXPORT_BLOCKED_SPECIAL_FILE"));
+}
+
+#[test]
+fn portable_bundle_preserves_native_channel_bindings_and_declarations_before_replacement() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let provider = seed_direct_codex_provider(&test_app, "channel-bundle-boundary");
+    let conn = test_app.db.open_connection().unwrap();
+    conn.execute("INSERT INTO native_channel_bindings VALUES ('channel','target','pi','codex','openai-responses','owned','{}',1)",[]).unwrap();
+    assert_eq!(
+        config_export(&app, &test_app.db).err().unwrap().code(),
+        "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED"
+    );
+    assert_eq!(
+        config_import(
+            &app,
+            &test_app.db,
+            make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION)
+        )
+        .err()
+        .unwrap()
+        .code(),
+        "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED"
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM native_channel_bindings", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    conn.execute("DELETE FROM native_channel_bindings", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO native_channel_model_specs VALUES (?1,'pi','openai-responses','model','{}')",
+        [provider.id],
+    )
+    .unwrap();
+    assert_eq!(
+        config_export(&app, &test_app.db).err().unwrap().code(),
+        "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED"
+    );
+    assert_eq!(
+        config_import(
+            &app,
+            &test_app.db,
+            make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION)
+        )
+        .err()
+        .unwrap()
+        .code(),
+        "NATIVE_GATEWAY_BUNDLE_UNSUPPORTED"
+    );
 }

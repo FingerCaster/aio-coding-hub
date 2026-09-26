@@ -8,6 +8,7 @@ use tauri::Manager;
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderUpsertInput {
+    pub gateway_protocol: Option<crate::shared::gateway_protocol::GatewayProtocol>,
     pub provider_id: Option<i64>,
     pub cli_key: String,
     pub name: String,
@@ -112,6 +113,7 @@ fn provider_runtime_reset_decision(
     };
 
     let sensitive_config_changed = previous.base_urls != next.base_urls
+        || previous.gateway_protocol != next.gateway_protocol
         || previous.base_url_mode != next.base_url_mode
         || previous.enabled != next.enabled
         || previous.auth_mode != next.auth_mode
@@ -384,6 +386,7 @@ pub(crate) async fn provider_upsert(
                         .is_some_and(|value| !value.trim().is_empty())
             });
     let ProviderUpsertInput {
+        gateway_protocol,
         provider_id,
         cli_key,
         name,
@@ -437,6 +440,7 @@ pub(crate) async fn provider_upsert(
             &db,
             providers::ProviderUpsertParams {
                 provider_id,
+                gateway_protocol,
                 cli_key,
                 name,
                 base_urls,
@@ -702,6 +706,7 @@ pub(crate) async fn provider_duplicate(
             &db,
             providers::ProviderUpsertParams {
                 provider_id: None,
+                gateway_protocol: source.gateway_protocol,
                 cli_key: source.cli_key.clone(),
                 name: build_duplicated_provider_name(&source.name, &siblings),
                 base_urls: source.base_urls.clone(),
@@ -1016,6 +1021,7 @@ mod tests {
     #[test]
     fn provider_runtime_reset_decision_handles_create_and_non_sensitive_edits() {
         let next = providers::ProviderSummary {
+            gateway_protocol: None,
             id: 1,
             provider_uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             cli_key: "claude".to_string(),
@@ -1167,6 +1173,7 @@ mod tests {
     #[test]
     fn provider_runtime_reset_decision_detects_sensitive_claude_changes() {
         let previous = providers::ProviderSummary {
+            gateway_protocol: None,
             id: 1,
             provider_uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             cli_key: "claude".to_string(),

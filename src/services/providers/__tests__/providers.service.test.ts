@@ -77,6 +77,7 @@ vi.mock("../../consoleLog", async () => {
 function createProviderSummary(overrides: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: 1,
+    gateway_protocol: null,
     provider_uuid: overrides.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: "claude",
     name: "P1",

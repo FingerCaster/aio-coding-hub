@@ -320,6 +320,7 @@ mod tests {
             is_compact_request: false,
             trace_id: "trace-stream-finalize".to_string(),
             cli_key: "codex".to_string(),
+            wire_protocol: None,
             method: "POST".to_string(),
             path: "/v1/responses".to_string(),
             observe: true,

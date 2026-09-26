@@ -68,7 +68,15 @@ import { formatActionFailureToast } from "../../utils/errors";
 import { useGrokTabDataModel } from "../../components/cli-manager/tabs/useGrokTabDataModel";
 import type { CodexModelContextRulesSaveResult } from "../../components/cli-manager/tabs/CodexModelContextRulesSection";
 
-export type CliManagerTabKey = "general" | "claude" | "codex" | "cx2cc" | "gemini" | "grok";
+export type CliManagerTabKey =
+  | "general"
+  | "claude"
+  | "codex"
+  | "cx2cc"
+  | "gemini"
+  | "grok"
+  | "pi"
+  | "omp";
 
 export const CLI_MANAGER_TABS: Array<{ key: CliManagerTabKey; label: string }> = [
   { key: "general", label: "通用" },
@@ -76,6 +84,8 @@ export const CLI_MANAGER_TABS: Array<{ key: CliManagerTabKey; label: string }> =
   { key: "codex", label: "Codex" },
   { key: "gemini", label: "Gemini" },
   { key: "grok", label: "Grok" },
+  { key: "pi", label: "Pi" },
+  { key: "omp", label: "OMP" },
   { key: "cx2cc", label: "CX2CC" },
 ];
 

@@ -32,15 +32,27 @@ pub(super) fn inject_auth<R: tauri::Runtime>(
 ) -> Result<(), Box<FailoverAttempt>> {
     // Always clear all auth headers (fail-closed).
     clear_all_auth_headers(headers);
+    if crate::gateway::proxy::protocol::is_native_client(&input.cli_key)
+        && prepared.oauth_adapter.is_none()
+    {
+        if let Some(protocol) = input.wire_protocol {
+            crate::gateway::proxy::protocol::inject_api_key(
+                protocol,
+                &prepared.effective_credential,
+                headers,
+            );
+        }
+        return Ok(());
+    }
 
     let upstream_cli_key = if prepared.active_bridge_type.is_some() {
         prepared
             .bridge_source
             .as_ref()
             .map(|(_, source_cli_key)| source_cli_key.as_str())
-            .unwrap_or(input.cli_key.as_str())
+            .unwrap_or(input.source_cli_key())
     } else {
-        input.cli_key.as_str()
+        input.source_cli_key()
     };
     strip_incompatible_protocol_headers(input.cli_key.as_str(), upstream_cli_key, headers);
 
@@ -182,9 +194,9 @@ fn inject_standard_auth<R: tauri::Runtime>(
             .bridge_source
             .as_ref()
             .map(|(_, source_cli_key)| source_cli_key.as_str())
-            .unwrap_or(input.cli_key.as_str())
+            .unwrap_or(input.source_cli_key())
     } else {
-        input.cli_key.as_str()
+        input.source_cli_key()
     };
     inject_provider_auth(auth_cli_key, prepared.effective_credential.trim(), headers);
 

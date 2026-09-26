@@ -2302,3 +2302,40 @@ INSERT INTO providers(
         );
     }
 }
+
+#[test]
+fn native_channel_v48_upgrade_preserves_legacy_manifest_contract_and_is_idempotent() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    apply_migrations(&mut conn).unwrap();
+    conn.execute_batch("DROP TABLE native_channel_model_specs; DROP TABLE native_channel_bindings; PRAGMA user_version=47;").unwrap();
+    v47_to_v48::migrate_v47_to_v48(&mut conn).unwrap();
+    assert_eq!(read_user_version(&conn).unwrap(), 48);
+    apply_migrations(&mut conn).unwrap();
+    for table in [
+        "native_channel_bindings",
+        "native_channel_model_specs",
+        "native_gateway_manifests",
+    ] {
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+    // The legacy table remains target + protocol; channel siblings use their own table.
+    let sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='native_gateway_manifests'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!sql.contains("source_channel"));
+    conn.execute("INSERT INTO native_channel_bindings VALUES ('one','target','pi','codex','openai-responses','codex','{}',1)",[]).unwrap();
+    conn.execute("INSERT INTO native_channel_bindings VALUES ('two','target','pi','grok','openai-responses','grok','{}',1)",[]).unwrap();
+    assert!(conn.execute("INSERT INTO native_channel_bindings VALUES ('three','target','pi','codex','openai-responses','third','{}',1)",[]).is_err());
+    assert!(conn.execute("INSERT INTO native_channel_bindings VALUES ('four','target','claude','codex','openai-responses','fourth','{}',1)",[]).is_err());
+}

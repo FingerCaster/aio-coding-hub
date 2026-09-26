@@ -1,3 +1,4 @@
+import type { GatewayProtocol } from "../../generated/bindings";
 import type {
   ClaudeModels,
   ModelRoutingPolicy,
@@ -8,6 +9,7 @@ import type {
 const DUPLICATE_SUFFIX = " 副本";
 
 export type ProviderEditorInitialValues = {
+  gateway_protocol?: GatewayProtocol | null;
   name: string;
   api_key: string;
   auth_mode: "api_key" | "oauth";
@@ -68,6 +70,7 @@ export function buildDuplicatedProviderInitialValues(
   return {
     name: buildDuplicatedProviderName(provider.name, existingProviders),
     api_key: "",
+    gateway_protocol: provider.gateway_protocol ?? null,
     auth_mode: provider.auth_mode,
     base_urls: [...provider.base_urls],
     base_url_mode: provider.base_url_mode,

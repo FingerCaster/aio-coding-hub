@@ -109,7 +109,8 @@ function ModelPriceAliasesToolbar({
         <span className="text-muted-foreground">|</span>
         <span>
           模型数：Claude {modelCountsByCli.claude} · Codex {modelCountsByCli.codex} · Gemini{" "}
-          {modelCountsByCli.gemini} · Grok {modelCountsByCli.grok}
+          {modelCountsByCli.gemini} · Grok {modelCountsByCli.grok} · Pi {modelCountsByCli.pi} · OMP{" "}
+          {modelCountsByCli.omp}
         </span>
       </div>
       <div className="flex items-center gap-2">
@@ -132,34 +133,15 @@ function ModelPriceAliasesToolbar({
 function ModelPriceAliasesDatalists({ modelsByCli }: { modelsByCli: Record<CliKey, string[]> }) {
   return (
     <>
-      <datalist id={modelsDatalistId("claude")}>
-        {modelsByCli.claude.map((m) => (
-          <option key={`claude:${m}`} value={m}>
-            {m}
-          </option>
-        ))}
-      </datalist>
-      <datalist id={modelsDatalistId("codex")}>
-        {modelsByCli.codex.map((m) => (
-          <option key={`codex:${m}`} value={m}>
-            {m}
-          </option>
-        ))}
-      </datalist>
-      <datalist id={modelsDatalistId("gemini")}>
-        {modelsByCli.gemini.map((m) => (
-          <option key={`gemini:${m}`} value={m}>
-            {m}
-          </option>
-        ))}
-      </datalist>
-      <datalist id={modelsDatalistId("grok")}>
-        {modelsByCli.grok.map((m) => (
-          <option key={`grok:${m}`} value={m}>
-            {m}
-          </option>
-        ))}
-      </datalist>
+      {PRICING_CLI_SHORT_ITEMS.map((cli) => (
+        <datalist key={cli.key} id={modelsDatalistId(cli.key)}>
+          {modelsByCli[cli.key].map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </datalist>
+      ))}
     </>
   );
 }
@@ -480,6 +462,8 @@ export function ModelPriceAliasesDialog({
   const codexModelsQuery = useModelPricesListQuery("codex", { enabled: open });
   const geminiModelsQuery = useModelPricesListQuery("gemini", { enabled: open });
   const grokModelsQuery = useModelPricesListQuery("grok", { enabled: open });
+  const piModelsQuery = useModelPricesListQuery("pi", { enabled: open });
+  const ompModelsQuery = useModelPricesListQuery("omp", { enabled: open });
   const aliasesSetMutation = useModelPriceAliasesSetMutation();
 
   const saving = aliasesSetMutation.isPending;
@@ -490,7 +474,9 @@ export function ModelPriceAliasesDialog({
     claudeModelsQuery.isFetching ||
     codexModelsQuery.isFetching ||
     geminiModelsQuery.isFetching ||
-    grokModelsQuery.isFetching;
+    grokModelsQuery.isFetching ||
+    piModelsQuery.isFetching ||
+    ompModelsQuery.isFetching;
 
   const modelsByCli = useMemo(
     () => ({
@@ -498,8 +484,17 @@ export function ModelPriceAliasesDialog({
       codex: (codexModelsQuery.data ?? []).map((row) => row.model),
       gemini: (geminiModelsQuery.data ?? []).map((row) => row.model),
       grok: (grokModelsQuery.data ?? []).map((row) => row.model),
+      pi: (piModelsQuery.data ?? []).map((row) => row.model),
+      omp: (ompModelsQuery.data ?? []).map((row) => row.model),
     }),
-    [claudeModelsQuery.data, codexModelsQuery.data, geminiModelsQuery.data, grokModelsQuery.data]
+    [
+      claudeModelsQuery.data,
+      codexModelsQuery.data,
+      geminiModelsQuery.data,
+      grokModelsQuery.data,
+      piModelsQuery.data,
+      ompModelsQuery.data,
+    ]
   );
 
   const modelCountsByCli = useMemo(
@@ -508,6 +503,8 @@ export function ModelPriceAliasesDialog({
       codex: modelsByCli.codex.length,
       gemini: modelsByCli.gemini.length,
       grok: modelsByCli.grok.length,
+      pi: modelsByCli.pi.length,
+      omp: modelsByCli.omp.length,
     }),
     [modelsByCli]
   );
@@ -519,8 +516,18 @@ export function ModelPriceAliasesDialog({
       codexModelsQuery.refetch(),
       geminiModelsQuery.refetch(),
       grokModelsQuery.refetch(),
+      piModelsQuery.refetch(),
+      ompModelsQuery.refetch(),
     ]);
-  }, [aliasesQuery, claudeModelsQuery, codexModelsQuery, geminiModelsQuery, grokModelsQuery]);
+  }, [
+    aliasesQuery,
+    claudeModelsQuery,
+    codexModelsQuery,
+    geminiModelsQuery,
+    grokModelsQuery,
+    piModelsQuery,
+    ompModelsQuery,
+  ]);
 
   const sourceAliases = open && !aliasesBlocked ? (aliasesQuery.data ?? null) : null;
   let effectiveAliasesState = aliasesState;

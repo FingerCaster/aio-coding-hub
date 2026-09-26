@@ -11,6 +11,8 @@ use std::process::{Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+pub(crate) mod native_version;
+
 const ENV_KEY_MCP_TIMEOUT: &str = "MCP_TIMEOUT";
 const ENV_KEY_DISABLE_ERROR_REPORTING: &str = "DISABLE_ERROR_REPORTING";
 
@@ -541,7 +543,7 @@ fn find_exe_in_path(names: &[String]) -> Option<PathBuf> {
     None
 }
 
-fn scan_executable<R: tauri::Runtime>(
+pub(crate) fn scan_executable<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     cmd: &str,
 ) -> crate::shared::error::AppResult<Option<PathBuf>> {
@@ -573,6 +575,12 @@ fn scan_executable<R: tauri::Runtime>(
         candidates.push(PathBuf::from(r"C:\Program Files (x86)\nodejs"));
         if let Some(appdata) = std::env::var_os("APPDATA") {
             candidates.push(PathBuf::from(appdata).join("npm"));
+        }
+        // The official standalone installer may have updated PATH after AIO started.
+        if cmd == "omp" {
+            if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+                candidates.push(PathBuf::from(local_appdata).join("omp"));
+            }
         }
     }
 
@@ -884,6 +892,105 @@ pub fn simple_cli_info_get(
     })
 }
 
+/// Native agents may load extensions during startup, including for version
+/// commands. Prefer package metadata. Standalone OMP uses only an isolated,
+/// noninteractive --version probe with temporary configuration directories.
+pub fn native_cli_info_get(
+    app: &tauri::AppHandle,
+    cmd: &str,
+) -> crate::shared::error::AppResult<SimpleCliInfo> {
+    let packages = native_cli_packages(cmd).ok_or_else(|| {
+        crate::shared::error::AppError::new("SEC_INVALID_INPUT", "Unsupported native CLI")
+    })?;
+    let executable = scan_executable(app, cmd)?;
+    let version = executable.as_deref().and_then(|path| {
+        native_cli_package_version(path, packages).or_else(|| {
+            (cmd == "omp")
+                .then(|| native_version::omp_standalone_version(path).ok())
+                .flatten()
+        })
+    });
+    Ok(SimpleCliInfo {
+        found: executable.is_some(),
+        executable_path: executable.map(|path| path.to_string_lossy().into_owned()),
+        version,
+        error: None,
+        shell: None,
+        resolved_via: "path_scan".into(),
+    })
+}
+
+fn native_cli_packages(cmd: &str) -> Option<&'static [&'static str]> {
+    match cmd {
+        "pi" => Some(&[
+            "@earendil-works/pi-coding-agent",
+            "@mariozechner/pi-coding-agent",
+        ]),
+        "omp" => Some(&["@oh-my-pi/pi-coding-agent"]),
+        _ => None,
+    }
+}
+
+fn native_cli_package_version(executable: &Path, packages: &[&str]) -> Option<String> {
+    let mut candidates = Vec::new();
+    // npm command shims live beside node_modules on Windows and in <prefix>/bin
+    // on Unix. Canonical ancestors cover symlinked npm/pnpm/Bun installations.
+    if let Some(parent) = executable.parent() {
+        for package in packages {
+            candidates.push(
+                parent
+                    .join("node_modules")
+                    .join(package)
+                    .join("package.json"),
+            );
+            if let Some(prefix) = parent.parent() {
+                candidates.push(
+                    prefix
+                        .join("install/global/node_modules")
+                        .join(package)
+                        .join("package.json"),
+                );
+                candidates.push(
+                    prefix
+                        .join("lib/node_modules")
+                        .join(package)
+                        .join("package.json"),
+                );
+            }
+        }
+    }
+    if let Ok(canonical) = std::fs::canonicalize(executable) {
+        for directory in canonical.ancestors().skip(1).take(6) {
+            candidates.push(directory.join("package.json"));
+        }
+    }
+    for path in candidates {
+        let Some(bytes) = read_optional_file_with_max_len(&path, 128 * 1024)
+            .ok()
+            .flatten()
+        else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let Some(name) = value.get("name").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !packages.contains(&name) {
+            continue;
+        }
+        if let Some(version) = value.get("version").and_then(serde_json::Value::as_str) {
+            let version = version.trim();
+            if !version.is_empty() && version.len() <= 64 && !version.chars().any(char::is_control)
+            {
+                return Some(version.to_owned());
+            }
+        }
+    }
+    None
+}
+
 pub fn claude_env_set<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     mcp_timeout_ms: Option<u64>,
@@ -907,6 +1014,47 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn native_version_reads_only_matching_package_metadata() {
+        let dir = tempdir().expect("tempdir");
+        let executable = dir.path().join("pi.cmd");
+        // The file is deliberately not executable. Discovery must never run it.
+        fs::write(&executable, "not a command").expect("write shim");
+        let package = dir
+            .path()
+            .join("node_modules/@earendil-works/pi-coding-agent");
+        fs::create_dir_all(&package).expect("package directory");
+        let metadata = package.join("package.json");
+        fs::write(
+            &metadata,
+            r#"{"name":"unrelated-package","version":"9.9.9"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            native_cli_package_version(&executable, native_cli_packages("pi").unwrap()),
+            None
+        );
+        fs::write(
+            &metadata,
+            r#"{"name":"@earendil-works/pi-coding-agent","version":"0.87.1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            native_cli_package_version(&executable, native_cli_packages("pi").unwrap()).as_deref(),
+            Some("0.87.1")
+        );
+        assert_eq!(
+            native_cli_package_version(&executable, native_cli_packages("omp").unwrap()),
+            None
+        );
+        fs::write(&metadata, vec![b'x'; 128 * 1024 + 1]).unwrap();
+        assert_eq!(
+            native_cli_package_version(&executable, native_cli_packages("pi").unwrap()),
+            None
+        );
+        assert!(native_cli_packages("claude").is_none());
+    }
 
     #[test]
     fn find_exe_in_dir_ignores_directory_named_like_command() {

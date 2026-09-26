@@ -10,6 +10,16 @@ type CliBrandIconProps = {
 };
 
 export function CliBrandIcon({ cliKey, className }: CliBrandIconProps) {
+  if (cliKey === "pi" || cliKey === "omp") {
+    return (
+      <span
+        aria-hidden="true"
+        className={cn("inline-flex items-center justify-center font-mono font-bold", className)}
+      >
+        {cliKey === "pi" ? "π" : "Ω"}
+      </span>
+    );
+  }
   if (cliKey === "claude") {
     return <img src={claudeFavicon} alt="" aria-hidden="true" className={className} />;
   }

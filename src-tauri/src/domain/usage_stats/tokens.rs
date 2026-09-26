@@ -146,6 +146,200 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_protocol_json_and_sse_usage_reconcile_with_sql_and_cost() {
+        use crate::domain::{cost, usage};
+        use crate::shared::gateway_protocol::GatewayProtocol as P;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE providers (id INTEGER PRIMARY KEY, source_provider_id INTEGER, bridge_type TEXT);
+            CREATE TABLE r (cli_key TEXT, final_provider_id INTEGER, special_settings_json TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER);").unwrap();
+        let cases = [
+            (
+                P::AnthropicMessages,
+                "claude",
+                serde_json::json!({"type":"message_start","message":{"usage":{"input_tokens":70,"output_tokens":30,"total_tokens":130,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}}),
+                70,
+                70,
+                10,
+            ),
+            (
+                P::OpenaiCompletions,
+                "grok",
+                serde_json::json!({"usage":{"prompt_tokens":100,"completion_tokens":30,"total_tokens":130,"prompt_tokens_details":{"cached_tokens":20},"cache_creation_input_tokens":10}}),
+                100,
+                70,
+                10,
+            ),
+            (
+                P::OpenaiResponses,
+                "codex",
+                serde_json::json!({"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":30,"total_tokens":130,"input_tokens_details":{"cached_tokens":20},"cache_creation_input_tokens":10}}}),
+                100,
+                70,
+                10,
+            ),
+            (
+                P::GoogleGenerativeAi,
+                "gemini",
+                serde_json::json!({"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":30,"totalTokenCount":130,"cachedContentTokenCount":20}}),
+                100,
+                80,
+                0,
+            ),
+        ];
+        let prices = r#"{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002,"cache_read_input_token_cost":0.0000005,"cache_creation_input_token_cost":0.0000015}"#;
+        for (protocol, legacy_cli, wire, raw_input, exclusive_input, cache_write) in cases {
+            // Anthropic's JSON response is the message itself; only SSE
+            // message_start wraps that message in a separate event envelope.
+            let json = if protocol == P::AnthropicMessages {
+                wire["message"].to_string()
+            } else {
+                wire.to_string()
+            };
+            let sse = format!("data: {wire}\n\n");
+            let json_usage = usage::parse_usage_for_protocol(protocol, json.as_bytes())
+                .unwrap_or_else(|| panic!("missing JSON usage for {protocol:?}: {json}"));
+            let mut tracker = usage::SseUsageTracker::for_protocol(protocol);
+            for chunk in sse.as_bytes().chunks(7) {
+                tracker.ingest_chunk(chunk);
+            }
+            let stream_usage = tracker.finalize().unwrap();
+            assert_eq!(
+                tracker.finalize().unwrap().metrics.input_tokens,
+                Some(exclusive_input),
+                "repeated finalize: {protocol:?}"
+            );
+            let reparsed = usage::parse_usage_for_protocol(protocol, sse.as_bytes()).unwrap();
+            for extract in [&json_usage, &stream_usage, &reparsed] {
+                let m = &extract.metrics;
+                assert_eq!(m.input_tokens, Some(exclusive_input), "{protocol:?}");
+                assert_eq!(m.total_tokens, Some(130));
+                assert_eq!(m.cache_read_input_tokens, Some(20));
+                assert_eq!(m.cache_creation_input_tokens.unwrap_or(0), cache_write);
+                let audit: serde_json::Value = serde_json::from_str(&extract.usage_json).unwrap();
+                assert_eq!(
+                    audit["input_tokens"], raw_input,
+                    "wire input must remain auditable"
+                );
+                for cli in ["pi", "omp"] {
+                    let marker = serde_json::json!([{"type":"gateway_protocol","protocol":protocol.as_str(),"sourceCli":cli,"input_semantics":"exclusive","wire_input_tokens":raw_input}]).to_string();
+                    conn.execute("DELETE FROM r", []).unwrap();
+                    conn.execute(
+                        "INSERT INTO r VALUES (?1,NULL,?2,?3,?4,?5,?6)",
+                        rusqlite::params![
+                            cli,
+                            marker,
+                            m.input_tokens,
+                            m.output_tokens,
+                            m.cache_read_input_tokens,
+                            m.cache_creation_input_tokens
+                        ],
+                    )
+                    .unwrap();
+                    let query = format!(
+                        "SELECT cli_key, {}, {} FROM r",
+                        sql_effective_input_tokens_expr(),
+                        sql_effective_total_tokens_expr()
+                    );
+                    let result: (String, i64, i64) = conn
+                        .query_row(&query, [], |row| {
+                            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                        })
+                        .unwrap();
+                    assert_eq!(result, (cli.into(), exclusive_input, 130));
+                    let buckets = cost::CostUsage {
+                        input_tokens: m.input_tokens.unwrap(),
+                        output_tokens: m.output_tokens.unwrap(),
+                        cache_read_input_tokens: m.cache_read_input_tokens.unwrap(),
+                        cache_creation_input_tokens: m.cache_creation_input_tokens.unwrap_or(0),
+                        ..Default::default()
+                    };
+                    let expected = exclusive_input * 1_000_000_000
+                        + 30 * 2_000_000_000
+                        + 20 * 500_000_000
+                        + cache_write * 1_500_000_000;
+                    assert_eq!(
+                        cost::calculate_cost_usd_femto(&buckets, prices, 1.0, cli, "w0-model"),
+                        Some(expected)
+                    );
+                }
+            }
+            // Existing clients still store their original wire input and subtract
+            // cache at their established aggregation/billing boundary.
+            let legacy = usage::parse_usage_from_json_bytes(legacy_cli, json.as_bytes())
+                .unwrap()
+                .metrics;
+            assert_eq!(legacy.input_tokens, Some(raw_input));
+            assert_eq!(
+                effective_input_tokens(
+                    legacy_cli,
+                    None,
+                    false,
+                    legacy.input_tokens,
+                    legacy.cache_read_input_tokens,
+                    legacy.cache_creation_input_tokens
+                ),
+                exclusive_input
+            );
+            let buckets = cost::CostUsage {
+                input_tokens: raw_input,
+                output_tokens: 30,
+                cache_read_input_tokens: 20,
+                cache_creation_input_tokens: cache_write,
+                ..Default::default()
+            };
+            let expected = exclusive_input * 1_000_000_000
+                + 30 * 2_000_000_000
+                + 20 * 500_000_000
+                + cache_write * 1_500_000_000;
+            assert_eq!(
+                cost::calculate_cost_usd_femto(&buckets, prices, 1.0, legacy_cli, "w0-model"),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn native_protocol_normalization_preserves_unknown_input_and_clamps_underflow() {
+        use crate::domain::usage;
+        use crate::shared::gateway_protocol::GatewayProtocol as P;
+        for protocol in [
+            P::AnthropicMessages,
+            P::OpenaiCompletions,
+            P::OpenaiResponses,
+            P::GoogleGenerativeAi,
+        ] {
+            let raw = br#"{"usage":{"output_tokens":3,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}"#;
+            assert_eq!(
+                usage::parse_usage_for_protocol(protocol, raw)
+                    .unwrap()
+                    .metrics
+                    .input_tokens,
+                None
+            );
+            let mut tracker = usage::SseUsageTracker::for_protocol(protocol);
+            tracker.ingest_chunk(
+                format!("data: {}\n\n", std::str::from_utf8(raw).unwrap()).as_bytes(),
+            );
+            assert_eq!(tracker.finalize().unwrap().metrics.input_tokens, None);
+            assert_eq!(tracker.finalize().unwrap().metrics.input_tokens, None);
+        }
+        for protocol in [
+            P::OpenaiCompletions,
+            P::OpenaiResponses,
+            P::GoogleGenerativeAi,
+        ] {
+            let raw = br#"{"usage":{"input_tokens":1,"output_tokens":3,"cache_read_input_tokens":20,"cache_creation_input_tokens":10}}"#;
+            assert_eq!(
+                usage::parse_usage_for_protocol(protocol, raw)
+                    .unwrap()
+                    .metrics
+                    .input_tokens,
+                Some(0)
+            );
+        }
+    }
+
+    #[test]
     fn effective_input_tokens_uses_protocol_specific_buckets_and_preserves_unknown() {
         assert_eq!(
             effective_input_tokens_display("claude", None, false, None, None, None),

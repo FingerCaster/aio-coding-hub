@@ -165,6 +165,67 @@ pub(in crate::gateway) async fn proxy_impl<R>(
     state: crate::gateway::runtime::GatewayAppState<R>,
     cli_key: String,
     forwarded_path: String,
+    mut req: Request<Body>,
+) -> Response
+where
+    R: tauri::Runtime + 'static,
+    R::Handle: Unpin,
+{
+    let forwarded_path = if let Some(rest) = forwarded_path.strip_prefix("/_aio/channel/") {
+        let Some((binding_id, path)) = rest.split_once('/') else {
+            return super::errors::error_response(
+                axum::http::StatusCode::BAD_REQUEST,
+                new_trace_id(),
+                "NATIVE_CHANNEL_BINDING_UNAVAILABLE",
+                "Invalid channel route".into(),
+                Vec::new(),
+            );
+        };
+        let db = state.db.clone();
+        let consumer = cli_key.clone();
+        let id = binding_id.to_string();
+        let binding = crate::blocking::run("native_channel_route", move || {
+            let conn = db.open_connection()?;
+            crate::domain::native_channels::load_binding(&conn, &id, &consumer)
+        })
+        .await;
+        let binding = match binding {
+            Ok(binding) => binding,
+            Err(_) => {
+                return super::errors::error_response(
+                    axum::http::StatusCode::NOT_FOUND,
+                    new_trace_id(),
+                    "NATIVE_CHANNEL_BINDING_UNAVAILABLE",
+                    "Channel binding is absent, pending, or withdrawn".into(),
+                    Vec::new(),
+                )
+            }
+        };
+        req.extensions_mut()
+            .insert(binding.channel.expect("validated binding identity"));
+        format!("/_protocol/{}/{}", binding.protocol.as_str(), path)
+    } else {
+        forwarded_path
+    };
+    let native_protocol = super::protocol::is_native_client(&cli_key)
+        .then(|| {
+            forwarded_path
+                .strip_prefix("/_protocol/")
+                .and_then(|rest| rest.split('/').next())
+                .and_then(|api| crate::shared::gateway_protocol::GatewayProtocol::parse(api).ok())
+        })
+        .flatten();
+    let response = proxy_impl_inner(state, cli_key, forwarded_path, req).await;
+    match native_protocol {
+        Some(protocol) => super::protocol::adapt_error_response(protocol, response).await,
+        None => response,
+    }
+}
+
+async fn proxy_impl_inner<R>(
+    state: crate::gateway::runtime::GatewayAppState<R>,
+    cli_key: String,
+    forwarded_path: String,
     req: Request<Body>,
 ) -> Response
 where
@@ -176,8 +237,49 @@ where
     let created_at_ms = now_unix_millis() as i64;
     let created_at = (created_at_ms / 1000).max(0);
     let method = req.method().clone();
+    let channel = req
+        .extensions()
+        .get::<crate::domain::native_channels::ChannelIdentity>()
+        .cloned();
+    let (wire_protocol, forwarded_path) = if super::protocol::is_native_client(&cli_key) {
+        let parsed = forwarded_path
+            .strip_prefix("/_protocol/")
+            .and_then(|rest| rest.split_once('/'))
+            .and_then(|(api, rest)| {
+                let protocol = crate::shared::gateway_protocol::GatewayProtocol::parse(api).ok()?;
+                let path = format!("/{rest}");
+                super::protocol::is_inference(protocol, &method, &path).then_some((protocol, path))
+            });
+        match parsed {
+            Some((protocol, path)) => (Some(protocol), path),
+            None => return super::errors::error_response(
+                axum::http::StatusCode::BAD_REQUEST,
+                trace_id,
+                super::GatewayErrorCode::InvalidCliKey.as_str(),
+                "native gateway requests require a supported explicit protocol and inference endpoint".to_string(),
+                Vec::new(),
+            ),
+        }
+    } else if forwarded_path.starts_with("/_protocol/") {
+        return super::errors::error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            trace_id,
+            super::GatewayErrorCode::InvalidCliKey.as_str(),
+            "explicit protocol routes are reserved for pi and omp".to_string(),
+            Vec::new(),
+        );
+    } else {
+        (
+            super::protocol::legacy_protocol(&cli_key, &forwarded_path),
+            forwarded_path,
+        )
+    };
     let method_hint = method.to_string();
-    let query = req.uri().query().map(str::to_string);
+    let query = if super::protocol::is_native_client(&cli_key) {
+        super::protocol::strip_query_credentials(req.uri().query())
+    } else {
+        req.uri().query().map(str::to_string)
+    };
     let is_claude_count_tokens = is_claude_count_tokens_request(&cli_key, &forwarded_path);
     let is_codex_model_discovery =
         is_codex_model_discovery_request(&cli_key, &method, &forwarded_path);
@@ -197,11 +299,34 @@ where
 
     let forced_provider_id = extract_forced_provider_id(&headers);
     let session_binding_request = state.session.begin_binding_request();
+    let special_settings = new_special_settings();
+    if let Some(protocol) = wire_protocol.filter(|_| super::protocol::is_native_client(&cli_key)) {
+        response_fixer::push_special_setting(
+            &special_settings,
+            serde_json::json!({
+                "type": "gateway_protocol", "scope": "request", "sourceCli": cli_key,
+                "input_semantics": "exclusive",
+                "protocol": protocol.as_str(),
+            }),
+        );
+    }
+
+    if let Some(owner) = &channel {
+        response_fixer::push_special_setting(
+            &special_settings,
+            serde_json::json!({
+                "type":"channel_binding", "scope":"request", "consumerCli":cli_key,
+                "sourceChannel":owner.source_channel, "bindingId":owner.binding_id,
+            }),
+        );
+    }
 
     // Build the initial context.
     let ctx = ProxyContext {
         state,
         cli_key,
+        wire_protocol,
+        channel,
         forwarded_path,
         req_method: method,
         method_hint,
@@ -220,7 +345,7 @@ where
         introspection_json: None,
         observe_request: false,
         strip_request_content_encoding_seed: false,
-        special_settings: new_special_settings(),
+        special_settings,
         provider_health_neutral: is_codex_model_discovery,
         provider_health_mode: if is_codex_model_discovery {
             crate::gateway::infinite_retry::ProviderHealthMode::PassiveSystemRequest
@@ -465,6 +590,7 @@ mod tests {
 
     fn provider(id: i64) -> crate::providers::ProviderForGateway {
         crate::providers::ProviderForGateway {
+            gateway_protocol: None,
             id,
             provider_uuid: format!("00000000-0000-4000-8000-{id:012}"),
             account_usage_route_target: None,
@@ -581,6 +707,8 @@ mod tests {
                 active_requests.clone(),
             ),
             cli_key: "claude".to_string(),
+            wire_protocol: None,
+            channel: None,
             forwarded_path: "/v1/messages".to_string(),
             req_method: Method::POST,
             method_hint: "POST".to_string(),
@@ -654,6 +782,8 @@ mod tests {
                 active_requests.clone(),
             ),
             cli_key: "claude".to_string(),
+            wire_protocol: None,
+            channel: None,
             forwarded_path: "/v1/messages".to_string(),
             req_method: Method::POST,
             method_hint: "POST".to_string(),
@@ -718,6 +848,8 @@ mod tests {
         middleware::ProxyContext {
             state: active_request_test_state(app, db, log_tx, active_requests),
             cli_key: "claude".to_string(),
+            wire_protocol: None,
+            channel: None,
             forwarded_path: "/v1/messages".to_string(),
             req_method: Method::POST,
             method_hint: "POST".to_string(),
