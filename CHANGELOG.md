@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.60.43](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.42...aio-coding-hub-v0.60.43) (2026-09-26)
+
+
+### Features
+
+* **codex:** select the managed provider by name ([28d17dd](https://github.com/FingerCaster/aio-coding-hub/commit/28d17ddb1056240226694cbaf49acd482d47dd2f))
+* **upstream:** integrate compatible routing and provider features ([88883c9](https://github.com/FingerCaster/aio-coding-hub/commit/88883c9053026900ad259c7401d80a0cec8561ea))
+
+
+### Bug Fixes
+
+* **upstream:** carry low-risk upstream patches ([071d9e7](https://github.com/FingerCaster/aio-coding-hub/commit/071d9e79b72593bade4169fab13d22de2502dc29))
+
+
+### Miscellaneous
+
+* **release:** prepare aio-coding-hub 0.60.43 ([915b7a6](https://github.com/FingerCaster/aio-coding-hub/commit/915b7a68ed2b843238bfc7ab6f0fd1a57f0205bf))
+
 ## [0.60.42](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.41...aio-coding-hub-v0.60.42) (2026-09-23)
 
 
