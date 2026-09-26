@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.60.44](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.43...aio-coding-hub-v0.60.44) (2026-09-26)
+
+
+### Features
+
+* **pi-omp:** integrate native settings and aggregated AIO gateway ([90e330a](https://github.com/FingerCaster/aio-coding-hub/commit/90e330a678eb14a45d958518078d31b631bb09fe))
+* **pi-omp:** 接入原生管理、AIO 聚合网关及 OMP 设置 ([3b7ecd4](https://github.com/FingerCaster/aio-coding-hub/commit/3b7ecd4161012ea8e5e05f331a78009b8ef8e5fb))
+
+
+### Miscellaneous
+
+* **release:** prepare aio-coding-hub 0.60.44 ([f4d7ddf](https://github.com/FingerCaster/aio-coding-hub/commit/f4d7ddf8fe129c8c2e1965b326e4f54ba56e32a7))
+
 ## [0.60.43](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.42...aio-coding-hub-v0.60.43) (2026-09-26)
 
 
