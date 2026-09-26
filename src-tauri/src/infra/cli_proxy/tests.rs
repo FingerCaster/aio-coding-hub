@@ -2101,6 +2101,14 @@ fn codex_oauth_compatible_status_reports_drift_when_old_apikey_preference_remain
 
     write_cli_proxy_manifest(&handle, "codex", true, Some(base_origin));
     write_codex_proxy_files(&handle, base_origin);
+    // Current projections omit this legacy key, so create the drift explicitly.
+    let config_path = codex_config_path(&handle).expect("config path");
+    let config = std::fs::read_to_string(&config_path).expect("read config");
+    std::fs::write(
+        &config_path,
+        format!("preferred_auth_method = \"apikey\"\n{config}"),
+    )
+    .expect("write legacy apikey preference");
 
     let rows = status_all(&handle, Some(base_origin)).expect("status_all");
     let codex = rows
