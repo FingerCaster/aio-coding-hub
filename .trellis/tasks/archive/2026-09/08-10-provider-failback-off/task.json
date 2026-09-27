@@ -1,0 +1,33 @@
+{
+  "id": "provider-failback-off",
+  "name": "provider-failback-off",
+  "title": "新增关闭自动回切策略",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-10",
+  "completedAt": "2026-09-27",
+  "branch": "FingerCaster/provider-failback-off",
+  "base_branch": "origin/main",
+  "worktree_path": null,
+  "commit": "81332107b4b447a35487d84d1dd9d34495693993",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "2026-09-27 归档复核：PRD AC1–AC7 已记录完成；关闭自动回切、路由变更及全 Open 恢复均有当前回归通过记录。 已确认提交可从 origin/main 到达，并随现有正式版本交付。完成依据见 research/archive-review.md。",
+  "meta": {
+    "description": "新增可持久化的关闭自动回切策略，同时保留故障转移、新会话选路、显式路由变更与全熔断恢复。",
+    "archive_review_date": "2026-09-27",
+    "archive_evidence": "research/archive-review.md",
+    "implementation_state": "merged",
+    "included_in_verified_release": "0.60.44",
+    "verified_release_commit": "96272aff6fc4e4e3caa7c20b9754224ba2f40a26"
+  }
+}

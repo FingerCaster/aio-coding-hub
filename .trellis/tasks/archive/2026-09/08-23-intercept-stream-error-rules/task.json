@@ -1,0 +1,48 @@
+{
+  "id": "intercept-stream-error-rules",
+  "name": "intercept-stream-error-rules",
+  "title": "Intercept stream errors with upstream error response rules",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-23",
+  "completedAt": "2026-09-27",
+  "branch": "FingerCaster/intercept-stream-error-rules",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".trellis/tasks/archive/2026-09/08-23-intercept-stream-error-rules/research/archive-review.md"
+  ],
+  "notes": "2026-09-27 归档复核：实现已合入；implement.md 8.3/8.4 明确保留 Codex CLI 解析追加错误事件与 524 idle timeout 真机验证，且禁止以测试全绿代替真机确认。保留待验收。\n\n2026-09-27 用户确认收尾：用户确认流错误修复同样已经测试，可以归档；此前因真机验收记录未补齐而暂缓归档的条件据此解除。 完成依据见 research/archive-review.md。",
+  "meta": {
+    "archive_review": {
+      "reviewed_at": "2026-09-27",
+      "decision": "archive",
+      "resolution": "user_verified",
+      "reason": "用户确认流错误修复同样已经测试，可以归档；此前因真机验收记录未补齐而暂缓归档的条件据此解除。",
+      "evidence_source": "user_confirmation",
+      "user_confirmation": "beta 那个修复 已经测试过了 也可以归档 留错误也是 转发 503 是上游问题 可以删除或归档 astra 中间回复也没问题 是上游问题",
+      "review_entry": "research/archive-review.md"
+    },
+    "archive_review_history": [
+      {
+        "reviewed_at": "2026-09-27",
+        "decision": "retain_pending_acceptance",
+        "reason": "实现已合入；implement.md 8.3/8.4 明确保留 Codex CLI 解析追加错误事件与 524 idle timeout 真机验证，且禁止以测试全绿代替真机确认。保留待验收。",
+        "review_entry": ".trellis/tasks/archive/2026-09/archive-review-2026-09-27.md"
+      }
+    ],
+    "user_acceptance": "confirmed",
+    "closure_reason": "user_verified"
+  }
+}
