@@ -29,7 +29,7 @@
 ## Background
 
 - 当前 fork 起点为 270b808c；上一批低风险补丁由 071d9e79 纳入，相关任务已归档。
-- 本次已核对上游版本仍为 `420e9958091ae460d152a508b1eb0e2110ab733b`，记录在 `.trellis/tasks/09-05-gpt-6-astra-stream-intermediate-replies/research/upstream-sync.md`，并以该 SHA 作为固定整合输入。
+- 本次已核对上游版本仍为 `420e9958091ae460d152a508b1eb0e2110ab733b`，记录在 `.trellis/tasks/archive/2026-09/09-05-gpt-6-astra-stream-intermediate-replies/research/upstream-sync.md`，并以该 SHA 作为固定整合输入。
 - 本次开始前工作区已有 Astra 流回复任务的 7 个未跟踪规划文件，属于其他任务。
 
 ## 验收证据与收尾状态
