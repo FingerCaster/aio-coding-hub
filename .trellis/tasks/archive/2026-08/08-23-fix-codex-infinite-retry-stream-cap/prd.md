@@ -16,7 +16,7 @@
 - 本机稳定版 `0.60.41` 的诊断记录显示，开启模式后的 6 个请求累计 4608 次尝试，所有请求
   最终均由客户端取消；其中 693 次已经收到 HTTP 200 的流被记为 final-wire 失败。典型尝试在
   收到响应头约 500 ms 后进入下一轮，与该硬编码时限一致。
-- 原始功能合同 `.trellis/tasks/08-10-codex-infinite-retry-test-switch/prd.md:45-48,76-79`
+- 原始功能合同 `.trellis/tasks/archive/2026-09/08-10-codex-infinite-retry-test-switch/prd.md:45-48,76-79`
   要求使用既有首字节、stream idle、非流式响应超时，且不得为测试模式注入隐藏超时。
 - 当前 `.trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md:136-141`
   反而固化了 500 ms 总时限，已与原始 R15/AC15 和实际 Codex 长流行为发生漂移。

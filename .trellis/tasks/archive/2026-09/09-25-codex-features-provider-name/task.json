@@ -1,0 +1,33 @@
+{
+  "id": "codex-features-provider-name",
+  "name": "codex-features-provider-name",
+  "title": "替换过时 Codex 实验功能并增加 Provider name",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "codex",
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "Daybreak",
+  "assignee": "Daybreak",
+  "createdAt": "2026-09-25",
+  "completedAt": "2026-09-27",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "28d17ddb1056240226694cbaf49acd482d47dd2f",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "2026-09-27 归档复核：已核对 Provider name、旧 flag 优先级与清理、fast_mode 不改 service_tier 的实现及回归；原 PRD 未勾选条目属于记录未收尾，不代表功能未合入。 已确认提交可从 origin/main 到达，并随现有正式版本交付。完成依据见 research/archive-review.md。",
+  "meta": {
+    "description": "Remove outdated Codex feature toggles and add an OpenAI/aio Provider name control.",
+    "archive_review_date": "2026-09-27",
+    "archive_evidence": "research/archive-review.md",
+    "implementation_state": "merged",
+    "included_in_verified_release": "0.60.44",
+    "verified_release_commit": "96272aff6fc4e4e3caa7c20b9754224ba2f40a26"
+  }
+}

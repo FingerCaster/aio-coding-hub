@@ -1,0 +1,40 @@
+{
+  "id": "claude-opus-5-5-forwarding-503",
+  "name": "claude-opus-5-5-forwarding-503",
+  "title": "排查 claude-opus-5-5 调用与转发 503",
+  "description": "定位单模型调用失败，检查模型映射、Claude 请求与转发链路，形成有证据的修复方案",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-09-27",
+  "completedAt": "2026-09-27",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".trellis/tasks/archive/2026-09/09-27-claude-opus-5-5-forwarding-503/research/archive-review.md"
+  ],
+  "notes": "2026-09-27 用户确认收尾：用户确认 503 转发问题属于上游问题，允许删除或归档。本次选择归档保存既有诊断，不进行本地代码修复。 完成依据见 research/archive-review.md。",
+  "meta": {
+    "archive_review": {
+      "reviewed_at": "2026-09-27",
+      "decision": "archive",
+      "resolution": "upstream_issue_user_confirmed",
+      "reason": "用户确认 503 转发问题属于上游问题，允许删除或归档。本次选择归档保存既有诊断，不进行本地代码修复。",
+      "evidence_source": "user_confirmation",
+      "user_confirmation": "beta 那个修复 已经测试过了 也可以归档 留错误也是 转发 503 是上游问题 可以删除或归档 astra 中间回复也没问题 是上游问题",
+      "review_entry": "research/archive-review.md"
+    },
+    "user_acceptance": "confirmed",
+    "closure_reason": "upstream_issue_user_confirmed"
+  }
+}

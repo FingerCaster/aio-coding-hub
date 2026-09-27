@@ -1,0 +1,32 @@
+{
+  "id": "fix-balance-refresh",
+  "name": "fix-balance-refresh",
+  "title": "修复余额为空时刷新失效",
+  "description": "余额为零或尚未获取后，上游恢复时手动刷新必须独立取得新余额，不依赖 Provider 测试。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-13",
+  "completedAt": "2026-09-27",
+  "branch": "FingerCaster/fix-balance-refresh",
+  "base_branch": "FingerCaster/beta-release-channel",
+  "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/fix-balance-refresh",
+  "commit": "e58786ee4a665c6ec2150f3797b2f5925118da3c",
+  "pr_url": "https://github.com/FingerCaster/aio-coding-hub/pull/34",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Current regression of archived 08-08-fix-zero-balance-manual-refresh-regression; diagnose current beta branch end to end.\n\n2026-09-27 归档复核：PRD 全部验收项及实施清单已完成；通过 PR #34 集成到 main，并随 0.60.41-beta.4 发布。发布任务自身要求的 Windows smoke 仍单独保留。 已确认提交可从 origin/main 到达，并随现有正式版本交付。完成依据见 research/archive-review.md。",
+  "meta": {
+    "archive_review_date": "2026-09-27",
+    "archive_evidence": "research/archive-review.md",
+    "implementation_state": "merged",
+    "included_in_verified_release": "0.60.44",
+    "verified_release_commit": "96272aff6fc4e4e3caa7c20b9754224ba2f40a26"
+  }
+}

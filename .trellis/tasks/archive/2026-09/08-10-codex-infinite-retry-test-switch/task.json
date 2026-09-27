@@ -1,0 +1,32 @@
+{
+  "id": "codex-infinite-retry-test-switch",
+  "name": "codex-infinite-retry-test-switch",
+  "title": "Codex 测试无限重试开关",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-10",
+  "completedAt": "2026-09-27",
+  "branch": "FingerCaster/codex-infinite-retry-test-switch",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": "0512eac42306e38e90bdaea54d1060dfc7238346",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "2026-09-27 归档复核：已核对原始功能提交及当前无限重试测试。后续长流超时修复已在 08-23-fix-codex-infinite-retry-stream-cap 独立归档，当前语义以维护中的契约与实现为准。 已确认提交可从 origin/main 到达，并随现有正式版本交付。完成依据见 research/archive-review.md。",
+  "meta": {
+    "archive_review_date": "2026-09-27",
+    "archive_evidence": "research/archive-review.md",
+    "implementation_state": "merged",
+    "included_in_verified_release": "0.60.44",
+    "verified_release_commit": "96272aff6fc4e4e3caa7c20b9754224ba2f40a26"
+  }
+}
