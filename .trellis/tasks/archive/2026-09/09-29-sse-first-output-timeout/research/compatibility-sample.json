@@ -1,0 +1,17 @@
+{
+  "sample_date": "2026-09-29",
+  "baseline_commit": "fb1883f7",
+  "cutoff_created_at_ms_exclusive": 1790672462518,
+  "minimum_record_id": 454000,
+  "eligible_success_count": 100,
+  "release_after_60s_count": 4,
+  "release_after_300s_count": 0,
+  "max_release_ms": 121354,
+  "examples": [
+    {"id": 454593, "attempt_release_ms": 121354, "ttfb_ms": 3565, "request_duration_ms": 121374},
+    {"id": 454632, "attempt_release_ms": 117405, "ttfb_ms": 2595, "request_duration_ms": 117427},
+    {"id": 454625, "attempt_release_ms": 110925, "ttfb_ms": 2299, "request_duration_ms": 120801},
+    {"id": 454603, "attempt_release_ms": 62413, "ttfb_ms": 7547, "request_duration_ms": 62430}
+  ],
+  "interpretation": "attempt_release_ms is recorded after precommit prefix handling; it is not an exact semantic-first-output timestamp. This is compatibility-risk evidence, not proof that all four samples contained only heartbeats."
+}
