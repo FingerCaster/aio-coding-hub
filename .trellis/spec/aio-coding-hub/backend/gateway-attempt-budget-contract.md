@@ -236,6 +236,86 @@ let header = timing.response_header_timeout(configured);
 let first_chunk = timing.sse_first_chunk_timeout(configured);
 ```
 
+## Scenario: Per-Attempt First Meaningful SSE Output Deadline
+
+### 1. Scope / Trigger
+
+Ordinary, nonbridged Codex Responses SSE can receive headers and heartbeat bytes
+forever without output. These bytes satisfy first-byte and reset byte-idle timers,
+so neither timer alone limits the initial semantic wait. The explicit infinite-
+retry collector, bridges, non-Codex and compact paths retain their own contracts.
+
+### 2. Signatures
+
+- `FirstOutputDeadline { deadline: tokio::time::Instant, budget: Duration, source: &'static str }`
+- `FirstOutputWait::ingest_chunk(&mut self, chunk: &[u8])`
+- `has_codex_first_output(data: &Value) -> bool`
+- `spawn_usage_sse_relay_body_with_first_output(upstream, ctx, idle, ttfb, Option<FirstOutputDeadline>)`
+
+No persisted setting, database column, public error enum or generated binding is added.
+
+### 3. Contracts
+
+- Create one absolute deadline on entering eligible SSE response handling after
+  headers arrive. Reuse `resolve_effective_stream_idle_timeout`: positive Provider
+  override wins; Provider zero/absent inherits global; disabled effective idle
+  means no first-output deadline. Keep first-byte timing independent.
+- Check the deadline before polling/inspecting ready data as well as while
+  awaiting data. Comments, empty lifecycle snapshots, usage-only, unknown and
+  empty delta events never extend or satisfy it.
+- Supported text, refusal, reasoning summary, function arguments and concrete
+  output use existing usage recognition. This lifecycle additionally recognizes
+  nonempty custom-tool input deltas/done and custom-tool items with nonempty input
+  or both name and call_id. It does not change shared billing/empty-body policy.
+- Meaningful output permanently disarms the fixed deadline, even if the original
+  guard subsequently runs past it. This is not a generation or whole-request limit.
+- Prefix cap/compatibility release transfers the unchanged deadline. Relay parsing
+  starts with the replayed prefix once, retains at most 1 MiB per frame, and waits
+  on the same deadline during downstream backpressure. Deadline expiry releases
+  upstream before best-effort error-tail delivery. Client-abort drain keeps its
+  own priority/deadline. Completion/errors retain existing protocol handling.
+- Before commit, timeout uses the shared transport Timeout matcher, configured
+  retry count/backoff, circuit policy and failover. Each subsequent attempt starts
+  a fresh budget. After commit there is no retry, provider switch or stream splice.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| First-byte deadline expires earlier | Existing first-byte timeout attribution |
+| No meaningful output by the first-output deadline, before commit | GW_UPSTREAM_TIMEOUT; outcome/reason stream_first_output_timeout; timeout_secs from effective idle |
+| Same expiry after cap/compatibility commit | HTTP status unchanged; GW_STREAM_IDLE_TIMEOUT; terminal_origin first_output_timeout; finalize once |
+| Downstream queue is full at expiry | Release upstream, finalize, try error tail without waiting indefinitely |
+| Effective idle disabled | No new timer or parser |
+| Meaningful output observed before expiry | Continue original byte-idle and guard policies |
+| Infinite-test collector / non-target path | No new fixed deadline |
+
+### 5. Good / Base / Bad Cases
+
+Good: first-byte 60 seconds, effective idle 300 seconds, headers at time T: heartbeats
+every 15 seconds still fail at T+300 without output; a retry gets its own 300 seconds.
+Base: output arrives before the deadline; a long generation continues normally.
+Bad: each heartbeat, prefix replay or retry inherits/resets the wrong lifetime.
+
+### 6. Tests Required
+
+- `first_output_*`: fixed deadline, split LF/CRLF, supported/custom-tool progress,
+  late progress, bounded malformed/oversized frames, first-byte precedence,
+  always-ready upstream, disarming, backpressure and single finalization.
+- `route_first_output_timeout_heartbeats_retry_and_cap_handoff`: local HTTP
+  heartbeats, effective Provider budget, first-byte disabled, fresh retry budget,
+  discarded failed prefix, exhaustion and committed cap release without retry.
+- Existing effective-idle/predicate, buffered-native, compact, reentry, gzip,
+  terminal-firewall, usage and infinite collector suites remain required.
+
+### 7. Wrong vs Correct
+
+Wrong: reset the first-output timer on every chunk, check only Poll::Pending,
+or start a new duration after cap release. Correct: carry one absolute deadline,
+disarm only on recognized progress/protocol termination, and include channel sends
+in the waiting lifetime. Use the internal terminal origin to distinguish the
+post-commit cause without inventing a public error code.
+
 ## Scenario: Input Normalization And Narrow Reactive Registry
 
 ### 1. Scope / Trigger

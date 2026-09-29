@@ -419,6 +419,7 @@ describe("cli-manager/GeneralTab", () => {
     expect(setStreamInternalErrorGuardMs).not.toHaveBeenCalled();
 
     const streamIdleInput = screen.getByRole("spinbutton", { name: "流式空闲超时" });
+    expect(screen.getByText(/保活和空状态事件不会延长；每次上游尝试独立计算/)).toBeInTheDocument();
     fireEvent.change(streamIdleInput, { target: { value: "-1" } });
     fireEvent.blur(streamIdleInput, { target: { value: "-1" } });
     expect(toast).toHaveBeenCalledWith("上游流式空闲超时必须为 0（禁用）或 60-3600 秒");

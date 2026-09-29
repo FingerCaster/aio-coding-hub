@@ -499,7 +499,7 @@ export function CliManagerGeneralTab({
 
                 <SettingsRow
                   label="流式空闲超时（0=禁用，启用时最小60秒）"
-                  subtitle="流式响应中两次数据之间的最大静默时间。"
+                  subtitle="流式响应中两次数据之间的最大静默时间。普通、非桥接的 Codex Responses 请求还用此值限制首次有效输出的等待：从收到上游响应头起计时，保活和空状态事件不会延长；每次上游尝试独立计算，有效输出后解除此固定期限。无限重试测试模式不适用首次输出期限。"
                 >
                   <div className="flex items-center gap-2">
                     <Input

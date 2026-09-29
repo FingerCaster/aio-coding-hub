@@ -155,7 +155,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
 
         <FormField
           label="流式空闲超时覆盖（秒）"
-          hint="留空或 0 表示沿用全局设置；仅对当前 Provider 的流式请求生效。"
+          hint="留空或 0 表示沿用全局设置；仅对当前 Provider 的流式请求生效。普通、非桥接的 Codex Responses 请求也用此值限制首次有效输出等待，按单次上游尝试计算，保活不会延长；无限重试测试模式除外。"
         >
           {(id, hintId) => (
             <Input

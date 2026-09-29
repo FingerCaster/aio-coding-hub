@@ -13319,6 +13319,154 @@ INSERT INTO codex_managed_profiles(
         upstream_task.abort();
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_first_output_timeout_heartbeats_retry_and_cap_handoff() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        // Cover retry success, exhaustion, and HTTP-committed cap release using the same
+        // real router/HTTP shape. Each mock is bounded and uses no external provider.
+        for (recover, cap_release, first_byte) in
+            [(true, false, 60), (false, false, 0), (false, true, 60)]
+        {
+            let max_attempts = if cap_release { 1 } else { 2 };
+            let mut config = settings::AppSettings::default();
+            config.upstream_first_byte_timeout_seconds = first_byte;
+            config.upstream_stream_idle_timeout_seconds = 60;
+            config.failover_max_attempts_per_provider = max_attempts;
+            config.failover_max_providers_to_try = 1;
+            config.upstream_retry_policy.max_retries = 1;
+            config.upstream_retry_policy.backoff_ms = 0;
+            settings::write(&handle, &config).expect("settings");
+            crate::cli_proxy::set_enabled(&handle, "codex", true, "http://127.0.0.1:37123")
+                .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let db = db::init_for_tests(&dir.path().join("first-output-route.sqlite")).unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen_upstream = seen.clone();
+            let upstream = tokio::spawn(async move {
+                for index in 0..max_attempts {
+                    let Ok(Ok((mut socket, _))) =
+                        tokio::time::timeout(Duration::from_secs(4), listener.accept()).await
+                    else {
+                        break;
+                    };
+                    let mut buf = [0_u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    seen_upstream.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n").await;
+                    if recover && index == 1 {
+                        // This succeeds only if the second attempt gets its own budget.
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        let progress = "data: {\"type\":\"response.custom_tool_call_input.delta\",\"delta\":\"patch\"}\n\n";
+                        let wire = format!("{:X}\r\n{}\r\n", progress.len(), progress);
+                        let _ = socket.write_all(wire.as_bytes()).await;
+                        // First output disarms the deadline; the 500 ms guard and final
+                        // completion may now extend past the original one-second budget.
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        let done = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"recovered\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+                        let wire = format!("{:X}\r\n{}\r\n0\r\n\r\n", done.len(), done);
+                        let _ = socket.write_all(wire.as_bytes()).await;
+                        break;
+                    }
+                    let preamble = "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"discard_me\",\"output\":[]}}\n\n";
+                    let prefix = if cap_release {
+                        preamble.repeat(14000)
+                    } else {
+                        preamble.to_string()
+                    };
+                    let wire = format!("{:X}\r\n{}\r\n", prefix.len(), prefix);
+                    if socket.write_all(wire.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    for _ in 0..60 {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        if socket.write_all(b"D\r\n: keepalive\n\n\r\n").await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+            let provider =
+                insert_codex_provider_with_priority(&db, "First output stub", base_url, 0);
+            db.open_connection()
+                .unwrap()
+                .execute(
+                    "UPDATE providers SET stream_idle_timeout_seconds = 1 WHERE id = ?1",
+                    [provider],
+                )
+                .unwrap();
+            let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(16);
+            let router = build_router(gateway_state(handle.clone(), db, log_tx));
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/v1/responses")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-first-output","stream":true,"input":"hello"}"#,
+                ))
+                .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(8), async {
+                let response = router.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = to_bytes(response.into_body(), 3 * 1024 * 1024)
+                    .await
+                    .unwrap();
+                let log = recv_terminal_request_log(&mut log_rx).await;
+                (status, body, log)
+            })
+            .await;
+            upstream.abort();
+            let (status, body, log) = result.expect("heartbeats must not keep the route alive");
+            let attempts: Value = serde_json::from_str(&log.attempts_json).unwrap();
+            assert_eq!(attempts.as_array().unwrap().len(), max_attempts as usize);
+            assert_eq!(
+                seen.load(std::sync::atomic::Ordering::SeqCst),
+                max_attempts as usize
+            );
+            if cap_release {
+                assert_eq!(status, StatusCode::OK, "committed status remains HTTP 200");
+                assert_eq!(log.error_code.as_deref(), Some("GW_STREAM_IDLE_TIMEOUT"));
+                assert!(log
+                    .special_settings_json
+                    .as_deref()
+                    .unwrap()
+                    .contains("buffer_cap_reached"));
+                let activity: Value =
+                    serde_json::from_str(log.activity_details_json.as_deref().unwrap()).unwrap();
+                assert_eq!(activity["terminal_origin"], "first_output_timeout");
+            } else {
+                assert_eq!(
+                    attempts[0]["timeout_secs"], 1,
+                    "effective provider budget, not first-byte or global"
+                );
+                assert!(attempts[0]["outcome"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("stream_first_output_timeout"));
+                assert_eq!(attempts[0]["error_code"], "GW_UPSTREAM_TIMEOUT");
+                assert!(
+                    !String::from_utf8_lossy(&body).contains("discard_me"),
+                    "failed prefix must never be replayed"
+                );
+                if recover {
+                    assert_eq!(status, StatusCode::OK);
+                    assert_eq!(log.error_code, None);
+                    assert!(String::from_utf8_lossy(&body).contains("recovered"));
+                    assert_eq!(attempts[1]["outcome"], "success");
+                } else {
+                    assert!(!status.is_success());
+                    assert_eq!(log.error_code.as_deref(), Some("GW_UPSTREAM_TIMEOUT"));
+                }
+            }
+        }
+    }
+
     async fn spawn_delayed_json_upstream(
         body: &'static str,
         first_byte_delay: Duration,
