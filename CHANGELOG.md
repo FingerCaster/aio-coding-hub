@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.45](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.44...aio-coding-hub-v0.60.45) (2026-09-30)
+
+
+### Bug Fixes
+
+* **gateway:** bound per-attempt first meaningful SSE output ([afb16ae](https://github.com/FingerCaster/aio-coding-hub/commit/afb16ae293ce927ecc32f6aadb98c324884a3246))
+* **gateway:** bound per-attempt first meaningful SSE output ([df8e0a6](https://github.com/FingerCaster/aio-coding-hub/commit/df8e0a669658e2e7fa9dedd674cf3335e2d8604c))
+
 ## [0.60.44](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.43...aio-coding-hub-v0.60.44) (2026-09-26)
 
 
