@@ -6,7 +6,8 @@ Rules for the root application's Rust backend and local gateway runtime.
 
 - [Gateway attempt budget contract](./gateway-attempt-budget-contract.md):
   per-request provider attempts, reserved internal retries, typed nested
-  first-byte ownership, strict model discovery, and cross-request circuit-
+  first-byte ownership, per-attempt first meaningful SSE output deadlines,
+  strict model discovery, and cross-request circuit-
   breaker accounting.
 - [Codex request content-encoding contract](./codex-request-content-encoding-contract.md):
   bounded decoding at the gateway boundary, supported HTTP encodings, identity

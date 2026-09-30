@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-09-26
+- **Total Sessions**: 8
+- **Last Active**: 2026-09-29
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~270 | Active |
+| `journal-1.md` | ~308 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-09-29 | Fix per-attempt SSE first-output timeout | `df8e0a669658e2e7fa9dedd674cf3335e2d8604c` | `FingerCaster/sse-first-output-timeout` |
 | 7 | 2026-09-26 | 主会话完成上游功能整合与归档 | `88883c9053026900ad259c7401d80a0cec8561ea` | `main` |
 | 6 | 2026-09-25 | Selective upstream low-risk patch sync | `071d9e79` | `main` |
 | 5 | 2026-08-06 | Archive reasoning effort diagnosis | `a7e7675c8d8b6b9b003cc5ad2069afb91132464a` | `main` |

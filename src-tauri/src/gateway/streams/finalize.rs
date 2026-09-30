@@ -36,7 +36,9 @@ fn incomplete_probe_error_code(evidence: StreamTerminalEvidence) -> Option<&'sta
         | StreamTerminalOrigin::CompletionDelivered
         | StreamTerminalOrigin::DirectDrop
         | StreamTerminalOrigin::RelayDrainTimeout => GatewayErrorCode::StreamAborted.as_str(),
-        StreamTerminalOrigin::IdleTimeout => GatewayErrorCode::StreamIdleTimeout.as_str(),
+        StreamTerminalOrigin::IdleTimeout | StreamTerminalOrigin::FirstOutputTimeout => {
+            GatewayErrorCode::StreamIdleTimeout.as_str()
+        }
         StreamTerminalOrigin::TotalTimeout => GatewayErrorCode::UpstreamTimeout.as_str(),
         StreamTerminalOrigin::Unclassified
         | StreamTerminalOrigin::NormalEof

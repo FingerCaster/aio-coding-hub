@@ -1,0 +1,48 @@
+{
+  "trace_id": "1790672462-1837",
+  "observed_at_local": "2026-09-29T17:30:38.189670",
+  "timezone": "Asia/Shanghai",
+  "process_id": 37832,
+  "request_started_local": "2026-09-29T17:01:02.518",
+  "settings": {
+    "first_byte_seconds": 60,
+    "stream_idle_seconds": 300,
+    "guard_ms": 500,
+    "infinite_retry": false
+  },
+  "initial_frames": [
+    {
+      "type": "response.created",
+      "bytes_without_separator": 95386,
+      "status": "in_progress",
+      "created_at": 1790672472,
+      "output_item_count": 0
+    },
+    {
+      "type": "response.in_progress",
+      "bytes_without_separator": 95394,
+      "status": "in_progress",
+      "created_at": 1790672472,
+      "output_item_count": 0
+    }
+  ],
+  "samples": [
+    {
+      "time": "17:28:55.075",
+      "keepalive_frames": 110,
+      "nonempty_delta_frames": 0
+    },
+    {
+      "time": "17:29:11.080",
+      "keepalive_frames": 111,
+      "nonempty_delta_frames": 0
+    },
+    {
+      "time": "17:29:27.083",
+      "keepalive_frames": 112,
+      "nonempty_delta_frames": 0
+    }
+  ],
+  "keepalive_frame_bytes": 13,
+  "method": "read-only ReadProcessMemory, aggregate event metadata only; no raw bodies or credentials stored"
+}

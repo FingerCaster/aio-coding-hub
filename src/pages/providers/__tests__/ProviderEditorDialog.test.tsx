@@ -631,6 +631,9 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
 
     const dialog = within(screen.getByRole("dialog"));
+    expect(
+      dialog.getByText(/留空或 0 表示沿用全局设置.*按单次上游尝试计算，保活不会延长/)
+    ).toBeInTheDocument();
 
     fireEvent.change(dialog.getByPlaceholderText("default"), {
       target: { value: "Timeout Provider" },

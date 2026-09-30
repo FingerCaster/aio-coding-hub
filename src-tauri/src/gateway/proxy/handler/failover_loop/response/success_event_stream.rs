@@ -13,6 +13,9 @@ use crate::gateway::proxy::provider_router;
 use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::status_override;
 use crate::gateway::proxy::upstream_client_error_rules;
+use crate::gateway::streams::{
+    has_codex_first_output, spawn_usage_sse_relay_body_with_first_output, FirstOutputDeadline,
+};
 use futures_core::Stream;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -103,6 +106,40 @@ enum FirstChunkProbe {
     Ok(Option<Bytes>, Option<u128>),
     ReadError(reqwest::Error),
     Timeout,
+    FirstOutputTimeout(FirstOutputDeadline),
+}
+
+async fn probe_with_first_output_deadline(
+    upstream: &mut DecodedEventStream,
+    attempt_started: std::time::Instant,
+    first_byte_timeout: Option<Duration>,
+    first_output: Option<FirstOutputDeadline>,
+) -> FirstChunkProbe {
+    let probe = probe_first_event_stream_chunk(upstream, attempt_started, first_byte_timeout);
+    let Some(deadline) = first_output else {
+        return probe.await;
+    };
+    // Preserve first-byte attribution when its own budget expires earlier.
+    if first_byte_timeout.is_some_and(|budget| {
+        budget.saturating_sub(attempt_started.elapsed())
+            <= deadline.deadline.saturating_duration_since(Instant::now())
+    }) {
+        return probe.await;
+    }
+    tokio::select! {
+        biased;
+        _ = tokio::time::sleep_until(deadline.deadline) => FirstChunkProbe::FirstOutputTimeout(deadline),
+        result = probe => {
+            if deadline.expired() { FirstChunkProbe::FirstOutputTimeout(deadline) } else { result }
+        },
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PrefixWaitReason {
+    Idle,
+    Guard,
+    FirstOutput(FirstOutputDeadline),
 }
 
 async fn probe_first_event_stream_chunk(
@@ -279,7 +316,6 @@ struct EffectiveStreamIdleTimeout {
     duration: Option<Duration>,
     #[cfg(test)]
     seconds: Option<u32>,
-    #[cfg(test)]
     source: &'static str,
 }
 
@@ -292,7 +328,6 @@ fn resolve_effective_stream_idle_timeout(
             duration: Some(Duration::from_secs(seconds as u64)),
             #[cfg(test)]
             seconds: Some(seconds),
-            #[cfg(test)]
             source: "provider",
         };
     }
@@ -301,7 +336,6 @@ fn resolve_effective_stream_idle_timeout(
         duration: global_timeout,
         #[cfg(test)]
         seconds: global_timeout.map(|timeout| timeout.as_secs().min(u64::from(u32::MAX)) as u32),
-        #[cfg(test)]
         source: "global",
     }
 }
@@ -491,9 +525,7 @@ fn inspect_buffered_event_stream_prefix(
                 }
                 return BufferedStreamPrefixDecision::SanitizedTerminal { evidence };
             }
-            if usage::has_codex_meaningful_output(&data)
-                && state.meaningful_output_started_at.is_none()
-            {
+            if has_codex_first_output(&data) && state.meaningful_output_started_at.is_none() {
                 state.meaningful_output_started_at = Some(Instant::now());
             }
             state.completion_seen |= is_completion_sse_frame(&event_name, &data);
@@ -549,6 +581,49 @@ fn inspect_buffered_event_stream_prefix(
     }
 
     BufferedStreamPrefixDecision::NeedMore
+}
+
+async fn record_first_output_timeout<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    provider_ctx: ProviderCtx<'_>,
+    attempt_ctx: AttemptCtx<'_>,
+    loop_state: LoopState<'_, R>,
+    status: StatusCode,
+    deadline: FirstOutputDeadline,
+    retry_state: &mut RetryLoopState,
+) -> LoopControl {
+    let error_code = GatewayErrorCode::UpstreamTimeout.as_str();
+    let policy = provider_ctx.upstream_retry_policy;
+    let (decision, configured_retry) = stream_transport_decision(
+        crate::settings::UpstreamTransportRetryKind::Timeout,
+        policy,
+        retry_state.configured_transient_retries_used,
+        attempt_ctx.retry_index,
+        provider_ctx.provider_max_attempts,
+    );
+    if configured_retry {
+        retry_state.configured_transient_retries_used = retry_state
+            .configured_transient_retries_used
+            .saturating_add(1);
+    }
+    let timeout_secs = deadline.budget.as_secs().min(u64::from(u32::MAX)) as u32;
+    response_fixer::push_special_setting(
+        ctx.special_settings,
+        serde_json::json!({
+            "type": "stream_first_output_timeout", "phase": "before_commit",
+            "timeout_secs": timeout_secs, "source": deadline.source,
+        }),
+    );
+    record_system_failure_and_decide(RecordSystemFailureArgs {
+        ctx, provider_ctx, attempt_ctx, loop_state,
+        status: Some(status.as_u16()), error_code, decision,
+        outcome: format!("stream_first_output_timeout: category={} code={} decision={} timeout_secs={} source={}",
+            ErrorCategory::SystemError.as_str(), error_code, decision.as_str(), timeout_secs, deadline.source),
+        reason: "stream_first_output_timeout: no meaningful output before per-attempt deadline".to_string(),
+        record_circuit_failure: should_record_circuit_failure(policy, configured_retry),
+        configured_retry_backoff: configured_retry_backoff_delay(policy, configured_retry),
+        timeout_secs: Some(timeout_secs),
+    }).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1733,6 +1808,19 @@ where
     } = loop_state;
 
     if is_event_stream(&response_headers) {
+        let mut first_output = if !common.provider_health_mode.bypasses_circuit()
+            && is_native_codex_responses_event_stream_path(
+                &common.cli_key,
+                &common.forwarded_path,
+                active_bridge_type,
+                provider_ctx_owned.provider_bridged,
+            ) {
+            upstream_stream_idle_timeout.map(|budget| {
+                FirstOutputDeadline::new(budget, effective_stream_idle_timeout.source)
+            })
+        } else {
+            None
+        };
         strip_hop_headers(&mut response_headers);
         tracing::info!(
             trace_id = %common.trace_id,
@@ -1783,10 +1871,11 @@ where
             decode_event_stream(raw_upstream, decode_gzip_before_guard)
         };
 
-        let probe = probe_first_event_stream_chunk(
+        let probe = probe_with_first_output_deadline(
             &mut upstream,
             attempt_started,
             upstream_first_byte_timeout,
+            first_output,
         )
         .await;
         let probe_is_empty_event_stream = matches!(probe, FirstChunkProbe::Ok(None, None));
@@ -1903,6 +1992,25 @@ where
                 })
                 .await;
             }
+            FirstChunkProbe::FirstOutputTimeout(deadline) => {
+                return record_first_output_timeout(
+                    ctx,
+                    provider_ctx,
+                    attempt_ctx,
+                    LoopState {
+                        attempts,
+                        failed_provider_ids,
+                        last_outcome,
+                        active_requested_model,
+                        circuit_snapshot,
+                        abort_guard,
+                    },
+                    status,
+                    deadline,
+                    retry_state,
+                )
+                .await;
+            }
             FirstChunkProbe::Skipped => {}
         }
 
@@ -1983,11 +2091,60 @@ where
                 guard: common.stream_internal_error_guard,
             };
             loop {
-                match inspect_buffered_event_stream_prefix(
+                // Check before parsing even for an upstream that is continuously ready.
+                if let Some(deadline) = first_output.filter(|deadline| deadline.expired()) {
+                    return record_first_output_timeout(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        LoopState {
+                            attempts,
+                            failed_provider_ids,
+                            last_outcome,
+                            active_requested_model,
+                            circuit_snapshot,
+                            abort_guard,
+                        },
+                        status,
+                        deadline,
+                        retry_state,
+                    )
+                    .await;
+                }
+                let prefix_decision = inspect_buffered_event_stream_prefix(
                     &prefix_config,
                     &mut prefix_state,
                     buffered_prefix.as_slice(),
-                ) {
+                );
+                if let Some(deadline) = first_output {
+                    if prefix_state
+                        .meaningful_output_started_at
+                        .is_some_and(|observed| observed < deadline.deadline)
+                        || (prefix_state.completion_seen && !deadline.expired())
+                    {
+                        first_output = None;
+                    }
+                }
+                if let Some(deadline) = first_output.filter(|deadline| deadline.expired()) {
+                    return record_first_output_timeout(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        LoopState {
+                            attempts,
+                            failed_provider_ids,
+                            last_outcome,
+                            active_requested_model,
+                            circuit_snapshot,
+                            abort_guard,
+                        },
+                        status,
+                        deadline,
+                        retry_state,
+                    )
+                    .await;
+                }
+                match prefix_decision {
                     BufferedStreamPrefixDecision::ProviderFailure {
                         error_code,
                         evidence,
@@ -2080,24 +2237,51 @@ where
 
                 let guard_remaining =
                     prefix_state.guard_remaining(common.stream_internal_error_guard);
-                let wait = match (upstream_stream_idle_timeout, guard_remaining) {
-                    (Some(idle), Some(guard)) => Some((idle.min(guard), guard <= idle)),
-                    (Some(idle), None) => Some((idle, false)),
-                    (None, Some(guard)) => Some((guard, true)),
-                    (None, None) => None,
-                };
+                let wait = [
+                    upstream_stream_idle_timeout.map(|d| (d, PrefixWaitReason::Idle)),
+                    guard_remaining.map(|d| (d, PrefixWaitReason::Guard)),
+                    first_output.map(|d| {
+                        (
+                            d.deadline.saturating_duration_since(Instant::now()),
+                            PrefixWaitReason::FirstOutput(d),
+                        )
+                    }),
+                ]
+                .into_iter()
+                .flatten()
+                .min_by_key(|(duration, _)| *duration);
                 let chunk_result = match wait {
-                    Some((wait, guard_timeout)) => {
+                    Some((wait, wait_reason)) => {
                         match tokio::time::timeout(wait, next_event_stream_chunk(&mut upstream))
                             .await
                         {
                             Ok(result) => result,
-                            Err(_) if guard_timeout => {
+                            Err(_) if matches!(wait_reason, PrefixWaitReason::Guard) => {
                                 first_chunk = (!buffered_prefix.is_empty())
                                     .then(|| Bytes::from(buffered_prefix));
                                 break;
                             }
                             Err(_) => {
+                                if let PrefixWaitReason::FirstOutput(deadline) = wait_reason {
+                                    return record_first_output_timeout(
+                                        ctx,
+                                        provider_ctx,
+                                        attempt_ctx,
+                                        LoopState {
+                                            attempts,
+                                            failed_provider_ids,
+                                            last_outcome,
+                                            active_requested_model,
+                                            circuit_snapshot,
+                                            abort_guard,
+                                        },
+                                        status,
+                                        deadline,
+                                        retry_state,
+                                    )
+                                    .await;
+                                }
+
                                 let error_code = GatewayErrorCode::UpstreamTimeout.as_str();
                                 let (decision, configured_retry) = stream_transport_decision(
                                     crate::settings::UpstreamTransportRetryKind::Timeout,
@@ -2156,6 +2340,27 @@ where
                     None => next_event_stream_chunk(&mut upstream).await,
                 };
 
+                // A ready read (including EOF/error) can win timeout's internal poll order.
+                // Attribute expiry before accepting any result observed at/after the deadline.
+                if let Some(deadline) = first_output.filter(|deadline| deadline.expired()) {
+                    return record_first_output_timeout(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        LoopState {
+                            attempts,
+                            failed_provider_ids,
+                            last_outcome,
+                            active_requested_model,
+                            circuit_snapshot,
+                            abort_guard,
+                        },
+                        status,
+                        deadline,
+                        retry_state,
+                    )
+                    .await;
+                }
                 let next_chunk = match chunk_result {
                     Ok(chunk) => chunk,
                     Err(err) => {
@@ -2399,11 +2604,12 @@ where
                 trace_id.clone(),
             );
             if use_sse_relay {
-                spawn_usage_sse_relay_body(
+                spawn_usage_sse_relay_body_with_first_output(
                     upstream,
                     ctx,
                     upstream_stream_idle_timeout,
                     initial_first_byte_ms,
+                    first_output,
                 )
             } else {
                 let stream = UsageSseTeeStream::new(
@@ -2437,11 +2643,12 @@ where
                 trace_id.clone(),
             );
             if use_sse_relay {
-                spawn_usage_sse_relay_body(
+                spawn_usage_sse_relay_body_with_first_output(
                     upstream,
                     ctx,
                     upstream_stream_idle_timeout,
                     initial_first_byte_ms,
+                    first_output,
                 )
             } else {
                 let stream = UsageSseTeeStream::new(
@@ -2560,6 +2767,29 @@ mod tests {
             match this.interval.poll_tick(cx) {
                 Poll::Ready(_) => Poll::Ready(this.chunks.pop_front().map(Ok)),
                 Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_output_probe_preserves_the_earlier_timeout() {
+        for (first_byte, first_output, expected_output_timeout) in [(10, 1, true), (1, 10, false)] {
+            let mut stream: DecodedEventStream =
+                Box::pin(SlowDripStream::new(Duration::from_secs(20)));
+            let result = super::probe_with_first_output_deadline(
+                &mut stream,
+                std::time::Instant::now(),
+                Some(Duration::from_secs(first_byte)),
+                Some(super::FirstOutputDeadline::new(
+                    Duration::from_secs(first_output),
+                    "provider",
+                )),
+            )
+            .await;
+            if expected_output_timeout {
+                assert!(matches!(result, FirstChunkProbe::FirstOutputTimeout(_)));
+            } else {
+                assert!(matches!(result, FirstChunkProbe::Timeout));
             }
         }
     }
@@ -2792,6 +3022,20 @@ mod tests {
         assert_eq!(disabled_global.duration, None);
         assert_eq!(disabled_global.seconds, None);
         assert_eq!(disabled_global.source, "global");
+        let provider_with_disabled_global = resolve_effective_stream_idle_timeout(Some(90), None);
+        assert_eq!(
+            provider_with_disabled_global.duration,
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(provider_with_disabled_global.source, "provider");
+        assert_eq!(
+            resolve_effective_stream_idle_timeout(Some(0), None).duration,
+            None
+        );
+        assert_eq!(
+            resolve_effective_stream_idle_timeout(None, Some(Duration::from_secs(300))).duration,
+            Some(Duration::from_secs(300))
+        );
     }
 
     #[test]

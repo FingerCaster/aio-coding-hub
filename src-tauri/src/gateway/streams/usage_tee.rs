@@ -21,6 +21,7 @@ use super::super::proxy::{
 use super::super::util::{
     lossy_utf8_preview, now_unix_millis, now_unix_seconds, MAX_DEBUG_BODY_PREVIEW_BYTES,
 };
+use super::first_output::{FirstOutputDeadline, FirstOutputWait};
 use super::plugin_chunk::PLUGIN_STREAM_ERROR_MARKER;
 use super::request_end::{emit_request_event_and_spawn_request_log, StreamRequestCompletion};
 use super::terminal_firewall::CodexTerminalFirewall;
@@ -345,12 +346,15 @@ where
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
-    upstream: S,
+    upstream: Option<S>,
     tracker: usage::SseUsageTracker,
     ctx: StreamFinalizeCtx<R>,
     first_byte_ms: Option<u128>,
     idle_timeout: Option<Duration>,
     idle_sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    first_output: Option<FirstOutputWait>,
+    first_output_sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    first_output_timed_out: bool,
     finalized: bool,
     defer_terminal_error: bool,
     stop_after_terminal_error: bool,
@@ -399,12 +403,15 @@ where
             tracker
         };
         Self {
-            upstream,
+            upstream: Some(upstream),
             tracker,
             ctx,
             first_byte_ms: initial_first_byte_ms,
             idle_timeout,
             idle_sleep: idle_timeout.map(|d| Box::pin(tokio::time::sleep(d))),
+            first_output: None,
+            first_output_sleep: None,
+            first_output_timed_out: false,
             finalized: false,
             defer_terminal_error: false,
             stop_after_terminal_error: false,
@@ -413,6 +420,63 @@ where
             stop_after_tail: false,
             completion_override: None,
         }
+    }
+
+    fn with_first_output_deadline(mut self, deadline: Option<FirstOutputDeadline>) -> Self {
+        self.first_output = deadline.map(FirstOutputWait::new);
+        self.first_output_sleep = deadline.map(|d| Box::pin(tokio::time::sleep_until(d.deadline)));
+        self
+    }
+
+    fn first_output_deadline(&self) -> Option<FirstOutputDeadline> {
+        self.first_output
+            .as_ref()
+            .and_then(FirstOutputWait::deadline)
+    }
+
+    fn expire_first_output(&mut self) {
+        let Some(deadline) = self.first_output_deadline() else {
+            return;
+        };
+        // Release the connection even if the downstream queue cannot accept an error tail.
+        self.upstream.take();
+        self.first_output = None;
+        self.first_output_sleep = None;
+        self.first_output_timed_out = true;
+        self.stop_after_tail = true;
+        response_fixer::push_special_setting(
+            &self.ctx.special_settings,
+            serde_json::json!({
+                "type": "stream_first_output_timeout", "phase": "after_commit",
+                "timeout_secs": deadline.budget.as_secs(), "source": deadline.source,
+            }),
+        );
+        self.pending_tail = self.build_synthetic_tail(GatewayErrorCode::StreamIdleTimeout);
+        self.finalize(
+            Some(GatewayErrorCode::StreamIdleTimeout.as_str()),
+            StreamTerminalEvidence::new(
+                StreamTerminalOrigin::FirstOutputTimeout,
+                self.tracker.completion_seen(),
+                false,
+                false,
+                self.tracker.terminal_error_seen(),
+            ),
+        );
+    }
+
+    fn poll_first_output_timeout(&mut self, cx: &mut Context<'_>) -> bool {
+        if self
+            .first_output_deadline()
+            .is_some_and(FirstOutputDeadline::expired)
+            || self
+                .first_output_sleep
+                .as_mut()
+                .is_some_and(|timer| timer.as_mut().poll(cx).is_ready())
+        {
+            self.expire_first_output();
+            return true;
+        }
+        false
     }
 
     pub(in crate::gateway) fn with_defer_terminal_error(mut self) -> Self {
@@ -494,7 +558,26 @@ where
             return Poll::Ready(None);
         }
 
-        let next = Pin::new(&mut self.upstream).poll_next(cx);
+        // Poll the fixed deadline before upstream: heartbeats may stay continuously Ready.
+        // Client-abort drain retains its existing independent deadline and attribution.
+        if enforce_idle_timeout && self.poll_first_output_timeout(cx) {
+            return Poll::Ready(if self.relay_owns_tail {
+                None
+            } else {
+                self.take_pending_tail().map(|frame| Ok(B::from(frame)))
+            });
+        }
+        let Some(upstream) = self.upstream.as_mut() else {
+            return Poll::Ready(None);
+        };
+        let next = Pin::new(upstream).poll_next(cx);
+        if enforce_idle_timeout && self.poll_first_output_timeout(cx) {
+            return Poll::Ready(if self.relay_owns_tail {
+                None
+            } else {
+                self.take_pending_tail().map(|frame| Ok(B::from(frame)))
+            });
+        }
 
         match next {
             Poll::Pending => {
@@ -566,6 +649,13 @@ where
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Ok(chunk))) => {
+                if let Some(wait) = self.first_output.as_mut() {
+                    wait.ingest_chunk(chunk.as_ref());
+                    if wait.deadline().is_none() {
+                        self.first_output = None;
+                        self.first_output_sleep = None;
+                    }
+                }
                 if self.first_byte_ms.is_none() {
                     self.first_byte_ms = Some(self.ctx.attempt_started.elapsed().as_millis());
                 }
@@ -953,11 +1043,55 @@ impl Stream for DownstreamRelayBodyStream {
     }
 }
 
-pub(in crate::gateway) fn spawn_usage_sse_relay_body<S, R>(
+#[derive(Debug)]
+enum RelaySendFailure {
+    Closed,
+    FirstOutputTimeout,
+}
+
+async fn send_relay_item(
+    tx: &tokio::sync::mpsc::Sender<DownstreamRelayItem>,
+    item: DownstreamRelayItem,
+    first_output: Option<FirstOutputDeadline>,
+) -> Result<(), RelaySendFailure> {
+    let Some(deadline) = first_output else {
+        return tx.send(item).await.map_err(|_| RelaySendFailure::Closed);
+    };
+    tokio::select! {
+        biased;
+        _ = tx.closed() => Err(RelaySendFailure::Closed),
+        _ = tokio::time::sleep_until(deadline.deadline) => Err(RelaySendFailure::FirstOutputTimeout),
+        result = tx.send(item) => result.map_err(|_| RelaySendFailure::Closed),
+    }
+}
+
+#[cfg(test)]
+fn spawn_usage_sse_relay_body<S, R>(
     upstream: S,
     ctx: StreamFinalizeCtx<R>,
     idle_timeout: Option<Duration>,
     initial_first_byte_ms: Option<u128>,
+) -> Body
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
+    R: tauri::Runtime + 'static,
+    R::Handle: Unpin,
+{
+    spawn_usage_sse_relay_body_with_first_output(
+        upstream,
+        ctx,
+        idle_timeout,
+        initial_first_byte_ms,
+        None,
+    )
+}
+
+pub(in crate::gateway) fn spawn_usage_sse_relay_body_with_first_output<S, R>(
+    upstream: S,
+    ctx: StreamFinalizeCtx<R>,
+    idle_timeout: Option<Duration>,
+    initial_first_byte_ms: Option<u128>,
+    first_output: Option<FirstOutputDeadline>,
 ) -> Body
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
@@ -969,6 +1103,7 @@ where
     let body_completion_delivered = Arc::clone(&completion_delivered);
 
     let mut tee = UsageSseTeeStream::new(upstream, ctx, idle_timeout, initial_first_byte_ms)
+        .with_first_output_deadline(first_output)
         .with_defer_terminal_error()
         .with_relay_owned_tail();
 
@@ -1098,12 +1233,13 @@ where
                         // frame arrives here. Sent after the firewall has finished and without
                         // passing through it — the frame is gateway-authored, not upstream bytes.
                         if let Some(frame) = tee.take_pending_tail() {
-                            let _ = tx
-                                .send(DownstreamRelayItem {
-                                    item: Ok(frame),
-                                    completion_seen: visible_completion_seen,
-                                })
-                                .await;
+                            let item = DownstreamRelayItem { item: Ok(frame), completion_seen: visible_completion_seen };
+                            if tee.first_output_timed_out {
+                                // At the deadline, best effort only: no unbounded tail send.
+                                let _ = tx.try_send(item);
+                            } else {
+                                let _ = tx.send(item).await;
+                            }
                         }
                         break;
                     };
@@ -1154,14 +1290,17 @@ where
                             }
                             let chunk_len = chunk.len().min(i64::MAX as usize) as i64;
 
-                            if tx
-                                .send(DownstreamRelayItem {
-                                    item: Ok(chunk),
-                                    completion_seen,
-                                })
-                                .await
-                                .is_err()
-                            {
+                            let send_result = send_relay_item(&tx, DownstreamRelayItem {
+                                item: Ok(chunk), completion_seen,
+                            }, tee.first_output_deadline()).await;
+                            if matches!(send_result, Err(RelaySendFailure::FirstOutputTimeout)) {
+                                tee.expire_first_output();
+                                if let Some(frame) = tee.take_pending_tail() {
+                                    let _ = tx.try_send(DownstreamRelayItem { item: Ok(frame), completion_seen: false });
+                                }
+                                break;
+                            }
+                            if send_result.is_err() {
                                 client_abort_detected_by = Some("send_failed");
                                 downstream_closed = true;
                                 if is_codex_responses {
@@ -1791,6 +1930,245 @@ mod tests {
             ))),
             active_requests,
         }
+    }
+
+    struct ReadyPreamble {
+        polls: Arc<std::sync::atomic::AtomicUsize>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl futures_core::Stream for ReadyPreamble {
+        type Item = Result<Bytes, reqwest::Error>;
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(Some(Ok(Bytes::from_static(
+                b"data: {\"type\":\"response.in_progress\",\"response\":{\"output\":[]}}\n\n",
+            ))))
+        }
+    }
+
+    impl Drop for ReadyPreamble {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_output_tee_expires_before_polling_always_ready_upstream() {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        let db = db::init_for_tests(&dir.path().join("first-output-ready.sqlite")).unwrap();
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active = Arc::new(ActiveRequestRegistry::default());
+        active.register(active_request_start("trace-usage-tee-drain"));
+        let ctx = test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active.clone());
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut tee = UsageSseTeeStream::new(
+            ReadyPreamble {
+                polls: polls.clone(),
+                dropped: dropped.clone(),
+            },
+            ctx,
+            Some(Duration::from_secs(300)),
+            None,
+        )
+        .with_first_output_deadline(Some(super::FirstOutputDeadline::new(
+            Duration::from_secs(1),
+            "provider",
+        )));
+        assert!(next_item(&mut tee).await.is_some());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(next_item(&mut tee).await.is_none());
+        assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        drop(tee);
+        let log = log_rx.recv().await.unwrap();
+        assert_eq!(log.error_code.as_deref(), Some("GW_STREAM_IDLE_TIMEOUT"));
+        let details: serde_json::Value =
+            serde_json::from_str(log.activity_details_json.as_deref().unwrap()).unwrap();
+        assert_eq!(details["terminal_origin"], "first_output_timeout");
+        assert_eq!(details["normal_eof"], false);
+        assert!(active.snapshot().is_empty());
+        assert!(log_rx.try_recv().is_err(), "finalizes only once");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_output_relay_preserves_deadline_under_downstream_backpressure() {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        let db = db::init_for_tests(&dir.path().join("first-output-backpressure.sqlite")).unwrap();
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active = Arc::new(ActiveRequestRegistry::default());
+        active.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active.clone());
+        ctx.upstream_error_response_rules = vec![synthetic_status_rule(524)];
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let deadline = super::FirstOutputDeadline::new(Duration::from_secs(1), "provider");
+        tokio::time::advance(Duration::from_millis(900)).await;
+        let body = super::spawn_usage_sse_relay_body_with_first_output(
+            ReadyPreamble {
+                polls: polls.clone(),
+                dropped: dropped.clone(),
+            },
+            ctx,
+            Some(Duration::from_secs(300)),
+            None,
+            Some(deadline),
+        );
+        for _ in 0..1000 {
+            if polls.load(std::sync::atomic::Ordering::SeqCst) > super::SSE_RELAY_BUFFER_CAPACITY {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(polls.load(std::sync::atomic::Ordering::SeqCst) > super::SSE_RELAY_BUFFER_CAPACITY);
+        tokio::time::advance(Duration::from_millis(100)).await;
+        for _ in 0..1000 {
+            if dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "upstream must release at the original virtual deadline"
+        );
+        // The logger uses blocking DB work; its scheduling is wall-clock based. Do not
+        // race that work against auto-advancing virtual time after testing the timer.
+        tokio::time::resume();
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "upstream released while downstream is still open and unread"
+        );
+        // Request-log status uses the existing synthetic timeout mapping; the already
+        // committed HTTP status is asserted separately by the route cap-handoff test.
+        assert_eq!(log.status, Some(524));
+        assert_eq!(log.error_code.as_deref(), Some("GW_STREAM_IDLE_TIMEOUT"));
+        let details: serde_json::Value =
+            serde_json::from_str(log.activity_details_json.as_deref().unwrap()).unwrap();
+        assert_eq!(details["terminal_origin"], "first_output_timeout");
+        assert!(log
+            .special_settings_json
+            .as_deref()
+            .unwrap()
+            .contains("after_commit"));
+        assert!(active.snapshot().is_empty());
+        drop(body);
+        tokio::task::yield_now().await;
+        assert!(log_rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_output_custom_tool_disarms_deadline_for_long_generation() {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        let db = db::init_for_tests(&dir.path().join("first-output-custom-tool.sqlite")).unwrap();
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(4);
+        let ctx = test_stream_finalize_ctx(
+            app.handle().clone(),
+            db,
+            log_tx,
+            Arc::new(ActiveRequestRegistry::default()),
+        );
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let mut tee = UsageSseTeeStream::new(RelayBodyStream::new(rx), ctx, None, None)
+            .with_first_output_deadline(Some(super::FirstOutputDeadline::new(
+                Duration::from_secs(1),
+                "provider",
+            )));
+        tokio::time::advance(Duration::from_millis(999)).await;
+        tx.send(Ok(Bytes::from_static(
+            b"data: {\"type\":\"response.custom_tool_call_input.delta\",\"delta\":\"patch\"}\n\n",
+        )))
+        .await
+        .unwrap();
+        assert!(next_item(&mut tee).await.is_some());
+        tokio::time::advance(Duration::from_secs(1000)).await;
+        tx.send(Ok(Bytes::from_static(b": keepalive\n\n")))
+            .await
+            .unwrap();
+        assert!(next_item(&mut tee).await.is_some());
+        assert!(tee.first_output_deadline().is_none());
+        assert!(!tee.finalized);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_output_relay_delivers_gateway_tail_outside_firewall() {
+        let app = tauri::test::mock_app();
+        let dir = tempfile::tempdir().unwrap();
+        let db = db::init_for_tests(&dir.path().join("first-output-tail.sqlite")).unwrap();
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let mut ctx = test_stream_finalize_ctx(
+            app.handle().clone(),
+            db,
+            log_tx,
+            Arc::new(ActiveRequestRegistry::default()),
+        );
+        ctx.upstream_error_response_rules = vec![synthetic_status_rule(524)];
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let body = super::spawn_usage_sse_relay_body_with_first_output(
+            RelayBodyStream::new(rx),
+            ctx,
+            Some(Duration::from_secs(300)),
+            None,
+            Some(super::FirstOutputDeadline::new(
+                Duration::from_secs(1),
+                "global",
+            )),
+        );
+        let mut stream = body.into_data_stream();
+        tx.send(Ok(Bytes::from_static(
+            b"data: {\"type\":\"response.created\",\"response\":{\"output\":[]}}\n\n",
+        )))
+        .await
+        .unwrap();
+        assert!(next_item(&mut stream).await.is_some());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let frame = next_item(&mut stream).await.unwrap().unwrap();
+        let text = String::from_utf8_lossy(&frame);
+        assert!(text.starts_with("event: response.failed\ndata: "));
+        assert!(!text.contains("GW_STREAM_IDLE_TIMEOUT"));
+        assert!(next_item(&mut stream).await.is_none());
+        assert!(
+            tx.is_closed(),
+            "timeout releases upstream before tail delivery"
+        );
+        let log = log_rx.recv().await.unwrap();
+        assert_eq!(log.error_code.as_deref(), Some("GW_STREAM_IDLE_TIMEOUT"));
+        assert!(log
+            .activity_details_json
+            .as_deref()
+            .unwrap()
+            .contains("first_output_timeout"));
+        assert!(log_rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_output_send_prioritizes_client_cancel_at_deadline() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let deadline = super::FirstOutputDeadline::new(Duration::from_secs(1), "global");
+        drop(rx);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let result = super::send_relay_item(
+            &tx,
+            super::DownstreamRelayItem {
+                item: Ok(Bytes::from_static(b": keepalive\n\n")),
+                completion_seen: false,
+            },
+            Some(deadline),
+        )
+        .await;
+        assert!(matches!(result, Err(super::RelaySendFailure::Closed)));
     }
 
     fn active_request_start(trace_id: &str) -> ActiveRequestStart {

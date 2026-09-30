@@ -268,3 +268,41 @@ Fetched upstream into a local clone, audited 30 divergent commits, and selective
 ### Status
 
 [OK] **Completed**
+
+
+## Session 8: Fix per-attempt SSE first-output timeout
+
+**Date**: 2026-09-29
+**Task**: Fix per-attempt SSE first-output timeout
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/sse-first-output-timeout`
+
+### Summary
+
+Implemented approved per-attempt first meaningful output deadline in isolated worktree; preserves first-byte, guard, idle, retry and stream-finalization behavior. User approved local commit/archive/journal.
+
+### Main Changes
+
+- Reuse effective idle budget; heartbeats cannot reset first-output deadline; support custom-tool progress.
+- Carry the same deadline across early commit and downstream backpressure, release upstream and finalize once.
+- Update settings help and executable contracts; keep main product code and the installed app unchanged.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `df8e0a669658e2e7fa9dedd674cf3335e2d8604c` | (see git log) |
+
+### Testing
+
+- [OK] Rust full: 3229 passed, 10 existing ignored; 11 new first-output regressions passed.
+- [OK] Frontend full: 3084 passed across 332 files; targeted 108 tests passed.
+- [OK] Strict Clippy, cargo check, typecheck, lint, production build, bindings, error codes, formatting and spec links passed; pre-commit checks passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Review or publish FingerCaster/sse-first-output-timeout when requested; runtime installation is a separate step.

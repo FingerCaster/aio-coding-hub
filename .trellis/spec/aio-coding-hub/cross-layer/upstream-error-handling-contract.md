@@ -86,6 +86,23 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   first real text, refusal, reasoning summary, tool arguments, or concrete
   output. The setting is `0..=5000` ms with default `500`; the buffered prefix
   is capped at 1 MiB per request.
+- Ordinary nonbridged Codex Responses also reuse effective stream-idle seconds
+  for a fixed first-meaningful-output deadline beginning at response headers.
+  Heartbeats do not reset it; progress permanently disarms it. Prefix cap or
+  compatibility release carries the same deadline into relay reads and sends.
+  See the [per-attempt deadline contract](../backend/gateway-attempt-budget-contract.md)
+  for qualification, custom-tool shapes, inheritance and assertion points.
+  This timeout is independent of the terminal-interception master switch and
+  does not apply to the explicit infinite-test collector.
+- A pre-commit first-output timeout uses the existing transport Timeout matcher
+  and `GW_UPSTREAM_TIMEOUT`, with effective idle `timeout_secs`. After commit,
+  use `GW_STREAM_IDLE_TIMEOUT` and internal terminal origin `first_output_timeout`;
+  preserve HTTP status, finalize once, release upstream and deliver any gateway
+  error tail through relay ownership with no unbounded queue wait. Diagnostics
+  use the existing special-settings JSON entry `stream_first_output_timeout`,
+  including `phase` (`before_commit` / `after_commit`), `timeout_secs` and `source`.
+  General/Provider help explains the shared budget, heartbeat behavior and
+  single-attempt scope without adding controls or changing persisted values.
 - Classification priority is hard non-retry (`auth`, `invalid_request`,
   `quota`, `policy`), then `transient_capacity` / `transient_provider`, then a
   valid passthrough exception, then the hidden legacy override, then `unknown`.
