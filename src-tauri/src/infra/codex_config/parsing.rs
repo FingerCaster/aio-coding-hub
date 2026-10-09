@@ -249,9 +249,7 @@ pub(super) fn make_state_from_bytes(
 
         features_unified_exec: None,
         features_shell_snapshot: None,
-        features_apply_patch_freeform: None,
         features_shell_tool: None,
-        features_exec_policy: None,
         features_fast_mode: None,
         features_multi_agent: None,
     };
@@ -342,11 +340,7 @@ pub(super) fn make_state_from_bytes(
             ("features", "shell_snapshot") => {
                 state.features_shell_snapshot = parse_bool(&raw_value)
             }
-            ("features", "apply_patch_freeform") => {
-                state.features_apply_patch_freeform = parse_bool(&raw_value)
-            }
             ("features", "shell_tool") => state.features_shell_tool = parse_bool(&raw_value),
-            ("features", "exec_policy") => state.features_exec_policy = parse_bool(&raw_value),
             ("features", "fast_mode") => state.features_fast_mode = parse_bool(&raw_value),
             ("features", "multi_agent") => state.features_multi_agent = parse_bool(&raw_value),
 

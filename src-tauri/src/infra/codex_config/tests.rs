@@ -17,9 +17,7 @@ fn empty_patch() -> CodexConfigPatch {
         sandbox_workspace_write_network_access: None,
         features_unified_exec: None,
         features_shell_snapshot: None,
-        features_apply_patch_freeform: None,
         features_shell_tool: None,
-        features_exec_policy: None,
         features_fast_mode: None,
         features_multi_agent: None,
     }
@@ -62,6 +60,33 @@ type = "stdio"
     assert!(s.contains("[mcp_servers.exa]"), "{s}");
     assert!(s.contains("[features]"), "{s}");
     assert!(s.contains("shell_snapshot = true"), "{s}");
+}
+
+#[test]
+fn patch_preserves_retired_feature_flags() {
+    let input = r#"[features]
+exec_policy = true
+apply_patch_freeform = false
+shell_snapshot = true
+
+features.exec_policy = true
+"#;
+
+    let out = patch_config_toml(
+        Some(input.as_bytes().to_vec()),
+        CodexConfigPatch {
+            features_shell_tool: Some(true),
+            ..empty_patch()
+        },
+    )
+    .expect("patch_config_toml");
+
+    let s = String::from_utf8(out).expect("utf8");
+    assert!(s.contains("exec_policy = true"), "{s}");
+    assert!(s.contains("apply_patch_freeform = false"), "{s}");
+    assert!(s.contains("features.exec_policy = true"), "{s}");
+    assert!(s.contains("shell_tool = true"), "{s}");
+    assert_eq!(s.matches("exec_policy").count(), 2, "{s}");
 }
 
 #[test]

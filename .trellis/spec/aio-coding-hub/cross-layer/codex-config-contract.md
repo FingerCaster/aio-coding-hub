@@ -62,6 +62,19 @@ and the reviewer decides who evaluates an eligible request. The UI may warn
 about an ineffective combination, but only an explicit user action may patch
 the companion field.
 
+`approval_policy = "on-failure"` stays valid for an existing file. Raw
+validation and structured patches still accept it. The settings select shows
+that option only while it is the current value, with a deprecated label. New
+choices are `untrusted`, `on-request`, and `never`. The subtitle recommends
+`on-request` or `never`. Rendering the select and saving another field must
+not rewrite an existing `on-failure` line.
+
+`features.exec_policy` and `features.apply_patch_freeform` are absent from
+`CodexConfigState`, `CodexConfigPatch`, and the generated bindings. A
+structured save must not write either key. An existing table line or dotted
+`features.exec_policy` / `features.apply_patch_freeform` assignment stays in
+the file when another feature is saved.
+
 ### 4. Validation & Error Matrix
 
 | Boundary | Input | Result |
@@ -75,6 +88,9 @@ the companion field.
 | Raw TOML | non-string or unknown string | Reject before write |
 | Structured read | unknown string already on disk | Return it verbatim |
 | Unrelated structured patch | unknown reviewer on disk | Preserve it verbatim |
+| Settings select | current `approval_policy` is `on-failure` | Show the deprecated option |
+| Settings select | current `approval_policy` is anything else | Omit `on-failure` |
+| Structured feature patch | existing `exec_policy` or `apply_patch_freeform` | Preserve both lines |
 
 The raw reviewer enum uses exact comparison in
 `validate_root_exact_string_enum`. Do not use the trim-tolerant generic enum
@@ -90,6 +106,9 @@ validator for a field whose raw contract requires exact values.
 - Bad: map an unknown reviewer to the unset option; this hides external state
   and encourages accidental cleanup.
 - Bad: silently rewrite `approval_policy` when the reviewer selector changes.
+- Bad: offer `on-failure` as a new approval choice, or delete an existing
+  `features.exec_policy` / `features.apply_patch_freeform` line while saving
+  another feature.
 - Bad: validate a full raw save after writing; invalid input must leave the
   previous file bytes unchanged.
 
@@ -110,6 +129,10 @@ validator for a field whose raw contract requires exact values.
   - Exhaust the pure policy/reviewer matrix.
   - Assert unknown-value display, direct selector patches, and companion-field
     changes only from the explicit action.
+  - Assert `on-failure` appears only while it is the current approval policy.
+- `src-tauri/src/infra/codex_config/tests.rs`
+  - Assert a feature patch preserves existing `exec_policy` and
+    `apply_patch_freeform` lines.
 
 Focused verification:
 
@@ -178,7 +201,7 @@ restore_managed_provider_projection(current: &[u8], baseline: &[u8]) -> AppResul
 - Projection owns only `model_provider` and provider fields `name`, `base_url`,
   `wire_api`, and `requires_openai_auth`. Unknown provider fields, comments,
   tables, and unrelated root keys remain user-owned.
-- Normal-mode route projection must not insert `preferred_auth_method = "apikey"` when the user baseline does not already contain it. OAuth-compatible projection still removes an AIO-owned `apikey` value. `auth.json` placeholder ownership is unchanged.
+- Route projection must not insert `preferred_auth_method`. Both normal and OAuth-compatible projection, WSL Codex configure, and disable restore remove the whole root key, whatever its value. `auth.json` placeholder ownership is unchanged.
 - The pre-enable backup is the canonical user baseline. While routing is on,
   saves merge user-owned deltas into that baseline, then derive a fresh live
   projection. Never persist the projected gateway URL as the baseline.

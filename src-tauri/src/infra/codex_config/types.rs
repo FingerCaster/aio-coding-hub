@@ -30,9 +30,7 @@ pub struct CodexConfigState {
 
     pub features_unified_exec: Option<bool>,
     pub features_shell_snapshot: Option<bool>,
-    pub features_apply_patch_freeform: Option<bool>,
     pub features_shell_tool: Option<bool>,
-    pub features_exec_policy: Option<bool>,
     pub features_fast_mode: Option<bool>,
     pub features_multi_agent: Option<bool>,
 }
@@ -70,9 +68,7 @@ pub struct CodexConfigPatch {
 
     pub features_unified_exec: Option<bool>,
     pub features_shell_snapshot: Option<bool>,
-    pub features_apply_patch_freeform: Option<bool>,
     pub features_shell_tool: Option<bool>,
-    pub features_exec_policy: Option<bool>,
     pub features_fast_mode: Option<bool>,
     pub features_multi_agent: Option<bool>,
 }

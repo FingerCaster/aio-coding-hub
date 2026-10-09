@@ -3422,9 +3422,7 @@ export type CodexConfigPatch = {
   sandbox_workspace_write_network_access: boolean | null;
   features_unified_exec: boolean | null;
   features_shell_snapshot: boolean | null;
-  features_apply_patch_freeform: boolean | null;
   features_shell_tool: boolean | null;
-  features_exec_policy: boolean | null;
   features_fast_mode: boolean | null;
   features_multi_agent: boolean | null;
 };
@@ -3452,9 +3450,7 @@ export type CodexConfigState = {
   sandbox_workspace_write_network_access: boolean | null;
   features_unified_exec: boolean | null;
   features_shell_snapshot: boolean | null;
-  features_apply_patch_freeform: boolean | null;
   features_shell_tool: boolean | null;
-  features_exec_policy: boolean | null;
   features_fast_mode: boolean | null;
   features_multi_agent: boolean | null;
 };

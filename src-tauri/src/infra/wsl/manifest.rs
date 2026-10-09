@@ -294,9 +294,8 @@ pub(super) fn restore_codex_config_toml(content: &str, backup: &WslCliBackup) ->
         "failed to restore Codex config.toml: root must be a TOML table".to_string()
     })?;
 
-    for key in ["preferred_auth_method", "model_provider"] {
-        restore_wsl_toml_string_key(table, backup, key);
-    }
+    table.remove("preferred_auth_method");
+    restore_wsl_toml_string_key(table, backup, "model_provider");
 
     let remove_model_providers = if let Some(model_providers) = table
         .get_mut("model_providers")

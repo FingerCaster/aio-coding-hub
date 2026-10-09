@@ -399,9 +399,9 @@ pub(super) fn merge_restore_codex_auth_json(
 }
 
 /// Merge-restore Codex `config.toml`: revert the proxy-managed root keys
-/// (`model_provider`, `preferred_auth_method`, `model_catalog_json`) and the
-/// `[model_providers.aio]` section / `[windows] sandbox` while preserving user
-/// changes.
+/// (`model_provider`, `model_catalog_json`) and the `[model_providers.aio]`
+/// section / `[windows] sandbox`. The retired `preferred_auth_method` key is
+/// removed instead of being copied back from the baseline.
 pub(super) fn merge_restore_codex_config_toml(
     target_path: &Path,
     backup_path: &Path,
@@ -430,13 +430,7 @@ pub(super) fn merge_restore_codex_config_toml(
         backup_str.lines().map(|l| l.to_string()).collect()
     };
 
-    // --- Revert root `preferred_auth_method` ---
-    let backup_auth_method = find_root_key_value(&backup_lines, "preferred_auth_method");
-    revert_root_key(
-        &mut lines,
-        "preferred_auth_method",
-        backup_auth_method.as_deref(),
-    );
+    remove_root_preferred_auth_method(&mut lines);
 
     // --- Revert root `model_catalog_json` ---
     let backup_model_catalog = find_root_key_value(&backup_lines, "model_catalog_json");
@@ -583,35 +577,31 @@ fn move_model_provider_base_before_nested(lines: &mut Vec<String>, provider_key:
     lines.splice(nested_start..nested_start, block);
 }
 
-pub(super) fn remove_root_preferred_auth_method_if_api_key(lines: &mut Vec<String>) {
-    let first_table = lines
-        .iter()
-        .position(|l| l.trim().starts_with('['))
-        .unwrap_or(lines.len());
-
-    let Some(pos) = lines[..first_table]
-        .iter()
-        .position(|l| l.trim_start().starts_with("preferred_auth_method"))
-    else {
-        return;
-    };
-
-    let Some((_, value)) = lines[pos].trim_start().split_once('=') else {
-        return;
-    };
-
-    let normalized = value.trim().trim_matches('"').trim_matches('\'');
-    if normalized == "apikey" {
+pub(super) fn remove_root_preferred_auth_method(lines: &mut Vec<String>) {
+    loop {
+        let first_table = lines
+            .iter()
+            .position(|l| l.trim().starts_with('['))
+            .unwrap_or(lines.len());
+        let Some(pos) = lines[..first_table]
+            .iter()
+            .position(|l| l.trim_start().starts_with("preferred_auth_method"))
+        else {
+            return;
+        };
         lines.remove(pos);
     }
 }
 
-fn has_root_preferred_auth_method_api_key(config: &str) -> bool {
+fn has_root_preferred_auth_method(config: &str) -> bool {
     let lines: Vec<String> = config.lines().map(|line| line.to_string()).collect();
-    find_root_key_value(&lines, "preferred_auth_method")
-        .as_deref()
-        .map(|value| value.trim().trim_matches('"').trim_matches('\'') == "apikey")
-        .unwrap_or(false)
+    let first_table = lines
+        .iter()
+        .position(|line| line.trim().starts_with('['))
+        .unwrap_or(lines.len());
+    lines[..first_table]
+        .iter()
+        .any(|line| line.trim_start().starts_with("preferred_auth_method"))
 }
 
 pub(super) fn upsert_windows_sandbox(lines: &mut Vec<String>) {
@@ -688,7 +678,7 @@ fn build_codex_config_toml_with_auth_strategy(
     base_url: &str,
     previous_base_url: Option<&str>,
     platform: CodexConfigPlatform,
-    oauth_compatible: bool,
+    _oauth_compatible: bool,
 ) -> AppResult<Vec<u8>> {
     let projected = crate::infra::codex_config::provider_projection::project_active_provider(
         current.as_deref().unwrap_or_default(),
@@ -709,13 +699,9 @@ fn build_codex_config_toml_with_auth_strategy(
     };
     move_model_provider_base_before_nested(&mut lines, provider_key.as_str());
 
-    // OAuth-compatible mode strips an AIO-owned apikey preference. Normal mode
-    // must not invent one: Provider name and other route reprojections rebuild
-    // live config from the user baseline, and a baseline without this key used
-    // to get `preferred_auth_method = "apikey"` written back.
-    if oauth_compatible {
-        remove_root_preferred_auth_method_if_api_key(&mut lines);
-    }
+    // Codex 0.35.0 removed this key. Reprojection rebuilds live config from the
+    // user baseline, so any leftover value would be written back.
+    remove_root_preferred_auth_method(&mut lines);
     if platform == CodexConfigPlatform::Windows {
         upsert_windows_sandbox(&mut lines);
     }
@@ -778,7 +764,7 @@ pub(super) fn is_proxy_config_applied<R: tauri::Runtime>(
     }
 
     if super::codex_oauth_compatible_proxy_mode(app) {
-        return !has_root_preferred_auth_method_api_key(&String::from_utf8_lossy(&config));
+        return !has_root_preferred_auth_method(&String::from_utf8_lossy(&config));
     }
 
     let auth_path = match codex_auth_path(app) {

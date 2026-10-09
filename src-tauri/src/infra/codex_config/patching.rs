@@ -317,13 +317,12 @@ enum TableStyle {
     Dotted,
 }
 
-pub(super) const FEATURES_KEY_ORDER: [&str; 7] = [
+pub(super) const FEATURES_KEY_ORDER: [&str; 5] = [
     // Keep a stable persisted order for feature flags in config.toml.
+    // Retired keys stay out of this list so a save neither writes nor deletes them.
     "shell_snapshot",
     "unified_exec",
     "shell_tool",
-    "exec_policy",
-    "apply_patch_freeform",
     "fast_mode",
     "multi_agent",
 ];
@@ -725,9 +724,7 @@ pub(super) fn patch_config_toml(
     // features.*
     let has_any_feature_patch = patch.features_unified_exec.is_some()
         || patch.features_shell_snapshot.is_some()
-        || patch.features_apply_patch_freeform.is_some()
         || patch.features_shell_tool.is_some()
-        || patch.features_exec_policy.is_some()
         || patch.features_fast_mode.is_some()
         || patch.features_multi_agent.is_some();
 
@@ -742,14 +739,8 @@ pub(super) fn patch_config_toml(
         if let Some(v) = patch.features_shell_snapshot {
             items.push(("shell_snapshot", Some(v.to_string())));
         }
-        if let Some(v) = patch.features_apply_patch_freeform {
-            items.push(("apply_patch_freeform", Some(v.to_string())));
-        }
         if let Some(v) = patch.features_shell_tool {
             items.push(("shell_tool", Some(v.to_string())));
-        }
-        if let Some(v) = patch.features_exec_policy {
-            items.push(("exec_policy", Some(v.to_string())));
         }
         if let Some(v) = patch.features_fast_mode {
             items.push(("fast_mode", Some(v.to_string())));
