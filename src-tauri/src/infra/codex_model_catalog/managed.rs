@@ -1020,6 +1020,64 @@ ORDER BY profile.profile_name_key ASC
     Ok(profiles)
 }
 
+pub(crate) fn ensure_codex_managed_model_catalog_enabled<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    profiles: &[ManagedCatalogProfile],
+    policy: &ManagedCatalogPolicy,
+) -> AppResult<bool> {
+    let settings = crate::settings::read(app)?;
+    if let Some(enabled) = settings.codex_managed_model_catalog_enabled {
+        return Ok(enabled);
+    }
+    let enabled = derive_codex_managed_model_catalog_enabled(app, profiles, policy)?;
+    let (persisted, _) = crate::settings::update(app, |latest| {
+        if latest.codex_managed_model_catalog_enabled.is_none() {
+            latest.codex_managed_model_catalog_enabled = Some(enabled);
+            latest.schema_version = crate::settings::SCHEMA_VERSION;
+        }
+        Ok(())
+    })?;
+    persisted
+        .codex_managed_model_catalog_enabled
+        .ok_or_else(|| {
+            AppError::new(
+                "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+                "the Codex managed model catalog switch was not persisted",
+            )
+        })
+}
+
+fn derive_codex_managed_model_catalog_enabled<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    profiles: &[ManagedCatalogProfile],
+    policy: &ManagedCatalogPolicy,
+) -> AppResult<bool> {
+    if !profiles.is_empty() || policy.has_enabled_rules() {
+        return Ok(true);
+    }
+    let generated_path = managed_catalog_path(app)?;
+    let binding = current_root_catalog_binding(app)?;
+    Ok(binding
+        .as_deref()
+        .is_some_and(|path| catalog_paths_match(path, &generated_path)))
+}
+
+fn current_root_catalog_binding<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<Option<PathBuf>> {
+    let ownership = catalog_ownership_context(app)?;
+    let bytes = match &ownership {
+        CatalogOwnershipContext::ProxyApplied(baseline)
+        | CatalogOwnershipContext::ProxyRestoredDirect(baseline) => {
+            snapshot_cli_proxy_file(&baseline.config_path)?.bytes
+        }
+        CatalogOwnershipContext::Direct { config_path } => {
+            snapshot_cli_proxy_file(config_path)?.bytes
+        }
+    };
+    parse_catalog_path(bytes.as_deref(), "current")
+}
+
 pub(crate) fn prepare_for_profiles<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     profiles: &[ManagedCatalogProfile],
@@ -1084,6 +1142,10 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
 ) -> AppResult<PrepareOutcome> {
     validate_profiles(profiles)?;
     let policy = policy.canonicalized()?;
+    // Persist a missing switch before any catalog deactivation. A failed settings
+    // write returns here and leaves the catalog, config, and generated file untouched.
+    let catalog_hosting_enabled =
+        ensure_codex_managed_model_catalog_enabled(app, profiles, &policy)?;
     let PreparedCatalogContext {
         ownership,
         generated_path,
@@ -1095,10 +1157,11 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
         original_catalog_path,
         codex_home_key,
         legacy_catalog_ownership,
-    } = prepare_catalog_context(app, intent)?;
+    } = prepare_catalog_context(app, intent, catalog_hosting_enabled)?;
     let current_config = current_config_bytes.as_slice();
 
-    let needs_generated_catalog = !profiles.is_empty() || policy.has_enabled_rules();
+    let needs_generated_catalog =
+        catalog_hosting_enabled && (!profiles.is_empty() || policy.has_enabled_rules());
     if needs_generated_catalog && legacy_catalog_ownership == LegacyCatalogOwnership::Inactive {
         return Err(AppError::new(
             "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
@@ -1224,6 +1287,7 @@ fn prepare_for_profiles_with_policy_and_intent<R: tauri::Runtime>(
 fn prepare_catalog_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     intent: CatalogReconcileIntent<'_>,
+    catalog_hosting_enabled: bool,
 ) -> AppResult<PreparedCatalogContext> {
     let ownership = catalog_ownership_context(app)?;
     let codex_home_key = current_codex_home_key(app)?;
@@ -1289,19 +1353,23 @@ fn prepare_catalog_context<R: tauri::Runtime>(
                 let current_catalog_path = parse_catalog_path(Some(&current), "current")?;
                 let original = match intent {
                     CatalogReconcileIntent::Background
-                    | CatalogReconcileIntent::ForceBaseRefresh => direct_original_catalog_path(
-                        current_catalog_path.as_deref(),
-                        &generated_path,
-                        existing_metadata.as_ref(),
-                    )?,
+                    | CatalogReconcileIntent::ForceBaseRefresh => {
+                        direct_original_catalog_path_for_hosting(
+                            current_catalog_path.as_deref(),
+                            &generated_path,
+                            existing_metadata.as_ref(),
+                            catalog_hosting_enabled,
+                        )?
+                    }
                     CatalogReconcileIntent::ProposedConfigSave {
                         previous_config,
                         proposed_config,
-                    } => explicit_save_original_catalog_path(
+                    } => explicit_save_original_catalog_path_for_hosting(
                         previous_config,
                         proposed_config,
                         &generated_path,
                         existing_metadata.as_ref(),
+                        catalog_hosting_enabled,
                     )?,
                 };
                 (None, config_before, current, original)
@@ -1313,10 +1381,11 @@ fn prepare_catalog_context<R: tauri::Runtime>(
         config_before.bytes.as_deref(),
         &generated_path,
     )?;
-    validate_current_catalog_binding(
+    validate_current_catalog_binding_for_hosting(
         &current_config_bytes,
         original_catalog_path.as_deref(),
         &generated_path,
+        catalog_hosting_enabled,
     )?;
 
     Ok(PreparedCatalogContext {
@@ -1336,7 +1405,13 @@ fn prepare_catalog_context<R: tauri::Runtime>(
 pub(crate) fn read_original_base_catalog_locked<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<CodexBaseCatalogRead> {
-    let context = prepare_catalog_context(app, CatalogReconcileIntent::Background)?;
+    let catalog_hosting_enabled =
+        crate::settings::read(app)?.codex_managed_model_catalog_enabled == Some(true);
+    let context = prepare_catalog_context(
+        app,
+        CatalogReconcileIntent::Background,
+        catalog_hosting_enabled,
+    )?;
     let source = base_catalog_source(app, context.original_catalog_path.as_deref())?;
     let bytes = source.load(app)?;
     Ok(CodexBaseCatalogRead { bytes })
@@ -1366,8 +1441,25 @@ fn direct_original_catalog_path(
     generated_path: &Path,
     existing_metadata: Option<&OwnedCatalogMetadata>,
 ) -> AppResult<Option<PathBuf>> {
+    direct_original_catalog_path_for_hosting(
+        current_catalog_path,
+        generated_path,
+        existing_metadata,
+        true,
+    )
+}
+
+fn direct_original_catalog_path_for_hosting(
+    current_catalog_path: Option<&Path>,
+    generated_path: &Path,
+    existing_metadata: Option<&OwnedCatalogMetadata>,
+    catalog_hosting_enabled: bool,
+) -> AppResult<Option<PathBuf>> {
     let current_is_generated =
         current_catalog_path.is_some_and(|path| catalog_paths_match(path, generated_path));
+    if !catalog_hosting_enabled && !current_is_generated {
+        return Ok(current_catalog_path.map(Path::to_path_buf));
+    }
     let Some(metadata) = existing_metadata else {
         if current_is_generated {
             return Err(AppError::new(
@@ -1486,11 +1578,28 @@ fn explicit_save_original_catalog_path(
     generated_path: &Path,
     existing_metadata: Option<&OwnedCatalogMetadata>,
 ) -> AppResult<Option<PathBuf>> {
+    explicit_save_original_catalog_path_for_hosting(
+        previous_config,
+        committed_config,
+        generated_path,
+        existing_metadata,
+        true,
+    )
+}
+
+fn explicit_save_original_catalog_path_for_hosting(
+    previous_config: Option<&[u8]>,
+    committed_config: &[u8],
+    generated_path: &Path,
+    existing_metadata: Option<&OwnedCatalogMetadata>,
+    catalog_hosting_enabled: bool,
+) -> AppResult<Option<PathBuf>> {
     let previous_catalog_path = parse_catalog_path(previous_config, "previous")?;
-    let previous_original = direct_original_catalog_path(
+    let previous_original = direct_original_catalog_path_for_hosting(
         previous_catalog_path.as_deref(),
         generated_path,
         existing_metadata,
+        catalog_hosting_enabled,
     )?;
     let committed_catalog_path = parse_catalog_path(Some(committed_config), "committed")?;
     if committed_catalog_path
@@ -1562,6 +1671,13 @@ pub(crate) fn preserve_active_binding<R: tauri::Runtime>(
     current: Option<&[u8]>,
     projected: &[u8],
 ) -> AppResult<Vec<u8>> {
+    let catalog_hosting_enabled = crate::settings::read(app)?.codex_managed_model_catalog_enabled;
+    // Explicit off restores the pre-proxy binding. An unset switch must keep the
+    // historical preserve path: dropping a generated binding here would happen
+    // before catalog prepare derives the switch inside the lifecycle lock.
+    if catalog_hosting_enabled == Some(false) {
+        return patch_model_catalog_config(projected, baseline, None);
+    }
     let generated = managed_catalog_path(app)?;
     let original = parse_original_catalog_path(baseline)?;
     let current_path = parse_catalog_path(current, "current")?;
@@ -1985,10 +2101,22 @@ fn validate_current_catalog_binding(
     original: Option<&Path>,
     generated: &Path,
 ) -> AppResult<()> {
+    validate_current_catalog_binding_for_hosting(current, original, generated, true)
+}
+
+fn validate_current_catalog_binding_for_hosting(
+    current: &[u8],
+    original: Option<&Path>,
+    generated: &Path,
+    catalog_hosting_enabled: bool,
+) -> AppResult<()> {
     let current_path = parse_catalog_path(Some(current), "current")?;
     let matches_original = current_path.as_deref() == original;
     let matches_generated = current_path.as_deref() == Some(generated);
     if !matches_original && !matches_generated {
+        if !catalog_hosting_enabled {
+            return Ok(());
+        }
         return Err(AppError::new(
             "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
             "model_catalog_json changed outside AIO while the managed catalog was active",
@@ -3417,6 +3545,87 @@ mod tests {
         ManagedCatalogPolicy::default()
     }
 
+    fn set_catalog_hosting<R: tauri::Runtime>(app: &tauri::AppHandle<R>, enabled: Option<bool>) {
+        crate::settings::update(app, |settings| {
+            settings.codex_managed_model_catalog_enabled = enabled;
+            Ok(())
+        })
+        .expect("write catalog hosting switch");
+    }
+
+    fn write_catalog_hosting_and_rules<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+        enabled: Option<bool>,
+        rules: Vec<crate::settings::CodexModelContextRule>,
+    ) {
+        crate::settings::update(app, |settings| {
+            settings.codex_managed_model_catalog_enabled = enabled;
+            settings.codex_model_context_rules = rules;
+            Ok(())
+        })
+        .expect("write catalog hosting settings");
+    }
+
+    struct DirectCatalogFixture {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _home_restore: EnvRestore,
+        _dotdir_restore: EnvRestore,
+        _home: tempfile::TempDir,
+        app: tauri::App<tauri::test::MockRuntime>,
+        user_catalog: std::path::PathBuf,
+        config_path: std::path::PathBuf,
+    }
+
+    impl DirectCatalogFixture {
+        fn new(dotdir: &'static str) -> Self {
+            let lock = crate::test_support::test_env_lock();
+            let home = tempfile::tempdir().expect("home");
+            let home_restore = EnvRestore::set("AIO_CODING_HUB_TEST_HOME", home.path());
+            let dotdir_restore = EnvRestore::set("AIO_CODING_HUB_DOTDIR_NAME", dotdir);
+            crate::settings::clear_cache();
+            let codex_home = home.path().join(".codex");
+            std::fs::create_dir_all(&codex_home).expect("create Codex home");
+            let user_catalog = codex_home.join("user-models.json");
+            std::fs::write(&user_catalog, rule_base_catalog()).expect("write user catalog");
+            let config_path = codex_home.join("config.toml");
+            std::fs::write(&config_path, config_with_catalog(Some(&user_catalog)))
+                .expect("write Codex config");
+            let app = tauri::test::mock_app();
+            Self {
+                _lock: lock,
+                _home_restore: home_restore,
+                _dotdir_restore: dotdir_restore,
+                _home: home,
+                app,
+                user_catalog,
+                config_path,
+            }
+        }
+
+        fn handle(&self) -> tauri::AppHandle<tauri::test::MockRuntime> {
+            self.app.handle().clone()
+        }
+    }
+
+    fn root_catalog_binding(config_path: &std::path::Path) -> Option<std::path::PathBuf> {
+        let text = std::fs::read_to_string(config_path).expect("read Codex config");
+        let document = text
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse Codex config");
+        document
+            .get("model_catalog_json")
+            .and_then(toml_edit::Item::as_str)
+            .map(std::path::PathBuf::from)
+    }
+
+    struct ResetCatalogApplyFailure;
+
+    impl Drop for ResetCatalogApplyFailure {
+        fn drop(&mut self) {
+            CATALOG_APPLY_FAILURE.with(|failure| failure.set(None));
+        }
+    }
+
     fn generate_test_catalog(
         base_bytes: &[u8],
         profiles: &[ManagedCatalogProfile],
@@ -4276,6 +4485,7 @@ mod tests {
 
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
+        set_catalog_hosting(&handle, Some(true));
         let plan = prepare_for_profiles_with_policy(
             &handle,
             &[],
@@ -4512,6 +4722,7 @@ mod tests {
 
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
+        set_catalog_hosting(&handle, Some(true));
         let codex_home = home.path().join(".codex");
         std::fs::create_dir_all(&codex_home).expect("create Codex home");
         let config_path = codex_home.join("config.toml");
@@ -4568,6 +4779,7 @@ mod tests {
 
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
+        set_catalog_hosting(&handle, Some(true));
         let codex_home = home.path().join(".codex");
         std::fs::create_dir_all(&codex_home).expect("create Codex home");
         let base_path = codex_home.join("base-models.json");
@@ -5258,5 +5470,313 @@ base_url = "http://127.0.0.1:37123/v1"
         assert!(prepared.backup_change.is_none());
         assert_eq!(baseline.config_bytes, Some(original));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn missing_switch_derives_on_when_a_managed_profile_exists() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-derive-profile");
+        let handle = fixture.handle();
+        set_catalog_hosting(&handle, None);
+
+        prepare_for_profiles_with_policy(&handle, std::slice::from_ref(&profile()), empty_policy())
+            .expect("prepare derived catalog")
+            .apply(&handle)
+            .expect("apply derived catalog");
+
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read derived settings")
+                .codex_managed_model_catalog_enabled,
+            Some(true)
+        );
+        let binding = root_catalog_binding(&fixture.config_path).expect("generated binding");
+        assert_ne!(binding, fixture.user_catalog);
+        assert!(binding.ends_with(GENERATED_CATALOG_FILE_NAME));
+    }
+
+    #[test]
+    fn missing_switch_derives_on_when_an_enabled_context_rule_exists() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-derive-rule");
+        let handle = fixture.handle();
+        set_catalog_hosting(&handle, None);
+
+        prepare_for_profiles_with_policy(
+            &handle,
+            &[],
+            policy(vec![context_rule("model-alpha", 372_000, true)]),
+        )
+        .expect("prepare derived rule catalog")
+        .apply(&handle)
+        .expect("apply derived rule catalog");
+
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read derived settings")
+                .codex_managed_model_catalog_enabled,
+            Some(true)
+        );
+        let binding = root_catalog_binding(&fixture.config_path).expect("generated binding");
+        assert!(binding.ends_with(GENERATED_CATALOG_FILE_NAME));
+    }
+
+    #[test]
+    fn missing_switch_derives_on_when_the_root_binding_is_the_generated_catalog() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-derive-binding");
+        let handle = fixture.handle();
+        let generated = managed_catalog_path(&handle).expect("managed catalog path");
+        std::fs::write(&fixture.config_path, config_with_catalog(Some(&generated)))
+            .expect("point root binding at the generated catalog");
+        set_catalog_hosting(&handle, None);
+
+        let error = prepare_for_profiles_with_policy(&handle, &[], empty_policy())
+            .expect_err("an ownerless generated binding stays fail-closed");
+
+        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED");
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read derived settings")
+                .codex_managed_model_catalog_enabled,
+            Some(true)
+        );
+        assert_eq!(
+            root_catalog_binding(&fixture.config_path).as_deref(),
+            Some(generated.as_path())
+        );
+    }
+
+    #[test]
+    fn unset_switch_proxy_projection_keeps_a_generated_binding() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-unset-preserve");
+        let handle = fixture.handle();
+        let generated = managed_catalog_path(&handle).expect("managed catalog path");
+        set_catalog_hosting(&handle, None);
+        let current = config_with_catalog(Some(&generated));
+        let baseline = config_with_catalog(Some(&fixture.user_catalog));
+
+        let projected = preserve_active_binding(
+            &handle,
+            Some(baseline.as_slice()),
+            Some(current.as_slice()),
+            b"model_provider = \"aio\"\n",
+        )
+        .expect("unset projection must not drop the generated binding");
+
+        assert_eq!(
+            parse_catalog_path(Some(&projected), "projected")
+                .expect("projected catalog path")
+                .as_deref(),
+            Some(generated.as_path())
+        );
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read unset settings")
+                .codex_managed_model_catalog_enabled,
+            None
+        );
+    }
+
+    #[test]
+    fn explicit_off_proxy_projection_restores_the_baseline_catalog_path() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-off-preserve");
+        let handle = fixture.handle();
+        let generated = managed_catalog_path(&handle).expect("managed catalog path");
+        set_catalog_hosting(&handle, Some(false));
+        let current = config_with_catalog(Some(&generated));
+        let baseline = config_with_catalog(Some(&fixture.user_catalog));
+
+        let projected = preserve_active_binding(
+            &handle,
+            Some(baseline.as_slice()),
+            Some(current.as_slice()),
+            b"model_provider = \"aio\"\n",
+        )
+        .expect("explicit off restores the baseline catalog path");
+
+        assert_eq!(
+            parse_catalog_path(Some(&projected), "projected")
+                .expect("projected catalog path")
+                .as_deref(),
+            Some(fixture.user_catalog.as_path())
+        );
+    }
+
+    #[test]
+    fn missing_switch_derives_off_without_owners_or_a_generated_binding() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-derive-off");
+        let handle = fixture.handle();
+        set_catalog_hosting(&handle, None);
+
+        prepare_for_profiles_with_policy(&handle, &[], empty_policy())
+            .expect("prepare inactive catalog")
+            .apply(&handle)
+            .expect("apply inactive catalog");
+
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read derived settings")
+                .codex_managed_model_catalog_enabled,
+            Some(false)
+        );
+        assert_eq!(
+            root_catalog_binding(&fixture.config_path).as_deref(),
+            Some(fixture.user_catalog.as_path())
+        );
+        assert!(!managed_catalog_path(&handle)
+            .expect("managed catalog path")
+            .exists());
+    }
+
+    #[test]
+    fn explicit_off_does_not_rebind_when_a_profile_is_added() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-explicit-off");
+        let handle = fixture.handle();
+        set_catalog_hosting(&handle, Some(false));
+        let config_before = std::fs::read(&fixture.config_path).expect("read config");
+
+        prepare_for_profiles_with_policy(&handle, std::slice::from_ref(&profile()), empty_policy())
+            .expect("prepare while hosting is off")
+            .apply(&handle)
+            .expect("apply while hosting is off");
+
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read explicit settings")
+                .codex_managed_model_catalog_enabled,
+            Some(false)
+        );
+        assert_eq!(
+            std::fs::read(&fixture.config_path).expect("read unchanged config"),
+            config_before
+        );
+        assert!(!managed_catalog_path(&handle)
+            .expect("managed catalog path")
+            .exists());
+    }
+
+    #[test]
+    fn explicit_off_skips_base_catalog_reads_and_rule_target_validation() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-skip-base");
+        let handle = fixture.handle();
+        std::fs::remove_file(&fixture.user_catalog).expect("remove base catalog");
+        set_catalog_hosting(&handle, Some(false));
+
+        prepare_for_profiles_with_policy(
+            &handle,
+            &[],
+            policy(vec![context_rule("missing-model", 372_000, true)]),
+        )
+        .expect("hosting off must not read or validate the base catalog")
+        .apply(&handle)
+        .expect("apply without a base catalog");
+
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read explicit settings")
+                .codex_managed_model_catalog_enabled,
+            Some(false)
+        );
+        assert_eq!(
+            root_catalog_binding(&fixture.config_path).as_deref(),
+            Some(fixture.user_catalog.as_path())
+        );
+    }
+
+    #[test]
+    fn explicit_on_with_owners_projects_the_catalog_and_upgrade_applies() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-explicit-on");
+        let handle = fixture.handle();
+        let rules = vec![context_rule("model-alpha", 372_000, true)];
+        write_catalog_hosting_and_rules(&handle, Some(true), rules.clone());
+
+        prepare_for_profiles_with_policy(&handle, &[], policy(rules))
+            .expect("prepare hosted catalog")
+            .apply(&handle)
+            .expect("apply hosted catalog");
+        let generated = root_catalog_binding(&fixture.config_path).expect("generated binding");
+        assert!(generated.ends_with(GENERATED_CATALOG_FILE_NAME));
+        assert!(generated.exists());
+
+        let outcome = crate::app::settings_service::codex_managed_catalog_upgrade_sync(
+            &handle,
+            crate::app::settings_service::CodexManagedCatalogUpgradeMode::Apply,
+        )
+        .expect("upgrade hosted catalog");
+        assert!(matches!(
+            outcome,
+            crate::app::settings_service::CodexManagedCatalogUpgradeOutcome::Applied(_)
+        ));
+        assert_eq!(
+            root_catalog_binding(&fixture.config_path).as_deref(),
+            Some(generated.as_path())
+        );
+    }
+
+    #[test]
+    fn upgrade_stays_inactive_while_catalog_hosting_is_off() {
+        let fixture = DirectCatalogFixture::new(".aio-catalog-upgrade-off");
+        let handle = fixture.handle();
+        write_catalog_hosting_and_rules(
+            &handle,
+            Some(false),
+            vec![context_rule("model-alpha", 372_000, true)],
+        );
+        let config_before = std::fs::read(&fixture.config_path).expect("read config");
+
+        for mode in [
+            crate::app::settings_service::CodexManagedCatalogUpgradeMode::Apply,
+            crate::app::settings_service::CodexManagedCatalogUpgradeMode::DisableInvalid {
+                model_ids: vec!["model-alpha".to_string()],
+            },
+        ] {
+            let outcome =
+                crate::app::settings_service::codex_managed_catalog_upgrade_sync(&handle, mode)
+                    .expect("inactive upgrade");
+            assert!(matches!(
+                outcome,
+                crate::app::settings_service::CodexManagedCatalogUpgradeOutcome::Inactive
+            ));
+        }
+
+        assert_eq!(
+            std::fs::read(&fixture.config_path).expect("read unchanged config"),
+            config_before
+        );
+        assert!(!managed_catalog_path(&handle)
+            .expect("managed catalog path")
+            .exists());
+    }
+
+    #[test]
+    fn catalog_switch_apply_failure_restores_the_previous_value() {
+        let _reset_failure = ResetCatalogApplyFailure;
+        let fixture = DirectCatalogFixture::new(".aio-catalog-switch-rollback");
+        let handle = fixture.handle();
+        write_catalog_hosting_and_rules(
+            &handle,
+            Some(false),
+            vec![context_rule("model-alpha", 372_000, true)],
+        );
+        let config_before = std::fs::read(&fixture.config_path).expect("read config");
+        CATALOG_APPLY_FAILURE.with(|failure| failure.set(Some(CatalogApplyStage::Generated)));
+
+        let error = crate::app::settings_service::settings_codex_managed_model_catalog_set_sync(
+            &handle, true,
+        )
+        .expect_err("apply failure must not report success");
+
+        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_TEST_WRITE_FAILED");
+        assert_eq!(
+            crate::settings::read(&handle)
+                .expect("read restored settings")
+                .codex_managed_model_catalog_enabled,
+            Some(false)
+        );
+        assert_eq!(
+            std::fs::read(&fixture.config_path).expect("read unchanged config"),
+            config_before
+        );
+        assert!(!managed_catalog_path(&handle)
+            .expect("managed catalog path")
+            .exists());
     }
 }

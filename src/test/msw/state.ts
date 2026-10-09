@@ -27,7 +27,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 65,
+  schema_version: 66,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -43,6 +43,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   codex_home_override: "",
   codex_oauth_compatible_proxy_mode: false,
   codex_model_context_rules: [],
+  codex_managed_model_catalog_enabled: false,
   codex_provider_test_model: "gpt-5.4-mini",
   codex_infinite_retry_test_enabled: false,
   codex_infinite_retry_test_interval_ms: 1000,

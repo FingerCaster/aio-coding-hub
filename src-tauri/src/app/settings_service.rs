@@ -589,6 +589,7 @@ pub(crate) struct SettingsView {
     pub codex_home_override: String,
     pub codex_oauth_compatible_proxy_mode: bool,
     pub codex_model_context_rules: Vec<settings::CodexModelContextRule>,
+    pub codex_managed_model_catalog_enabled: Option<bool>,
     pub codex_provider_test_model: String,
     pub codex_infinite_retry_test_enabled: bool,
     pub codex_infinite_retry_test_interval_ms: u32,
@@ -721,6 +722,7 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_home_override: value.codex_home_override.clone(),
             codex_oauth_compatible_proxy_mode: value.codex_oauth_compatible_proxy_mode,
             codex_model_context_rules: value.codex_model_context_rules.clone(),
+            codex_managed_model_catalog_enabled: value.codex_managed_model_catalog_enabled,
             codex_provider_test_model: value.codex_provider_test_model.clone(),
             codex_infinite_retry_test_enabled: value.codex_infinite_retry_test_enabled,
             codex_infinite_retry_test_interval_ms: value.codex_infinite_retry_test_interval_ms,
@@ -1680,6 +1682,13 @@ pub(crate) fn codex_managed_catalog_upgrade_sync<R: tauri::Runtime>(
     let settings = settings::read(app)?;
     let policy =
         crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_settings(&settings)?;
+    let catalog_hosting_enabled =
+        crate::codex_model_catalog::managed::ensure_codex_managed_model_catalog_enabled(
+            app, &profiles, &policy,
+        )?;
+    if !catalog_hosting_enabled {
+        return Ok(CodexManagedCatalogUpgradeOutcome::Inactive);
+    }
     let needs_catalog =
         !profiles.is_empty() || policy.model_context_rules.iter().any(|rule| rule.enabled);
 
@@ -1778,6 +1787,89 @@ fn same_catalog_upgrade_model_ids(
     requested.sort_unstable();
     requested.dedup();
     actual == requested
+}
+
+pub(crate) fn settings_codex_managed_model_catalog_set_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    enabled: bool,
+) -> crate::shared::error::AppResult<SettingsView> {
+    let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
+    let previous = settings::read(app)?.codex_managed_model_catalog_enabled;
+    settings::update(app, |latest| {
+        latest.codex_managed_model_catalog_enabled = Some(enabled);
+        latest.schema_version = settings::SCHEMA_VERSION;
+        Ok(())
+    })?;
+
+    let apply_result = (|| {
+        let db = crate::db::init(app)?;
+        let conn = db.open_connection()?;
+        let profiles = crate::codex_model_catalog::managed::load_profiles(&conn)?;
+        let settings = settings::read(app)?;
+        let policy =
+            crate::codex_model_catalog::managed::ManagedCatalogPolicy::from_settings(&settings)?;
+        let plan = crate::codex_model_catalog::managed::prepare_for_profiles_with_policy(
+            app, &profiles, policy,
+        )?;
+        plan.apply(app)?;
+        Ok(())
+    })();
+
+    if let Err(apply_error) = apply_result {
+        return Err(restore_codex_managed_model_catalog_switch(
+            app,
+            enabled,
+            previous,
+            apply_error,
+        ));
+    }
+
+    let canonical = settings::read(app)?;
+    Ok(SettingsView::from(&canonical))
+}
+
+fn restore_codex_managed_model_catalog_switch<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    submitted: bool,
+    previous: Option<bool>,
+    apply_error: crate::shared::error::AppError,
+) -> crate::shared::error::AppError {
+    match settings::update(app, |latest| {
+        if latest.codex_managed_model_catalog_enabled == Some(submitted) {
+            latest.codex_managed_model_catalog_enabled = previous;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }) {
+        Ok((_, true)) | Ok((_, false)) => apply_error,
+        Err(rollback_error) => {
+            let code = if rollback_error.code() == "SETTINGS_RECOVERY_REQUIRED"
+                && apply_error.code() != "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED"
+            {
+                "SETTINGS_RECOVERY_REQUIRED"
+            } else {
+                "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED"
+            };
+            crate::shared::error::AppError::new(
+                code,
+                format!(
+                    "managed model catalog switch failed ({apply_error}); restoring the previous switch failed: {rollback_error}"
+                ),
+            )
+        }
+    }
+}
+
+pub(crate) async fn settings_codex_managed_model_catalog_set<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    blocking::run("settings_codex_managed_model_catalog_set", move || {
+        settings_codex_managed_model_catalog_set_sync(&app, enabled)
+    })
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) fn settings_codex_model_context_rules_set_sync<R: tauri::Runtime>(
@@ -3498,6 +3590,7 @@ mod tests {
         settings::update(&handle, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
             latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            latest.codex_managed_model_catalog_enabled = Some(true);
             Ok(())
         })
         .expect("select test Codex home");
@@ -3616,6 +3709,7 @@ mod tests {
         settings::update(&handle, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
             latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            latest.codex_managed_model_catalog_enabled = Some(true);
             Ok(())
         })
         .expect("select test Codex home");
@@ -3895,6 +3989,7 @@ mod tests {
         settings::update(app, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
             latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            latest.codex_managed_model_catalog_enabled = Some(true);
             Ok(())
         })
         .expect("select test Codex home");
@@ -3988,6 +4083,7 @@ mod tests {
         settings::update(&handle, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
             latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            latest.codex_managed_model_catalog_enabled = Some(true);
             Ok(())
         })
         .expect("select test Codex home");
@@ -4028,6 +4124,7 @@ mod tests {
         settings::update(&handle, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
             latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            latest.codex_managed_model_catalog_enabled = Some(true);
             Ok(())
         })
         .expect("select test Codex home");
@@ -4099,6 +4196,7 @@ mod tests {
         settings::update(&handle, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
             latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            latest.codex_managed_model_catalog_enabled = Some(true);
             Ok(())
         })
         .expect("select test Codex home");
@@ -4220,6 +4318,7 @@ mod tests {
         settings::update(&handle, |latest| {
             latest.codex_home_mode = settings::CodexHomeMode::Custom;
             latest.codex_home_override = codex_home.to_string_lossy().into_owned();
+            latest.codex_managed_model_catalog_enabled = Some(true);
             Ok(())
         })
         .expect("select test Codex home");

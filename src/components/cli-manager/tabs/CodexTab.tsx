@@ -374,6 +374,9 @@ export type CliManagerCodexTabProps = {
   retrySettings?: () => Promise<unknown> | unknown;
   pickCodexHomeDirectory?: (initialPath?: string) => Promise<string | null> | string | null;
   catalogUpgradeAvailable?: boolean;
+  catalogHostingEnabled?: boolean | null;
+  catalogHostingPending?: boolean;
+  onSetCatalogHosting?: (enabled: boolean) => Promise<unknown> | unknown;
   catalogUpgradePending?: boolean;
   catalogUpgradeBlockedRules?: readonly CodexManagedCatalogInvalidRule[] | null;
   onUpgradeCatalog?: () => Promise<unknown> | unknown;
@@ -2568,6 +2571,9 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
         retryCandidates={props.retryCodexModelContextCandidates ?? (() => undefined)}
         persistRules={props.persistCodexModelContextRules}
         catalogUpgradeAvailable={props.catalogUpgradeAvailable}
+        catalogHostingEnabled={props.catalogHostingEnabled}
+        catalogHostingPending={props.catalogHostingPending}
+        onSetCatalogHosting={props.onSetCatalogHosting}
         catalogUpgradePending={props.catalogUpgradePending}
         catalogUpgradeBlockedRules={props.catalogUpgradeBlockedRules}
         onUpgradeCatalog={props.onUpgradeCatalog}

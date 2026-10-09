@@ -156,6 +156,7 @@ fn set_custom_codex_home<R: tauri::Runtime>(app: &tauri::AppHandle<R>, codex_hom
     let settings = AppSettings {
         codex_home_mode: CodexHomeMode::Custom,
         codex_home_override: codex_home.display().to_string(),
+        codex_managed_model_catalog_enabled: Some(true),
         ..AppSettings::default()
     };
     settings::write(app, &settings).expect("write settings");
@@ -179,6 +180,7 @@ fn set_codex_model_context_rules<R: tauri::Runtime>(
 ) {
     settings::update(app, |settings| {
         settings.codex_model_context_rules = rules;
+        settings.codex_managed_model_catalog_enabled = Some(true);
         Ok(())
     })
     .expect("update Codex model context rules");

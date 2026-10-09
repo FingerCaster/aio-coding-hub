@@ -97,6 +97,9 @@ export function CodexModelContextRulesSection({
   catalogUpgradeBlockedRules = null,
   onUpgradeCatalog,
   onDisableInvalidCatalogRules,
+  catalogHostingEnabled = null,
+  catalogHostingPending = false,
+  onSetCatalogHosting,
 }: {
   rules: readonly CodexModelContextRule[] | null;
   candidates: CodexModelContextCandidatesState | null;
@@ -115,6 +118,9 @@ export function CodexModelContextRulesSection({
   catalogUpgradeBlockedRules?: readonly CodexManagedCatalogInvalidRule[] | null;
   onUpgradeCatalog?: () => Promise<unknown> | unknown;
   onDisableInvalidCatalogRules?: () => Promise<unknown> | unknown;
+  catalogHostingEnabled?: boolean | null;
+  catalogHostingPending?: boolean;
+  onSetCatalogHosting?: (enabled: boolean) => Promise<unknown> | unknown;
 }) {
   const fieldPrefix = useId();
   const feedbackRef = useRef<HTMLDivElement>(null);
@@ -178,7 +184,10 @@ export function CodexModelContextRulesSection({
 
   const enabledCount = canonicalRules?.filter((rule) => rule.enabled).length ?? 0;
   const totalCount = canonicalRules?.length ?? 0;
-  const busy = saving || submitting || catalogUpgradePending;
+  const busy = saving || submitting || catalogUpgradePending || catalogHostingPending;
+  const catalogHostingIndeterminate =
+    catalogHostingEnabled == null || (settingsReadOnly && catalogHostingEnabled !== true);
+  const showCatalogUpgrade = catalogHostingEnabled === true;
   const readOnly = settingsReadOnly || canonicalRules == null;
   const editDisabled = readOnly || controlsDisabled || busy || !persistRules;
   const draftDirty = canonicalRules
@@ -327,13 +336,43 @@ export function CodexModelContextRulesSection({
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="flex max-w-xs flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-secondary-foreground">托管本地 model_catalog_json</span>
+              {catalogHostingIndeterminate ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked="mixed"
+                  aria-label="托管本地 model_catalog_json"
+                  disabled
+                  className="inline-flex h-5 w-9 shrink-0 cursor-not-allowed items-center rounded-full border-2 border-border bg-background opacity-50"
+                >
+                  <span className="pointer-events-none block h-4 w-4 translate-x-2 rounded-full bg-white shadow-sm" />
+                </button>
+              ) : (
+                <Switch
+                  size="sm"
+                  checked={catalogHostingEnabled === true}
+                  disabled={busy || controlsDisabled || settingsReadOnly || !onSetCatalogHosting}
+                  aria-label="托管本地 model_catalog_json"
+                  onCheckedChange={(checked) => {
+                    void onSetCatalogHosting?.(checked);
+                  }}
+                />
+              )}
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              由 AIO 托管本地 model_catalog_json，仅对新启动的 Codex 会话生效。
+            </p>
+          </div>
           {busy || catalogUpgradePending ? (
             <RefreshCw
               aria-label="正在保存 Codex 模型上下文规则"
               className="h-3.5 w-3.5 animate-spin text-muted-foreground"
             />
           ) : null}
-          {catalogUpgradeAvailable && onUpgradeCatalog ? (
+          {showCatalogUpgrade && catalogUpgradeAvailable && onUpgradeCatalog ? (
             <Button
               size="sm"
               variant="secondary"
@@ -379,7 +418,7 @@ export function CodexModelContextRulesSection({
               </li>
             ))}
           </ul>
-          {onDisableInvalidCatalogRules ? (
+          {showCatalogUpgrade && onDisableInvalidCatalogRules ? (
             <Button
               size="sm"
               variant="secondary"

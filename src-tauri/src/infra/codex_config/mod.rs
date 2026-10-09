@@ -547,6 +547,12 @@ pub fn codex_config_toml_validate_raw(
     Ok(validate_codex_config_toml_raw(&toml))
 }
 
+fn model_catalog_json_is_proxy_owned<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<bool> {
+    Ok(crate::settings::read(app)?.codex_managed_model_catalog_enabled == Some(true))
+}
+
 pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     toml: String,
@@ -580,6 +586,7 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
                 &expected,
                 current.as_deref().unwrap_or_default(),
                 &bytes,
+                model_catalog_json_is_proxy_owned(app)?,
             )?;
             let previous_provider =
                 provider_projection::desired_provider_key_from_config(baseline_before)?;
@@ -692,6 +699,7 @@ pub fn codex_config_set_with_options<R: tauri::Runtime>(
                 &expected,
                 current.as_deref().unwrap_or_default(),
                 current.as_deref().unwrap_or_default(),
+                model_catalog_json_is_proxy_owned(app)?,
             )?;
             codex_config_next_bytes(Some(baseline_with_external_changes), patch.clone())?
         }

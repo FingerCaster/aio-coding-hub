@@ -37,6 +37,15 @@ pub(crate) async fn settings_patch(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn settings_codex_managed_model_catalog_set(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    settings_service::settings_codex_managed_model_catalog_set(app, enabled).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn settings_codex_model_context_rules_set(
     app: tauri::AppHandle,
     rules: Vec<crate::settings::CodexModelContextRule>,

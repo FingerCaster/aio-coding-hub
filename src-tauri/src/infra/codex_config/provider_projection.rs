@@ -137,6 +137,7 @@ pub(crate) fn merge_raw_user_changes(
     expected_projection: &[u8],
     current_live: &[u8],
     submitted: &[u8],
+    model_catalog_json_owned: bool,
 ) -> AppResult<Vec<u8>> {
     let baseline_doc = parse_document(baseline)?;
     let expected_doc = parse_document(expected_projection)?;
@@ -147,12 +148,18 @@ pub(crate) fn merge_raw_user_changes(
     let expected = Item::Table(expected_doc.as_table().clone());
     let current = Item::Table(current_doc.as_table().clone());
     let submitted = Item::Table(submitted_doc.as_table().clone());
-    validate_owned_edits(Some(&current), Some(&submitted), &mut Vec::new())?;
+    validate_owned_edits(
+        Some(&current),
+        Some(&submitted),
+        &mut Vec::new(),
+        model_catalog_json_owned,
+    )?;
     merge_user_item(
         &mut merged,
         Some(&expected),
         Some(&submitted),
         &mut Vec::new(),
+        model_catalog_json_owned,
     )?;
 
     let table = merged
@@ -500,8 +507,9 @@ fn merge_user_item(
     expected: Option<&Item>,
     submitted: Option<&Item>,
     path: &mut Vec<String>,
+    model_catalog_json_owned: bool,
 ) -> AppResult<()> {
-    if is_proxy_owned_path(path) {
+    if is_proxy_owned_path(path, model_catalog_json_owned) {
         return Ok(());
     }
     if optional_items_semantically_equal(expected, submitted) {
@@ -546,11 +554,12 @@ fn merge_user_item(
                 path.push(key.clone());
                 let expected_child = expected_table.get(&key);
                 let submitted_child = submitted_table.get(&key);
-                if is_proxy_owned_path(path) {
+                if is_proxy_owned_path(path, model_catalog_json_owned) {
                     path.pop();
                     continue;
                 }
-                if submitted_child.is_none() && !is_proxy_owned_path(path) {
+                if submitted_child.is_none() && !is_proxy_owned_path(path, model_catalog_json_owned)
+                {
                     baseline_table.remove(&key);
                     path.pop();
                     continue;
@@ -567,7 +576,13 @@ fn merge_user_item(
                 let baseline_child = baseline_table
                     .get_mut(&key)
                     .ok_or_else(|| owned_field_edit(path))?;
-                merge_user_item(baseline_child, expected_child, submitted_child, path)?;
+                merge_user_item(
+                    baseline_child,
+                    expected_child,
+                    submitted_child,
+                    path,
+                    model_catalog_json_owned,
+                )?;
                 if baseline_child.is_none() {
                     baseline_table.remove(&key);
                 }
@@ -582,8 +597,9 @@ fn validate_owned_edits(
     current: Option<&Item>,
     submitted: Option<&Item>,
     path: &mut Vec<String>,
+    model_catalog_json_owned: bool,
 ) -> AppResult<()> {
-    if is_proxy_owned_path(path) {
+    if is_proxy_owned_path(path, model_catalog_json_owned) {
         if !optional_items_semantically_equal(current, submitted) {
             return Err(owned_field_edit(path));
         }
@@ -612,6 +628,7 @@ fn validate_owned_edits(
             current_table.and_then(|table| table.get(&key)),
             submitted_table.and_then(|table| table.get(&key)),
             path,
+            model_catalog_json_owned,
         )?;
         path.pop();
     }
@@ -643,14 +660,12 @@ fn merge_current_user_provider_fields(target: &mut Item, current: &Item, provide
     }
 }
 
-fn is_proxy_owned_path(path: &[String]) -> bool {
+fn is_proxy_owned_path(path: &[String], model_catalog_json_owned: bool) -> bool {
     matches!(
         path,
         [root]
-            if matches!(
-                root.as_str(),
-                "model_provider" | "preferred_auth_method" | "model_catalog_json"
-            )
+            if matches!(root.as_str(), "model_provider" | "preferred_auth_method")
+                || (model_catalog_json_owned && root == "model_catalog_json")
     ) || matches!(path, [table, key] if table == "windows" && key == "sandbox")
         || matches!(
             path,
@@ -1052,13 +1067,86 @@ custom = "keep"
         assert!(submitted_doc["model_providers"]["aio"]
             .as_table_like()
             .is_some());
-        let output = merge_raw_user_changes(baseline, live, live, submitted).unwrap();
+        let output = merge_raw_user_changes(baseline, live, live, submitted, true).unwrap();
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("model = \"after\""), "{text}");
         assert!(text.contains("model_provider = \"direct\""), "{text}");
         assert!(text.contains("[model_providers.direct]"), "{text}");
         assert!(text.contains("custom = \"keep\""), "{text}");
         assert!(!text.contains("127.0.0.1"), "{text}");
+    }
+
+    #[test]
+    fn raw_three_way_merge_accepts_model_catalog_json_while_hosting_is_off() {
+        let baseline = br#"model = "before"
+model_provider = "direct"
+preferred_auth_method = "chatgpt"
+model_catalog_json = "C:/Catalogs/original.json"
+
+[windows]
+sandbox = "unelevated"
+
+[model_providers.direct]
+name = "direct"
+base_url = "https://direct.example/v1"
+"#;
+        let live = br#"model = "before"
+model_provider = "aio"
+preferred_auth_method = "apikey"
+model_catalog_json = "C:/AIO/managed-model-catalog.json"
+
+[windows]
+sandbox = "elevated"
+
+[model_providers.aio]
+name = "aio"
+base_url = "http://127.0.0.1:37123/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+        let submitted = br#"model = "before"
+model_provider = "aio"
+preferred_auth_method = "apikey"
+model_catalog_json = "C:/Catalogs/user-edited.json"
+
+[windows]
+sandbox = "elevated"
+
+[model_providers.aio]
+name = "aio"
+base_url = "http://127.0.0.1:37123/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+        let output = merge_raw_user_changes(baseline, live, live, submitted, false)
+            .expect("model_catalog_json is editable while hosting is off");
+        let text = String::from_utf8(output).unwrap();
+        assert!(
+            text.contains("model_catalog_json = \"C:/Catalogs/user-edited.json\""),
+            "{text}"
+        );
+        assert!(text.contains("model_provider = \"direct\""), "{text}");
+        assert!(
+            text.contains("preferred_auth_method = \"chatgpt\""),
+            "{text}"
+        );
+        assert!(text.contains("sandbox = \"unelevated\""), "{text}");
+        assert!(text.contains("https://direct.example/v1"), "{text}");
+        assert!(!text.contains("managed-model-catalog.json"), "{text}");
+        assert!(!text.contains("127.0.0.1"), "{text}");
+
+        let owned_provider = std::str::from_utf8(submitted)
+            .expect("submitted config")
+            .replace("model_provider = \"aio\"", "model_provider = \"custom\"");
+        let error = merge_raw_user_changes(baseline, live, live, owned_provider.as_bytes(), false)
+            .expect_err("model_provider stays locked while hosting is off")
+            .to_string();
+        assert!(error.contains("CODEX_PROXY_OWNED_FIELD_EDIT"), "{error}");
+        assert!(error.contains("model_provider"), "{error}");
+
+        let still_owned = merge_raw_user_changes(baseline, live, live, submitted, true)
+            .expect_err("hosting on keeps the catalog path locked");
+        assert!(still_owned.to_string().contains("model_catalog_json"));
     }
 
     #[test]
@@ -1080,7 +1168,7 @@ base_url = "https://user-change.invalid/v1"
 wire_api = "responses"
 requires_openai_auth = true
 "#;
-        let error = merge_raw_user_changes(baseline, live, live, submitted)
+        let error = merge_raw_user_changes(baseline, live, live, submitted, true)
             .unwrap_err()
             .to_string();
         assert!(error.contains("CODEX_PROXY_OWNED_FIELD_EDIT"));
@@ -1100,7 +1188,7 @@ wire_api = "responses"
 requires_openai_auth = true
 "#;
         let deleted = b"model = \"before\"\n";
-        let error = merge_raw_user_changes(baseline, live, live, deleted)
+        let error = merge_raw_user_changes(baseline, live, live, deleted, true)
             .unwrap_err()
             .to_string();
         assert!(error.contains("CODEX_PROXY_OWNED_FIELD_EDIT"), "{error}");
@@ -1116,7 +1204,7 @@ requires_openai_auth = true
 name = "OpenAI"
 base_url = "https://user.invalid/v1"
 "#;
-        let error = merge_raw_user_changes(baseline, live, live, added)
+        let error = merge_raw_user_changes(baseline, live, live, added, true)
             .unwrap_err()
             .to_string();
         assert!(error.contains("CODEX_PROXY_OWNED_FIELD_EDIT"), "{error}");

@@ -587,6 +587,12 @@ pub struct AppSettings {
     pub codex_oauth_compatible_proxy_mode: bool,
     #[serde(default)]
     pub codex_model_context_rules: Vec<CodexModelContextRule>,
+    /// Local root `model_catalog_json` hosting. A missing JSON key stays `None`
+    /// so catalog prepare can derive it once. The container `#[serde(default)]`
+    /// would otherwise copy `AppSettings::default()`'s `Some(false)`.
+    #[serde(default = "missing_codex_managed_model_catalog_enabled")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_managed_model_catalog_enabled: Option<bool>,
     #[serde(default = "default_codex_provider_test_model")]
     pub codex_provider_test_model: String,
     #[serde(default)]
@@ -705,6 +711,7 @@ impl Default for AppSettings {
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
             codex_model_context_rules: Vec::new(),
+            codex_managed_model_catalog_enabled: Some(false),
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
             codex_infinite_retry_test_enabled: DEFAULT_CODEX_INFINITE_RETRY_TEST_ENABLED,
             codex_infinite_retry_test_interval_ms: DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
@@ -774,6 +781,10 @@ impl Default for AppSettings {
             upstream_proxy_password: String::new(),
         }
     }
+}
+
+fn missing_codex_managed_model_catalog_enabled() -> Option<bool> {
+    None
 }
 
 fn default_show_home_heatmap() -> bool {

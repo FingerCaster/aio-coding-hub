@@ -10,6 +10,7 @@ import {
 } from "../services/settings/settings";
 import { settingsCircuitBreakerNoticeSet } from "../services/settings/settingsCircuitBreakerNotice";
 import { settingsCodexSessionIdCompletionSet } from "../services/settings/settingsCodexSessionIdCompletion";
+import { settingsCodexManagedModelCatalogSet } from "../services/settings/settingsCodexManagedModelCatalog";
 import { settingsCodexModelContextRulesSet } from "../services/settings/settingsCodexModelContextRules";
 import type { CodexModelContextRule } from "../services/settings/codexModelContextRules";
 import {
@@ -161,6 +162,27 @@ export function useSettingsCodexSessionIdCompletionSetMutation() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: settingsKeys.get() });
+    },
+  });
+}
+
+export function useSettingsCodexManagedModelCatalogSetMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    scope: CODEX_CONFIG_MUTATION_SCOPE,
+    mutationFn: (enabled: boolean) => settingsCodexManagedModelCatalogSet(enabled),
+    onSuccess: (updated) => {
+      if (!updated) return;
+      queryClient.setQueryData<AppSettings | null>(settingsKeys.get(), updated);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: settingsKeys.get() });
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
+      queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelCatalogAll() });
+      queryClient.resetQueries({ queryKey: cliManagerKeys.codexModelContextCandidatesAll() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }

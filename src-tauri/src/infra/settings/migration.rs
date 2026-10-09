@@ -1762,6 +1762,19 @@ fn migrate_add_codex_model_context_rules(
     )
 }
 
+fn migrate_add_codex_managed_model_catalog(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    // Profile rows and config.toml are not visible here. Leave a missing switch
+    // as None so catalog prepare can derive it once inside the lifecycle lock.
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_MANAGED_MODEL_CATALOG,
+    )
+}
+
 pub(super) fn sanitize_codex_infinite_retry_test(settings: &mut AppSettings) -> bool {
     if settings.codex_infinite_retry_test_interval_ms <= MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
         return false;
@@ -1819,6 +1832,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_cx2cc_reasoning_effort_mappings,
     migrate_add_codex_gpt56_372k_context,
     migrate_add_codex_model_context_rules,
+    migrate_add_codex_managed_model_catalog,
 ];
 
 pub(crate) fn migrate_to_current_schema(
@@ -2601,6 +2615,44 @@ mod tests {
             SCHEMA_VERSION_ADD_CODEX_MODEL_CONTEXT_RULES
         );
         assert!(s.codex_model_context_rules.is_empty());
+    }
+
+    #[test]
+    fn missing_codex_managed_model_catalog_switch_stays_none() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION_ADD_CODEX_MODEL_CONTEXT_RULES
+        });
+        let mut settings: AppSettings =
+            serde_json::from_value(raw.clone()).expect("deserialize settings without the switch");
+        assert_eq!(settings.codex_managed_model_catalog_enabled, None);
+
+        assert!(repair_settings(&mut settings, true, &raw).expect("migrate schema 65"));
+        assert_eq!(settings.schema_version, SCHEMA_VERSION);
+        assert_eq!(settings.codex_managed_model_catalog_enabled, None);
+        assert!(serde_json::to_value(&settings)
+            .expect("serialize migrated settings")
+            .get("codex_managed_model_catalog_enabled")
+            .is_none());
+
+        let explicit_false: AppSettings = serde_json::from_value(serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "codex_managed_model_catalog_enabled": false
+        }))
+        .expect("explicit false");
+        assert_eq!(
+            explicit_false.codex_managed_model_catalog_enabled,
+            Some(false)
+        );
+        let explicit_null: AppSettings = serde_json::from_value(serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "codex_managed_model_catalog_enabled": null
+        }))
+        .expect("explicit null stays unset");
+        assert_eq!(explicit_null.codex_managed_model_catalog_enabled, None);
+        assert_eq!(
+            AppSettings::default().codex_managed_model_catalog_enabled,
+            Some(false)
+        );
     }
 
     #[test]

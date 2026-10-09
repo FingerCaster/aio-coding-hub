@@ -30,6 +30,7 @@ import {
   getSettingsReadProtection,
   SETTINGS_READONLY_MESSAGE,
   useSettingsCircuitBreakerNoticeSetMutation,
+  useSettingsCodexManagedModelCatalogSetMutation,
   useSettingsCodexModelContextRulesSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
   useSettingsGatewayRectifierSetMutation,
@@ -135,6 +136,7 @@ export function useCliManagerPageDataModel() {
   const circuitBreakerNoticeMutation = useSettingsCircuitBreakerNoticeSetMutation();
   const codexSessionIdCompletionMutation = useSettingsCodexSessionIdCompletionSetMutation();
   const codexModelContextRulesMutation = useSettingsCodexModelContextRulesSetMutation();
+  const catalogHostingMutation = useSettingsCodexManagedModelCatalogSetMutation();
   const catalogUpgradeMutation = useCliManagerCodexManagedCatalogUpgradeMutation();
   const startupStatus = useAppStartupStatus();
   const managedProfilesQuery = useCodexManagedProfilesQuery({ enabled: tab === "codex" });
@@ -650,6 +652,26 @@ export function useCliManagerPageDataModel() {
     (appSettings?.codex_model_context_rules.some((rule) => rule.enabled) ?? false) ||
     (managedProfilesQuery.data?.length ?? 0) > 0;
 
+  async function setManagedModelCatalogHosting(enabled: boolean) {
+    if (settingsWriteBlocked) {
+      blockSettingsWrite();
+      return;
+    }
+    try {
+      const updated = await catalogHostingMutation.mutateAsync(enabled);
+      if (updated) {
+        toast("已切换本地 model_catalog_json 托管；请新启动 Codex 会话。");
+      }
+    } catch (error) {
+      const formatted = formatActionFailureToast("切换本地 model_catalog_json 托管", error);
+      logToConsole("error", "切换本地 model_catalog_json 托管失败", {
+        error: formatted.raw,
+        error_code: formatted.error_code ?? undefined,
+      });
+      toast(formatted.toast);
+    }
+  }
+
   async function upgradeManagedCatalog(disableInvalidRules: boolean) {
     if (settingsWriteBlocked) {
       blockSettingsWrite();
@@ -956,7 +978,9 @@ export function useCliManagerPageDataModel() {
       codexHomeSettingsSaving:
         commonSettingsSaving || codexModelContextRulesSaving || settingsWriteBlocked,
       codexModelContextRulesSaving:
-        codexModelContextRulesSaving || catalogUpgradeMutation.isPending,
+        codexModelContextRulesSaving ||
+        catalogUpgradeMutation.isPending ||
+        catalogHostingMutation.isPending,
       codexModelContextRulesReadOnly: settingsWriteBlocked,
       codexModelContextRulesReadErrorMessage: settingsReadErrorMessage,
       codexModelContextRulesAutoOpenRequestKey:
@@ -974,6 +998,9 @@ export function useCliManagerPageDataModel() {
       retrySettings: () => settingsQuery.refetch(),
       pickCodexHomeDirectory,
       catalogUpgradeAvailable,
+      catalogHostingEnabled: appSettings?.codex_managed_model_catalog_enabled ?? null,
+      catalogHostingPending: catalogHostingMutation.isPending,
+      onSetCatalogHosting: setManagedModelCatalogHosting,
       catalogUpgradePending: catalogUpgradeMutation.isPending,
       catalogUpgradeBlockedRules,
       onUpgradeCatalog: () => upgradeManagedCatalog(false),

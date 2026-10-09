@@ -24,6 +24,7 @@ export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSett
     codex_home_override: "",
     codex_oauth_compatible_proxy_mode: false,
     codex_model_context_rules: [],
+    codex_managed_model_catalog_enabled: false,
     codex_provider_test_model: "gpt-5.4-mini",
     codex_infinite_retry_test_enabled: false,
     codex_infinite_retry_test_interval_ms: 1000,

@@ -25,6 +25,7 @@ macro_rules! generated_command_registry {
             settings_set => crate::commands::settings::settings_set,
             settings_patch => crate::commands::settings::settings_patch,
             settings_codex_model_context_rules_set => crate::commands::settings::settings_codex_model_context_rules_set,
+            settings_codex_managed_model_catalog_set => crate::commands::settings::settings_codex_managed_model_catalog_set,
             settings_update_channel_set => crate::commands::settings::settings_update_channel_set,
             settings_gateway_rectifier_set => crate::commands::settings::settings_gateway_rectifier_set,
             settings_circuit_breaker_notice_set => crate::commands::settings::settings_circuit_breaker_notice_set,
@@ -438,6 +439,7 @@ mod tests {
         assert!(commands.contains(&"settings_codex_model_context_rules_set"));
         assert!(commands.contains(&"cli_manager_codex_model_context_candidates_get"));
         assert!(commands.contains(&"cli_manager_codex_managed_catalog_upgrade"));
+        assert!(commands.contains(&"settings_codex_managed_model_catalog_set"));
         assert!(!commands.contains(&"settings_codex_gpt56_372k_context_set"));
     }
 

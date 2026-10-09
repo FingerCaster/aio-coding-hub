@@ -306,3 +306,27 @@ Implemented approved per-attempt first meaningful output deadline in isolated wo
 ### Next Steps
 
 - Review or publish FingerCaster/sse-first-output-timeout when requested; runtime installation is a separate step.
+
+
+## Session 9: Plan optional model catalog hosting
+
+**Date**: 2026-10-09
+**Task**: Plan optional model catalog hosting
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/model-catalog-hosting`
+
+### Summary
+
+Created planning task 10-09-optional-model-catalog. model_catalog_json hosting stays in planning until the off-switch behavior is chosen.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Resolve whether turning hosting off fully restores the user catalog binding.
