@@ -1300,7 +1300,7 @@ function CodexBasicConfigSection({
 
         <SettingItem
           label="审批策略 (approval_policy)"
-          subtitle="控制何时需要你确认才会执行命令。推荐 on-request 或 on-failure。"
+          subtitle="控制何时需要你确认才会执行命令。推荐 on-request 或 never。"
         >
           <Select
             value={codexConfig.approval_policy ?? ""}
@@ -1310,7 +1310,9 @@ function CodexBasicConfigSection({
           >
             <option value="">默认（不设置）</option>
             <option value="untrusted">不信任（untrusted）</option>
-            <option value="on-failure">失败时（on-failure）</option>
+            {codexConfig.approval_policy === "on-failure" ? (
+              <option value="on-failure">失败时（on-failure，已弃用）</option>
+            ) : null}
             <option value="on-request">请求时（on-request）</option>
             <option value="never">从不询问（never）</option>
           </Select>

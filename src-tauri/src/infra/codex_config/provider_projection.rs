@@ -664,7 +664,7 @@ fn is_proxy_owned_path(path: &[String], model_catalog_json_owned: bool) -> bool 
     matches!(
         path,
         [root]
-            if matches!(root.as_str(), "model_provider" | "preferred_auth_method")
+            if root.as_str() == "model_provider"
                 || (model_catalog_json_owned && root == "model_catalog_json")
     ) || matches!(path, [table, key] if table == "windows" && key == "sandbox")
         || matches!(

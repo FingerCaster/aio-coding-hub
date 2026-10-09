@@ -49,7 +49,7 @@ trap cleanup EXIT
 
 if [ -s "$config_path" ]; then
   awk -v provider_key="$provider_key" -v base_url="$base_url" '
-    BEGIN {{ in_root=1; seen_pref=0; seen_model=0; skipping=0 }}
+    BEGIN {{ in_root=1; seen_model=0; skipping=0 }}
     function ltrim(s) {{ sub(/^[[:space:]]+/, "", s); return s }}
     function rtrim(s) {{ sub(/[[:space:]]+$/, "", s); return s }}
     function extract_header(s) {{
@@ -87,10 +87,7 @@ if [ -s "$config_path" ]; then
       if (trimmed ~ /^#/) {{ print line; next }}
 
       if (in_root && substr(trimmed, 1, 1) == "[") {{
-        inserted=0
-        if (!seen_pref) {{ print "preferred_auth_method = \"apikey\""; seen_pref=1; inserted=1 }}
-        if (!seen_model) {{ print "model_provider = \"" provider_key "\""; seen_model=1; inserted=1 }}
-        if (inserted) print ""
+        if (!seen_model) {{ print "model_provider = \"" provider_key "\""; print ""; seen_model=1 }}
         in_root=0
       }}
 
@@ -99,10 +96,7 @@ if [ -s "$config_path" ]; then
         next
       }}
 
-      if (in_root && trimmed ~ /^preferred_auth_method[[:space:]]*=/) {{
-        if (!seen_pref) {{ print "preferred_auth_method = \"apikey\""; seen_pref=1 }}
-        next
-      }}
+      if (in_root && trimmed ~ /^preferred_auth_method[[:space:]]*=/) next
       if (in_root && trimmed ~ /^model_provider[[:space:]]*=/) {{
         if (!seen_model) {{ print "model_provider = \"" provider_key "\""; seen_model=1 }}
         next
@@ -112,7 +106,6 @@ if [ -s "$config_path" ]; then
     }}
     END {{
       if (in_root) {{
-        if (!seen_pref) print "preferred_auth_method = \"apikey\""
         if (!seen_model) print "model_provider = \"" provider_key "\""
       }}
       print ""
@@ -125,7 +118,6 @@ if [ -s "$config_path" ]; then
   ' "$config_path" > "$tmp_config"
 else
   cat > "$tmp_config" <<EOF
-preferred_auth_method = "apikey"
 model_provider = "$provider_key"
 
 [model_providers.$provider_key]
@@ -140,7 +132,6 @@ if [ ! -s "$tmp_config" ]; then
   echo "Sanity check failed: generated config.toml is empty" >&2
   exit 2
 fi
-grep -qF 'preferred_auth_method = "apikey"' "$tmp_config" || {{ echo "Sanity check failed: missing preferred_auth_method" >&2; exit 2; }}
 grep -qF "model_provider = \"$provider_key\"" "$tmp_config" || {{ echo "Sanity check failed: missing model_provider" >&2; exit 2; }}
 grep -qF "base_url = \"$base_url\"" "$tmp_config" || {{ echo "Sanity check failed: missing provider base_url" >&2; exit 2; }}
 

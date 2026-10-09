@@ -93,8 +93,6 @@ function createCodexConfig(overrides: Partial<any> = {}) {
     features_shell_snapshot: false,
     features_unified_exec: false,
     features_shell_tool: false,
-    features_exec_policy: false,
-    features_apply_patch_freeform: false,
     features_fast_mode: false,
     features_multi_agent: false,
     ...overrides,
@@ -523,6 +521,36 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(persistCodexConfig).not.toHaveBeenCalledWith(
       expect.objectContaining({ approvals_reviewer: expect.anything() })
     );
+  });
+
+  it("offers current approval policies and keeps deprecated on-failure only as the current value", () => {
+    renderApprovalReviewerSettings({ policy: "on-request" });
+
+    const currentItem = screen.getByText("审批策略 (approval_policy)").parentElement
+      ?.parentElement as HTMLElement;
+    const currentSelect = within(currentItem).getByRole("combobox");
+    expect(
+      within(currentSelect)
+        .getAllByRole("option")
+        .map((option) => option.textContent)
+    ).toEqual([
+      "默认（不设置）",
+      "不信任（untrusted）",
+      "请求时（on-request）",
+      "从不询问（never）",
+    ]);
+    expect(
+      screen.getByText("控制何时需要你确认才会执行命令。推荐 on-request 或 never。")
+    ).toBeInTheDocument();
+
+    renderApprovalReviewerSettings({ policy: "on-failure" });
+    const deprecatedItem = screen.getAllByText("审批策略 (approval_policy)")[1].parentElement
+      ?.parentElement as HTMLElement;
+    const deprecatedSelect = within(deprecatedItem).getByRole("combobox");
+    expect(deprecatedSelect).toHaveValue("on-failure");
+    expect(
+      within(deprecatedSelect).getByRole("option", { name: "失败时（on-failure，已弃用）" })
+    ).toBeInTheDocument();
   });
 
   it.each([

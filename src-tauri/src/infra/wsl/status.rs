@@ -9,9 +9,7 @@ use std::thread::JoinHandle;
 use super::config_claude::configure_wsl_claude;
 use super::config_codex::configure_wsl_codex;
 use super::config_gemini::configure_wsl_gemini;
-use super::constants::{
-    WSL_CODEX_API_KEY, WSL_CODEX_PREFERRED_AUTH_METHOD, WSL_CODEX_PROVIDER_KEY,
-};
+use super::constants::{WSL_CODEX_API_KEY, WSL_CODEX_PROVIDER_KEY};
 use super::detection::resolve_wsl_home_unc;
 use super::manifest::{read_wsl_current_values, read_wsl_manifest, write_wsl_manifest};
 use super::mcp_sync::{read_wsl_mcp_manifest, sync_wsl_mcp_for_cli, write_wsl_mcp_manifest};
@@ -443,10 +441,6 @@ pub fn configure_clients(
                         }
                         "codex" => {
                             let mut m = std::collections::HashMap::new();
-                            m.insert(
-                                "preferred_auth_method".to_string(),
-                                WSL_CODEX_PREFERRED_AUTH_METHOD.to_string(),
-                            );
                             m.insert(
                                 "model_provider".to_string(),
                                 WSL_CODEX_PROVIDER_KEY.to_string(),

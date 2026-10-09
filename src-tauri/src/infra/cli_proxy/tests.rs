@@ -1655,6 +1655,28 @@ base_url = "http://old/v1"
 }
 
 #[test]
+fn codex_proxy_removes_retired_apikey_preference() {
+    let input = r#"
+preferred_auth_method = "apikey"
+model = "gpt-5-codex"
+
+[model_providers.aio]
+base_url = "http://old/v1"
+"#;
+
+    let out = build_codex_config_toml(
+        Some(input.as_bytes().to_vec()),
+        "http://new/v1",
+        CodexConfigPlatform::Other,
+    )
+    .expect("build");
+    let text = String::from_utf8(out).expect("utf8");
+
+    assert!(!text.contains("preferred_auth_method"), "{text}");
+    assert!(text.contains("model = \"gpt-5-codex\""), "{text}");
+}
+
+#[test]
 fn codex_proxy_does_not_invent_preferred_auth_method() {
     let input = r#"
 forced_login_method = "api"
@@ -1682,7 +1704,7 @@ requires_openai_auth = true
 }
 
 #[test]
-fn codex_oauth_compatible_config_preserves_non_aio_preferred_auth_method() {
+fn codex_proxy_removes_any_preferred_auth_method() {
     let input = r#"
 preferred_auth_method = "chatgpt"
 
@@ -1690,16 +1712,22 @@ preferred_auth_method = "chatgpt"
 foo = "bar"
 "#;
 
-    let out = build_codex_config_toml_oauth_compatible(
-        Some(input.as_bytes().to_vec()),
-        "http://new/v1",
-        CodexConfigPlatform::Other,
-    )
-    .expect("build");
-    let s = String::from_utf8(out).expect("utf8");
+    for build in [
+        build_codex_config_toml,
+        build_codex_config_toml_oauth_compatible,
+    ] {
+        let out = build(
+            Some(input.as_bytes().to_vec()),
+            "http://new/v1",
+            CodexConfigPlatform::Other,
+        )
+        .expect("build");
+        let text = String::from_utf8(out).expect("utf8");
 
-    assert!(s.contains("preferred_auth_method = \"chatgpt\""), "{s}");
-    assert!(s.contains("base_url = \"http://new/v1\""), "{s}");
+        assert!(!text.contains("preferred_auth_method"), "{text}");
+        assert!(text.contains("base_url = \"http://new/v1\""), "{text}");
+        assert!(text.contains("foo = \"bar\""), "{text}");
+    }
 }
 
 #[test]
@@ -2924,6 +2952,27 @@ fn merge_restore_codex_config_preserves_user_changes() {
     // User's custom section preserved
     assert!(result.contains("[user_section]"));
     assert!(result.contains("foo = \"bar\""));
+}
+
+#[test]
+fn merge_restore_codex_config_drops_retired_preferred_auth_method() {
+    let tmp = tempfile::tempdir().unwrap();
+    let backup = write_temp(
+        tmp.path(),
+        "backup.toml",
+        b"preferred_auth_method = \"chatgpt\"\nmodel = \"gpt-5-codex\"\n",
+    );
+    let target = write_temp(
+        tmp.path(),
+        "config.toml",
+        b"preferred_auth_method = \"apikey\"\nmodel = \"gpt-5-codex\"\nmodel_provider = \"aio\"\n",
+    );
+
+    merge_restore_codex_config_toml(&target, &backup).unwrap();
+
+    let result = std::fs::read_to_string(&target).unwrap();
+    assert!(!result.contains("preferred_auth_method"), "{result}");
+    assert!(result.contains("model = \"gpt-5-codex\""), "{result}");
 }
 
 /// Simulates the app lifecycle that causes the "修复" button to appear:
