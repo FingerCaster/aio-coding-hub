@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/tasks/10-09-optional-model-catalog/research/current-ownership.md", "reason": "Current model_catalog_json ownership and why the field cannot be edited"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md", "reason": "Managed catalog lifecycle and picker ownership contract"}
+{"file": ".trellis/tasks/10-09-optional-model-catalog/research/provider-catalog-url.md", "reason": "Why provider model_catalog_url cannot replace the local managed catalog file"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "Codex config save and owned-field boundaries for model_catalog_json"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md", "reason": "Settings rollback must keep or restore the managed catalog binding with the switch"}

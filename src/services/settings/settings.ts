@@ -81,7 +81,10 @@ export type SettingsMutationResult = Omit<GeneratedSettingsMutationResult, "sett
 export type SettingsSetInput = OptionalNullableGeneratedFields<FrontendSettingsUpdate>;
 
 export type AppSettingsPatch = Partial<
-  Omit<AppSettings, "update_channel" | "codex_model_context_rules">
+  Omit<
+    AppSettings,
+    "update_channel" | "codex_model_context_rules" | "codex_managed_model_catalog_enabled"
+  >
 > & {
   upstream_proxy_password?: SensitiveStringUpdate;
 };
@@ -91,6 +94,10 @@ type DedicatedUpdateChannelViewKey = Extract<keyof AppSettings, "update_channel"
 type DedicatedCodexModelContextRulesViewKey = Extract<
   keyof AppSettings,
   "codex_model_context_rules"
+>;
+type DedicatedCodexManagedModelCatalogViewKey = Extract<
+  keyof AppSettings,
+  "codex_managed_model_catalog_enabled"
 >;
 type OrdinaryUpdateChannelInputKey = Extract<
   keyof FrontendSettingsUpdate | keyof FrontendSettingsPatch,
@@ -103,6 +110,10 @@ type OrdinaryCodexModelContextRulesInputKey = Extract<
   | "codexGpt56372kContextEnabled"
   | "codex_gpt56_372k_context_enabled"
 >;
+type OrdinaryCodexManagedModelCatalogInputKey = Extract<
+  keyof FrontendSettingsUpdate | keyof FrontendSettingsPatch,
+  "codexManagedModelCatalogEnabled" | "codex_managed_model_catalog_enabled"
+>;
 
 /** update_channel is read-only in SettingsView and owned only by settings_update_channel_set. */
 export type __AssertUpdateChannelExcludedFromOrdinarySettings =
@@ -110,6 +121,9 @@ export type __AssertUpdateChannelExcludedFromOrdinarySettings =
 /** Codex context rules are read-only here and owned only by their catalog transaction. */
 export type __AssertCodexModelContextRulesExcludedFromOrdinarySettings =
   AssertNever<OrdinaryCodexModelContextRulesInputKey>;
+/** Local model catalog hosting is owned only by settings_codex_managed_model_catalog_set. */
+export type __AssertCodexManagedModelCatalogExcludedFromOrdinarySettings =
+  AssertNever<OrdinaryCodexManagedModelCatalogInputKey>;
 
 export type SettingsViewBackedInputKey = Exclude<
   keyof FrontendSettingsUpdate,
@@ -198,6 +212,7 @@ type SettingsViewKeysHandledOutsideCreateInput =
   | "schema_version"
   | DedicatedUpdateChannelViewKey
   | DedicatedCodexModelContextRulesViewKey
+  | DedicatedCodexManagedModelCatalogViewKey
   | "enable_circuit_breaker_notice"
   | "enable_codex_session_id_completion"
   | "verbose_provider_error"

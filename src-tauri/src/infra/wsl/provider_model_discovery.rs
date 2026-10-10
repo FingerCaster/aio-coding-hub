@@ -1,8 +1,6 @@
 //! Read-only Codex discovery identity selection from applied WSL configuration.
 
-use super::constants::{
-    WSL_CODEX_API_KEY, WSL_CODEX_PREFERRED_AUTH_METHOD, WSL_CODEX_PROVIDER_KEY,
-};
+use super::constants::{WSL_CODEX_API_KEY, WSL_CODEX_PROVIDER_KEY};
 use super::manifest::{
     WSL_CLIENT_CONFIG_MAX_BYTES, WSL_MANIFEST_FILE_COUNT_MAX, WSL_MANIFEST_MAX_BYTES,
 };
@@ -99,7 +97,6 @@ fn is_candidate(manifest: &WslDistroManifest) -> Result<bool, ()> {
         return Err(());
     }
     for (key, expected) in [
-        ("preferred_auth_method", WSL_CODEX_PREFERRED_AUTH_METHOD),
         ("model_provider", WSL_CODEX_PROVIDER_KEY),
         ("OPENAI_API_KEY", WSL_CODEX_API_KEY),
     ] {
@@ -128,16 +125,11 @@ fn validate_distro(distro: &str) -> Result<(), ()> {
 // Verify the root config written by AIO, not arbitrary Codex profile/CLI overrides.
 fn root_config_is_applied(config: &str, origin: &str) -> Result<bool, ()> {
     let root: toml::Value = toml::from_str(config).map_err(|_| ())?;
-    for (key, expected) in [
-        ("model_provider", WSL_CODEX_PROVIDER_KEY),
-        ("preferred_auth_method", WSL_CODEX_PREFERRED_AUTH_METHOD),
-    ] {
-        let Some(value) = root.get(key) else {
-            return Ok(false);
-        };
-        if value.as_str().ok_or(())? != expected {
-            return Ok(false);
-        }
+    let Some(model_provider) = root.get("model_provider") else {
+        return Ok(false);
+    };
+    if model_provider.as_str().ok_or(())? != WSL_CODEX_PROVIDER_KEY {
+        return Ok(false);
     }
     let Some(providers) = root.get("model_providers") else {
         return Ok(false);
@@ -277,6 +269,19 @@ mod tests {
             select(vec![manifest("Ubuntu")], applied_config()),
             CodexVersionSource::Wsl("codex-cli 0.150.2".to_string())
         );
+        let without_auth_method = "model_provider = 'aio'\n[model_providers.aio]\nbase_url = 'http://172.20.0.1:12345/v1'\n";
+        assert_eq!(
+            select(vec![manifest("Ubuntu")], without_auth_method),
+            CodexVersionSource::Wsl("codex-cli 0.150.2".to_string())
+        );
+        let mut current_manifest = manifest("Ubuntu");
+        current_manifest.cli_backups[0]
+            .injected_keys
+            .remove("preferred_auth_method");
+        assert_eq!(
+            select(vec![current_manifest], without_auth_method),
+            CodexVersionSource::Wsl("codex-cli 0.150.2".to_string())
+        );
         assert_eq!(
             crate::gateway::oauth::adapters::codex::codex_model_discovery_version(Some(
                 "codex-cli 0.150.2"
@@ -330,11 +335,7 @@ mod tests {
             select(vec![malformed], applied_config()),
             CodexVersionSource::Fallback
         );
-        for malformed_config in [
-            "not toml",
-            "model_provider = 42",
-            "model_provider = 'aio'\npreferred_auth_method = 42",
-        ] {
+        for malformed_config in ["not toml", "model_provider = 42"] {
             assert_eq!(
                 select(vec![manifest("Ubuntu")], malformed_config),
                 CodexVersionSource::Fallback

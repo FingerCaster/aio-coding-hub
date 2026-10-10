@@ -80,6 +80,19 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async settingsCodexManagedModelCatalogSet(
+    enabled: boolean
+  ): Promise<Result<SettingsView, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("settings_codex_managed_model_catalog_set", { enabled }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async settingsUpdateChannelSet(
     channel: UpdateChannel,
     confirm: RiskyIpcConfirm | null
@@ -3422,9 +3435,7 @@ export type CodexConfigPatch = {
   sandbox_workspace_write_network_access: boolean | null;
   features_unified_exec: boolean | null;
   features_shell_snapshot: boolean | null;
-  features_apply_patch_freeform: boolean | null;
   features_shell_tool: boolean | null;
-  features_exec_policy: boolean | null;
   features_fast_mode: boolean | null;
   features_multi_agent: boolean | null;
 };
@@ -3452,9 +3463,7 @@ export type CodexConfigState = {
   sandbox_workspace_write_network_access: boolean | null;
   features_unified_exec: boolean | null;
   features_shell_snapshot: boolean | null;
-  features_apply_patch_freeform: boolean | null;
   features_shell_tool: boolean | null;
-  features_exec_policy: boolean | null;
   features_fast_mode: boolean | null;
   features_multi_agent: boolean | null;
 };
@@ -5338,6 +5347,7 @@ export type SettingsView = {
   codex_home_override: string;
   codex_oauth_compatible_proxy_mode: boolean;
   codex_model_context_rules: CodexModelContextRule[];
+  codex_managed_model_catalog_enabled: boolean | null;
   codex_provider_test_model: string;
   codex_infinite_retry_test_enabled: boolean;
   codex_infinite_retry_test_interval_ms: number;

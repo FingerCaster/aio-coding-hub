@@ -130,6 +130,18 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/settings_codex_session_id_completion_set`, () =>
     HttpResponse.json(getSettingsState())
   ),
+  http.post(`${TAURI_ENDPOINT}/settings_codex_managed_model_catalog_set`, async ({ request }) => {
+    const payload = await withJson<{ enabled?: unknown }>(request);
+    if (typeof payload.enabled !== "boolean") {
+      return HttpResponse.json(
+        { error: "codex_managed_model_catalog_enabled must be a boolean" },
+        { status: 400 }
+      );
+    }
+    return HttpResponse.json(
+      mergeSettingsState({ codex_managed_model_catalog_enabled: payload.enabled })
+    );
+  }),
   http.post(`${TAURI_ENDPOINT}/settings_codex_model_context_rules_set`, async ({ request }) => {
     const payload = await withJson<{ rules?: unknown }>(request);
     try {

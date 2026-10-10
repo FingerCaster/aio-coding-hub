@@ -414,6 +414,11 @@ fn managed_catalog_failure_happens_before_history_migration() {
     let user_catalog = home.join("user-models.json");
     write_gpt56_catalog(&user_catalog);
     configure_user_catalog(&handle, &user_catalog);
+    let mut settings =
+        aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("read settings");
+    settings["codex_managed_model_catalog_enabled"] = json!(true);
+    aio_coding_hub_lib::test_support::settings_set_json(&handle, settings)
+        .expect("enable catalog hosting");
     aio_coding_hub_lib::test_support::settings_codex_model_context_rules_set_json(
         &handle,
         gpt56_372k_context_rules(),

@@ -240,8 +240,37 @@ codexManagedProfilesKeys.list()
 - Profile create/delete, DB mutation, profile file activation, generated
   catalog activation, and root config patching share the managed-profile
   lifecycle lock and compensate only bytes still owned by that operation.
-- Enabling/syncing the CLI proxy rebuilds the catalog. Disabling/restoring the
-  proxy restores the original `model_catalog_json` value or its absence. With
+- `codex_managed_model_catalog_enabled` is `Option<bool>`. A missing settings
+  key stays unset. New settings default to `false` and are not derived.
+  Catalog prepare resolves an unset value once, inside the profile lifecycle
+  lock, before any catalog deactivation. The derived value is true when a
+  managed profile exists, an enabled context rule exists, or the live root
+  `model_catalog_json` already points at the AIO generated catalog file.
+  Otherwise it is false. Persist that bool before touching the catalog,
+  config, or generated file. If the settings write fails, leave those files
+  unchanged. An explicit true or false is never derived again, and a later
+  catalog failure does not return the persisted value to unset.
+- A generated catalog is installed only when the switch is true and at least
+  one managed profile or enabled context rule exists. False uses the existing
+  empty-owner restore path and skips base-catalog reads plus context-rule
+  target validation, so startup does not stop in ReadingSettings. True with
+  owners keeps the current fail-closed base read and target validation.
+- Root `model_catalog_json` is a proxy-owned path only when the switch is true
+  and the Codex route is enabled. `model_provider`, `preferred_auth_method`,
+  `[windows].sandbox`, and managed provider fields stay owned either way.
+  While the switch is false, an external edit of the root catalog path must
+  not return `CODEX_PROXY_OWNED_FIELD_EDIT` or `CODEX_MANAGED_MODEL_CONFIG_DRIFT`.
+- The hosting toggle shares the profile lifecycle lock with catalog apply. It
+  writes the bool, then prepares and applies the catalog. If that fails, roll
+  the bool back only when it still equals the value just written. Compensation
+  failure surfaces `CODEX_MANAGED_MODEL_RECOVERY_REQUIRED` or the settings
+  restore error and must not report success. Catalog upgrade returns inactive
+  while the switch is false and must not create a catalog. The switch applies
+  only to newly started Codex sessions.
+- While the switch is true and at least one managed profile or enabled context
+  rule exists, enabling or syncing the CLI proxy rebuilds the catalog.
+  Disabling or restoring the proxy, a false switch, or a true switch with no
+  owners restores the original `model_catalog_json` value or its absence. With
   zero managed profiles, no generated picker catalog remains active.
 - On Windows, pass the resolved `.cmd` / `.bat` executable and each fixed
   argument separately to `std::process::Command`. Do not rebuild the command as
@@ -592,14 +621,19 @@ must never apply it; the whole-collection command is the sole writer.
   state, and optional non-negative base/max windows. Literal `aio/` entries are
   excluded. Candidate failure degrades suggestions only; manual exact-ID entry
   remains available.
-- Candidates are advisory. SET rereads and validates the authoritative base in
-  the same transaction that prepares the candidate policy.
-- A generated catalog is required when at least one rule is enabled OR managed
-  Profiles exist. With neither owner, restore the original
-  `model_catalog_json` binding or its absence and remove only the owned file.
-- Every enabled rule must match exactly one base entry. Both base window fields
-  must be non-negative JSON integers. Any missing, ambiguous, or structurally
-  invalid target aborts the whole plan before the first write.
+- Candidates are advisory. When the hosting switch requires a generated catalog,
+  SET rereads and validates the authoritative base in the same transaction that
+  prepares the candidate policy. A false switch skips that base read and
+  enabled-rule target validation, keeps the stored rules, and does not stop
+  startup in `ReadingSettings`.
+- A generated catalog is required only when the hosting switch is true and at
+  least one rule is enabled OR managed Profiles exist. False, or true with
+  neither owner, restores the original `model_catalog_json` binding or its
+  absence and removes only the owned file.
+- Every enabled rule must match exactly one base entry when a generated catalog
+  is required. Both base window fields must be non-negative JSON integers. Any
+  missing, ambiguous, or structurally invalid target aborts that plan before
+  the first write. A false switch does not apply this target check.
 - Projection writes the rule's one value to both `context_window` and
   `max_context_window`. Values may increase, preserve, or lower the base value.
   All other root/model fields, `effective_context_window_percent`, automatic
@@ -611,7 +645,9 @@ must never apply it; the whole-collection command is the sole writer.
   fingerprint, normalized Codex-home identity, original binding, projection
   hash, and payload hash. v1/v2 metadata is validation/recovery-only and must
   not be treated as proof of v3 home ownership.
-- Prepare and candidate reads are side-effect free. Apply rechecks owner, home,
+- Candidate reads are side-effect free. Catalog prepare may persist an unset
+  hosting switch before it touches catalog, config, or generated files; it does
+  not write those files. Apply rechecks owner, home,
   the resolved managed-catalog path, base source, generated bytes, live config,
   and proxy backup before writing. Replacing an app-data parent with a symlink
   or reparse point after prepare must never redirect the generated write.
@@ -636,10 +672,11 @@ must never apply it; the whole-collection command is the sole writer.
   fingerprint changes construct policy from the latest canonical rules and use
   the same reconciler.
 - If a previously successful enabled target disappears after a CLI/base
-  upgrade, preserve canonical enabled intent, the last-good generated catalog,
-  live binding, and proxy backup. Startup fails at `ReadingSettings` with a
-  retryable outer error and the inner typed catalog/rule error; it never
-  partially rebuilds or silently disables the rule.
+  upgrade while the hosting switch is true, preserve canonical enabled intent,
+  the last-good generated catalog, live binding, and proxy backup. Startup
+  fails at `ReadingSettings` with a retryable outer error and the inner typed
+  catalog/rule error; it never partially rebuilds or silently disables the
+  rule. A false switch skips that base read and does not stop startup.
 - `cli_manager_codex_managed_catalog_upgrade` is the only forced base refresh.
   It reads the installed Codex `debug models --bundled` catalog even when an
   absolute user catalog already exists, then merges that user catalog instead
@@ -673,8 +710,9 @@ must never apply it; the whole-collection command is the sole writer.
 | More than 128 rules | `CODEX_MODEL_CONTEXT_RULE_LIMIT`; zero writes |
 | Invalid ID, reserved `aio/`, or token outside shared bounds | `CODEX_MODEL_CONTEXT_RULE_INVALID`; zero writes |
 | Duplicate trimmed exact ID | `CODEX_MODEL_CONTEXT_RULE_DUPLICATE`; zero writes |
-| Enabled target absent from base | `CODEX_MODEL_CONTEXT_RULE_TARGET_MISSING`; no candidate intent or file commit |
-| Enabled target duplicated or has unsafe window structure | `CODEX_MODEL_CONTEXT_RULE_TARGET_INVALID`; preserve source and live files |
+| Enabled target absent from base while a generated catalog is required | `CODEX_MODEL_CONTEXT_RULE_TARGET_MISSING`; no candidate intent or file commit |
+| Enabled target absent while hosting is off | Valid persisted rule; no base-catalog read and no startup failure |
+| Enabled target duplicated or has unsafe window structure while a generated catalog is required | `CODEX_MODEL_CONTEXT_RULE_TARGET_INVALID`; preserve source and live files |
 | Disabled target absent | Valid persisted rule; no projection and no startup failure |
 | User source/owner/home/config/generated/backup drifts after prepare | Fail closed; never overwrite drifted bytes |
 | Resolved managed-catalog path changes after prepare | `CODEX_MANAGED_MODEL_CONFIG_DRIFT`; zero writes outside the prepared path |
@@ -683,9 +721,10 @@ must never apply it; the whole-collection command is the sole writer.
 | Effective Codex home changes while any rule is enabled | `CODEX_MODEL_CONTEXT_RULES_HOME_CHANGE_BLOCKED`; no home/catalog mutation |
 | Raw home fields differ but resolve to the same home | Allow; do not prepare a rebind |
 | Import carries absent, different, or malformed rule keys | Ignore both policy keys and preserve canonical local rules |
-| Proxy stops while rules remain enabled | Keep a direct generated binding with every enabled exact projection |
-| All rules disabled while Profiles remain | Keep Profile catalog; remove only rule projections |
-| All rules disabled with zero Profiles | Restore original binding and remove the owned generated file |
+| Proxy stops while rules remain enabled and hosting is on | Keep a direct generated binding with every enabled exact projection |
+| Proxy stops, or any reconcile, while hosting is off | Restore the original binding and remove only the owned generated file |
+| All rules disabled while Profiles remain and hosting is on | Keep Profile catalog; remove only rule projections |
+| All rules disabled with zero Profiles, or hosting is off | Restore original binding and remove the owned generated file |
 
 ### 7. Good / Base / Bad Cases
 

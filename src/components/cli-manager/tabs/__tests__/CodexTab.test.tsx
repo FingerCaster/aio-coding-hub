@@ -93,8 +93,6 @@ function createCodexConfig(overrides: Partial<any> = {}) {
     features_shell_snapshot: false,
     features_unified_exec: false,
     features_shell_tool: false,
-    features_exec_policy: false,
-    features_apply_patch_freeform: false,
     features_fast_mode: false,
     features_multi_agent: false,
     ...overrides,
@@ -525,6 +523,36 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     );
   });
 
+  it("offers current approval policies and keeps deprecated on-failure only as the current value", () => {
+    renderApprovalReviewerSettings({ policy: "on-request" });
+
+    const currentItem = screen.getByText("审批策略 (approval_policy)").parentElement
+      ?.parentElement as HTMLElement;
+    const currentSelect = within(currentItem).getByRole("combobox");
+    expect(
+      within(currentSelect)
+        .getAllByRole("option")
+        .map((option) => option.textContent)
+    ).toEqual([
+      "默认（不设置）",
+      "不信任（untrusted）",
+      "请求时（on-request）",
+      "从不询问（never）",
+    ]);
+    expect(
+      screen.getByText("控制何时需要你确认才会执行命令。推荐 on-request 或 never。")
+    ).toBeInTheDocument();
+
+    renderApprovalReviewerSettings({ policy: "on-failure" });
+    const deprecatedItem = screen.getAllByText("审批策略 (approval_policy)")[1].parentElement
+      ?.parentElement as HTMLElement;
+    const deprecatedSelect = within(deprecatedItem).getByRole("combobox");
+    expect(deprecatedSelect).toHaveValue("on-failure");
+    expect(
+      within(deprecatedSelect).getByRole("option", { name: "失败时（on-failure，已弃用）" })
+    ).toBeInTheDocument();
+  });
+
   it.each([
     ["auto_review", "never", "替我审批不会生效"],
     ["auto_review", "untrusted", "不支持 auto-review"],
@@ -616,7 +644,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     });
 
     expect(screen.getByText("启用 0 / 共 1 条")).toBeInTheDocument();
-    expect(screen.getByText(/仅对新启动的 Codex 会话生效/)).toBeInTheDocument();
+    expect(
+      screen.getByText("精确覆盖 Codex 模型目录中的名义上下文窗口，仅对新启动的 Codex 会话生效。")
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "管理规则" }));
     fireEvent.click(screen.getByRole("switch", { name: "gpt-5.6-sol启用状态" }));
     fireEvent.click(screen.getByRole("button", { name: "应用更改" }));

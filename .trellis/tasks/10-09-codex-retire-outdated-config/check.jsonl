@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "Check that projection, WSL configure, and settings writes match the retired-field contract."}
+{"file": ".trellis/tasks/10-09-codex-retire-outdated-config/research/official-config-comparison.md", "reason": "Check the implementation only retires fields the official reference removed or deprecated."}

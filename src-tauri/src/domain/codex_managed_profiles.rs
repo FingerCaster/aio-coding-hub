@@ -994,6 +994,11 @@ mod tests {
             let codex_home = crate::codex_paths::codex_home_dir(app.handle()).expect("Codex home");
             let codex_catalog =
                 crate::test_support::install_codex_model_catalog_fixture(&codex_home);
+            crate::settings::update(app.handle(), |settings| {
+                settings.codex_managed_model_catalog_enabled = Some(true);
+                Ok(())
+            })
+            .expect("enable catalog hosting for profile fixtures");
             Self {
                 _lock: lock,
                 previous_home,

@@ -430,6 +430,7 @@ pub fn config_export<R: tauri::Runtime>(
         // and the retired compatibility key so a portable bundle owns neither.
         portable_settings.remove("codex_model_context_rules");
         portable_settings.remove("codex_gpt56_372k_context_enabled");
+        portable_settings.remove("codex_managed_model_catalog_enabled");
         // Native file destinations and their archives/manifests are device-local.
         portable_settings.remove("pi_omp_native_targets");
     }
@@ -602,6 +603,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         // an import rejection surface.
         object.remove("codex_model_context_rules");
         object.remove("codex_gpt56_372k_context_enabled");
+        object.remove("codex_managed_model_catalog_enabled");
         object.remove("pi_omp_native_targets");
     }
     let schema_version_present = raw_settings.get("schema_version").is_some();
@@ -754,6 +756,8 @@ pub fn config_import<R: tauri::Runtime>(
     let previous_settings = settings::read(app)?;
     settings_to_write.codex_model_context_rules =
         previous_settings.codex_model_context_rules.clone();
+    settings_to_write.codex_managed_model_catalog_enabled =
+        previous_settings.codex_managed_model_catalog_enabled;
     settings_to_write.pi_omp_native_targets = previous_settings.pi_omp_native_targets.clone();
     let codex_home_changed =
         crate::codex_paths::codex_home_dir_for_settings(app, &previous_settings)?

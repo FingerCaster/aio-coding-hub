@@ -262,6 +262,7 @@ describe("CodexModelContextRulesSection", () => {
     const onUpgradeCatalog = vi.fn();
     const onDisableInvalidCatalogRules = vi.fn();
     renderSection({
+      catalogHostingEnabled: true,
       catalogUpgradeAvailable: true,
       onUpgradeCatalog,
       onDisableInvalidCatalogRules,
@@ -278,5 +279,66 @@ describe("CodexModelContextRulesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "禁用无效规则并升级" }));
     expect(onDisableInvalidCatalogRules).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an unset or write-blocked catalog switch indeterminate and hides upgrade", () => {
+    const onSetCatalogHosting = vi.fn();
+    const view = renderSection({
+      catalogHostingEnabled: null,
+      catalogUpgradeAvailable: true,
+      onUpgradeCatalog: vi.fn(),
+      onSetCatalogHosting,
+    });
+
+    const unset = screen.getByRole("switch", { name: "托管本地 model_catalog_json" });
+    expect(unset).toBeDisabled();
+    expect(unset).toHaveAttribute("aria-checked", "mixed");
+    expect(unset.className).not.toContain("bg-muted");
+    expect(screen.queryByRole("button", { name: "升级受管模型目录" })).not.toBeInTheDocument();
+    expect(
+      screen.getByText("由 AIO 托管本地 model_catalog_json，仅对新启动的 Codex 会话生效。")
+    ).toBeInTheDocument();
+
+    view.rerender(
+      <CodexModelContextRulesSection
+        {...view.props}
+        catalogHostingEnabled={false}
+        settingsReadOnly
+      />
+    );
+    const blocked = screen.getByRole("switch", { name: "托管本地 model_catalog_json" });
+    expect(blocked).toBeDisabled();
+    expect(blocked).toHaveAttribute("aria-checked", "mixed");
+    expect(screen.queryByRole("button", { name: "升级受管模型目录" })).not.toBeInTheDocument();
+    expect(onSetCatalogHosting).not.toHaveBeenCalled();
+  });
+
+  it("toggles explicit catalog hosting and hides upgrade while it is off", () => {
+    const onSetCatalogHosting = vi.fn();
+    const view = renderSection({
+      catalogHostingEnabled: false,
+      catalogUpgradeAvailable: true,
+      onUpgradeCatalog: vi.fn(),
+      onSetCatalogHosting,
+    });
+
+    const off = screen.getByRole("switch", { name: "托管本地 model_catalog_json" });
+    expect(off).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByRole("button", { name: "升级受管模型目录" })).not.toBeInTheDocument();
+    fireEvent.click(off);
+    expect(onSetCatalogHosting).toHaveBeenCalledWith(true);
+
+    view.rerender(
+      <CodexModelContextRulesSection
+        {...view.props}
+        catalogHostingEnabled
+        onUpgradeCatalog={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("switch", { name: "托管本地 model_catalog_json" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: "升级受管模型目录" })).toBeInTheDocument();
   });
 });

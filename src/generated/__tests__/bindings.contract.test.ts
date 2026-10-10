@@ -173,6 +173,26 @@ describe("generated/bindings.ts contract", () => {
       extractGeneratedCommand(bindingsSource, "cliManagerCodexModelContextCandidatesGet")
     ).toContain('TAURI_INVOKE("cli_manager_codex_model_context_candidates_get")');
 
+    expect(extractTypeBody(bindingsSource, "SettingsView")).toContain(
+      "codex_managed_model_catalog_enabled: boolean | null"
+    );
+    expect(extractTypeBody(bindingsSource, "SettingsUpdate")).not.toContain(
+      "codexManagedModelCatalogEnabled"
+    );
+    expect(extractTypeBody(bindingsSource, "SettingsPatch")).not.toContain(
+      "codexManagedModelCatalogEnabled"
+    );
+    const setCatalogHosting = extractGeneratedCommand(
+      bindingsSource,
+      "settingsCodexManagedModelCatalogSet"
+    );
+    expect(setCatalogHosting).toMatch(
+      /settingsCodexManagedModelCatalogSet\(\s*enabled: boolean\s*\)/
+    );
+    expect(setCatalogHosting).toContain(
+      'TAURI_INVOKE("settings_codex_managed_model_catalog_set", { enabled })'
+    );
+
     expect(bindingsSource).not.toContain("settings_codex_gpt56_372k_context_set");
     expect(bindingsSource).not.toContain("settingsCodexGpt56372kContextSet");
     expect(bindingsSource).not.toContain("codex_gpt56_372k_context_enabled");

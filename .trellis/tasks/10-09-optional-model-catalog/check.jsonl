@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/tasks/10-09-optional-model-catalog/research/current-ownership.md", "reason": "Evidence for current required and locked catalog behavior"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md", "reason": "Catalog ownership rules the change must keep or explicitly revise"}
+{"file": ".trellis/tasks/10-09-optional-model-catalog/research/provider-catalog-url.md", "reason": "Provider catalog URL constraints that a hosting switch must not violate"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "Owned-field edits and config round-trip checks"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md", "reason": "Rollback behavior when the catalog switch changes settings and config together"}

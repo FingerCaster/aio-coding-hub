@@ -419,7 +419,9 @@ OTHER_VAR=keep
     fn restore_codex_config_toml_restores_root_keys_and_removes_injected_provider_section() {
         let backup = WslCliBackup {
             cli_key: "codex".to_string(),
-            injected_keys: std::collections::HashMap::new(),
+            injected_keys: [("preferred_auth_method".to_string(), "apikey".to_string())]
+                .into_iter()
+                .collect(),
             original_values: [
                 (
                     "preferred_auth_method".to_string(),
@@ -451,7 +453,7 @@ base_url = "https://api.openai.com/v1"
 
         assert_eq!(
             crate::wsl::manifest::extract_toml_value(&restored, "preferred_auth_method"),
-            Some("device_code".to_string())
+            None
         );
         assert_eq!(
             crate::wsl::manifest::extract_toml_value(&restored, "model_provider"),
@@ -466,7 +468,9 @@ base_url = "https://api.openai.com/v1"
     fn restore_codex_config_toml_removes_injected_root_keys_when_original_values_missing() {
         let backup = WslCliBackup {
             cli_key: "codex".to_string(),
-            injected_keys: std::collections::HashMap::new(),
+            injected_keys: [("preferred_auth_method".to_string(), "apikey".to_string())]
+                .into_iter()
+                .collect(),
             original_values: [
                 ("preferred_auth_method".to_string(), None),
                 ("model_provider".to_string(), None),
@@ -500,6 +504,32 @@ base_url = "https://example.com/v1"
         );
         assert!(!restored.contains("[model_providers.aio]"));
         assert!(restored.contains("[model_providers.custom]"));
+    }
+
+    #[test]
+    fn restore_codex_config_toml_drops_retired_auth_method_when_it_was_not_injected() {
+        let backup = WslCliBackup {
+            cli_key: "codex".to_string(),
+            injected_keys: [("model_provider".to_string(), "aio".to_string())]
+                .into_iter()
+                .collect(),
+            original_values: [("model_provider".to_string(), Some("openai".to_string()))]
+                .into_iter()
+                .collect(),
+        };
+        let content = "preferred_auth_method = \"chatgpt\"\nmodel_provider = \"aio\"\n";
+
+        let restored = crate::wsl::manifest::restore_codex_config_toml(content, &backup)
+            .expect("restore codex config");
+
+        assert_eq!(
+            crate::wsl::manifest::extract_toml_value(&restored, "preferred_auth_method"),
+            None
+        );
+        assert_eq!(
+            crate::wsl::manifest::extract_toml_value(&restored, "model_provider"),
+            Some("openai".to_string())
+        );
     }
 
     #[test]
