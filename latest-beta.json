@@ -1,23 +1,23 @@
 {
-  "version": "0.60.45",
-  "notes": "## [0.60.45](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.44...aio-coding-hub-v0.60.45) (2026-09-30)\n\n\n### Bug Fixes\n\n* **gateway:** bound per-attempt first meaningful SSE output ([afb16ae](https://github.com/FingerCaster/aio-coding-hub/commit/afb16ae293ce927ecc32f6aadb98c324884a3246))\n* **gateway:** bound per-attempt first meaningful SSE output ([df8e0a6](https://github.com/FingerCaster/aio-coding-hub/commit/df8e0a669658e2e7fa9dedd674cf3335e2d8604c))",
-  "pub_date": "2026-09-30T06:25:39Z",
+  "version": "0.60.46",
+  "notes": "## [0.60.46](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.45...aio-coding-hub-v0.60.46) (2026-10-10)\n\n\n### Features\n\n* **codex:** make local model catalog hosting optional ([ae58c38](https://github.com/FingerCaster/aio-coding-hub/commit/ae58c383fcdeff0942c54a66d0b991961425c6b0))\n* **codex:** make model catalog hosting optional and drop retired config ([b8e22f6](https://github.com/FingerCaster/aio-coding-hub/commit/b8e22f63282f43916650d93d83324add2fceccd4))\n\n\n### Bug Fixes\n\n* **codex:** clear clippy failures in catalog and WSL checks ([8e96097](https://github.com/FingerCaster/aio-coding-hub/commit/8e96097f754d5a6623f34632021731cb2d533366))\n* **codex:** drop retired config fields from managed writes ([0d1921c](https://github.com/FingerCaster/aio-coding-hub/commit/0d1921cb3ec01655f6112e16b7139742c2a58838))\n* **deps:** keep the Tailwind animate plugin out of the production audit ([91bfca5](https://github.com/FingerCaster/aio-coding-hub/commit/91bfca56261f0ac4736df48983501f776e3a76b5))\n* **deps:** keep the Tailwind animate plugin out of the production audit ([b52e485](https://github.com/FingerCaster/aio-coding-hub/commit/b52e485db437f5f0fc6cbe7e91297d23f7b3ce57))",
+  "pub_date": "2026-10-10T07:54:32Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlI0SjE2R0hQbjJuZ2R2SzFxRjF6QWJlWXRFRkRMekN1Z2FZZ1M2SnVicE9Yc0NFY1ZnWCt2a2JqVVgxN2xORzJhOW5XK29KanBLdmNTamZhWUF1QUFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNzQ5MzQxCWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40NV94NjRfZW4tVVMubXNpCmhyMVVtMHoxb3B0dEIzbDlSZG8valRibllGTEQ5UG8yMGdBeXNlU0doMi90T0JRWHMyTzY0NTQ3a2Roa0ZLQzhyQXJ6VXJkVGtpQ2hqUXBINU5LbkJnPT0K",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.45/aio-coding-hub-win64.msi"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMmIwcy9ILzVYSjQ2cWdhM0ljd2x2YzRyT3JBUEt5bis3c0hsUVExazdXaXBHbXRySzN1K1ZvcFY2VkJBK0hVc0YzZnNGWlErL2ptVWVwdXc5dm1uZWc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjE4NzM4CWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40Nl94NjRfZW4tVVMubXNpCjlCSHFJQi9xVnROMGdWelZCRmxjSTJmRHBpZVN5WTNiWWR2Zy9EdGFUTWZZL054TWNWblQxYy9GUHR1aTNxUHBHRERkaG84WWt6RkV1alozL3FpWERBPT0K",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.46/aio-coding-hub-win64.msi"
     },
     "darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMll6NDd6VTc3ZmJ1ZWtPTHVyeUNFeG5PNDRYN0IydGJlWFdHc0gvclFQVjFVSWl2Qk1qbVlGU3h0YWpEeVgvaDRHcmhJQzgydDdXK1EzbThrNXROZ0FJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNzQ5MDgyCWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5negpaUE1PaFM4c1pMMWNFRGVHdVdFWWJmRFdpY1dVTU16Uzh3aDFWMlhRTktUYUtZV2FBTCtFNFg5ZkhsMzcvaHg3V1J0NnBtb3V6ZVlEWmh4RnlHU1FDQT09Cg==",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.45/aio-coding-hub-macos-intel.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlpmOE1XVXZpTGxWWWlqL041dnNpNndJTXZYTjFCamhSclduUjBxTHhQVVNFc3Y0U0R4VmFXYm01b2pZNitVZ0IwdUgwcEFiOEY3aFJBdGtCYVBCRUFFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjE4NjM3CWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5negowaGVYdGNhbVNGL1B6bTB2L1NqNjRoRTZpUnZtUHRLR21lbkJKeFduNHJEUThyYytvbk1ZK1E2dnpHS3VSd3NycFJRenJ6Nkk5MnpJY1hKYThVQlZBUT09Cg==",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.46/aio-coding-hub-macos-intel.tar.gz"
     },
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMmZ5WDRyQ2hqYnVTcEtyd3gxaFM0eXp4bDhmMVZSV1Vpb2FTc0RabG9UTWxzeDJuMExubCtackR1SlBaK1R0WDBDK29sZ2hESk5ELzU2SkJMRVZrYkFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNzQ5NTA5CWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5negphaGVQMy91U2xsamZvSnlHTkRYRjBWYVJCRVpya20rYmZIelM5ckJvYmpodUV3U01aQ0FuYXk5ZW5XUUxycm1ORzJoMjhmU2t3Y21tamlNRllRdllDQT09Cg==",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.45/aio-coding-hub-macos-arm.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMmJVNEt2bXVXTWZlTDBSNEl0ZkpPbzkxVWNWMktOVGl6cXphRVBVU1lyd1hNREZ6TVVFM0VDK0ptQkVUb2FaM3NiajFIaC9SUyt4NHZsWER5NGdCK0FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjE4NjIyCWZpbGU6QUlPIENvZGluZyBIdWIuYXBwLnRhci5negp3TjIwRnBad0ZKUEtkZDZRQTZmcENta1JjS0hLUVRTeEdiSzJuNmMrSFQvK3R6MlFhUXFNcE5TcUlsUFB3YmZjbXJkd1l2eC9jQmJIcVhORHVsQ29CUT09Cg==",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.46/aio-coding-hub-macos-arm.tar.gz"
     },
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlFLMVRZK1Q0ZkpsK2tuZm5BdkgwMUpQcm0zSTNpbExwL2NQRzlHSGdLbXF2NjBTclNOcVRHRjd6TEs4YXpLckE4WDVxUWoxUUNyWi9LVUw3ZUJ1bUFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNzQ5MTk1CWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40NV9hbWQ2NC5BcHBJbWFnZQpUSzcwL0I1Sml1UjcwZ3JNMnJPUXFCWVI3LzJyWEJlcCt6Nkx6b2R5Tm90ZWU5OWVvRjl2UE9rOVJ5QzY2WXYreDlIc0p5RXdEZmN4OS94cFFmVEZEUT09Cg==",
-      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.45/aio-coding-hub-linux-amd64.AppImage"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSbnBIS2xmNDJKMlJ3VTFkaThFSlF2Nld6ODNVSVMyczZwRWZWbHBoNnhGdTl5OGh6VnZ3Z3U5aVc5MnUwRUNKYW45WFplV1RpTHFEMEZWSVc3OHAyN0tuNWQ5cmZOQ3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjE4MzgxCWZpbGU6QUlPIENvZGluZyBIdWJfMC42MC40Nl9hbWQ2NC5BcHBJbWFnZQphbEdLM1B5d3dyMHhoNzdteUs1R0ZKdCtzYnRGZ1dTSSs2Zlp6OXNKS241OE15cFFRM3RLaDdnYnh0SGh5N2dBOWtuM1M0NFc2OXlWQjlRRVhpZWJCdz09Cg==",
+      "url": "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.46/aio-coding-hub-linux-amd64.AppImage"
     }
   }
 }
