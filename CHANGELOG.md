@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.60.46](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.45...aio-coding-hub-v0.60.46) (2026-10-10)
+
+
+### Features
+
+* **codex:** make local model catalog hosting optional ([ae58c38](https://github.com/FingerCaster/aio-coding-hub/commit/ae58c383fcdeff0942c54a66d0b991961425c6b0))
+* **codex:** make model catalog hosting optional and drop retired config ([b8e22f6](https://github.com/FingerCaster/aio-coding-hub/commit/b8e22f63282f43916650d93d83324add2fceccd4))
+
+
+### Bug Fixes
+
+* **codex:** clear clippy failures in catalog and WSL checks ([8e96097](https://github.com/FingerCaster/aio-coding-hub/commit/8e96097f754d5a6623f34632021731cb2d533366))
+* **codex:** drop retired config fields from managed writes ([0d1921c](https://github.com/FingerCaster/aio-coding-hub/commit/0d1921cb3ec01655f6112e16b7139742c2a58838))
+* **deps:** keep the Tailwind animate plugin out of the production audit ([91bfca5](https://github.com/FingerCaster/aio-coding-hub/commit/91bfca56261f0ac4736df48983501f776e3a76b5))
+* **deps:** keep the Tailwind animate plugin out of the production audit ([b52e485](https://github.com/FingerCaster/aio-coding-hub/commit/b52e485db437f5f0fc6cbe7e91297d23f7b3ce57))
+
 ## [0.60.45](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.44...aio-coding-hub-v0.60.45) (2026-09-30)
 
 
