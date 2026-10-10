@@ -3949,6 +3949,7 @@ fn oauth_only_sync_with_managed_profile_keeps_catalog_binding_without_catalog_re
 
     settings::update(&handle, |settings| {
         settings.codex_oauth_compatible_proxy_mode = true;
+        settings.codex_managed_model_catalog_enabled = Some(true);
         Ok(())
     })
     .expect("enable OAuth setting");
