@@ -125,13 +125,11 @@ fn validate_distro(distro: &str) -> Result<(), ()> {
 // Verify the root config written by AIO, not arbitrary Codex profile/CLI overrides.
 fn root_config_is_applied(config: &str, origin: &str) -> Result<bool, ()> {
     let root: toml::Value = toml::from_str(config).map_err(|_| ())?;
-    for (key, expected) in [("model_provider", WSL_CODEX_PROVIDER_KEY)] {
-        let Some(value) = root.get(key) else {
-            return Ok(false);
-        };
-        if value.as_str().ok_or(())? != expected {
-            return Ok(false);
-        }
+    let Some(model_provider) = root.get("model_provider") else {
+        return Ok(false);
+    };
+    if model_provider.as_str().ok_or(())? != WSL_CODEX_PROVIDER_KEY {
+        return Ok(false);
     }
     let Some(providers) = root.get("model_providers") else {
         return Ok(false);

@@ -1436,6 +1436,7 @@ fn validate_config_save_snapshot(
     Ok(())
 }
 
+#[cfg(test)]
 fn direct_original_catalog_path(
     current_catalog_path: Option<&Path>,
     generated_path: &Path,
@@ -1572,6 +1573,7 @@ fn catalog_ownership_after_baseline_change(
     Ok(expected)
 }
 
+#[cfg(test)]
 fn explicit_save_original_catalog_path(
     previous_config: Option<&[u8]>,
     committed_config: &[u8],
