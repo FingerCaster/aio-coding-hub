@@ -5683,6 +5683,32 @@ base_url = "http://127.0.0.1:37123/v1"
         );
     }
 
+    struct BundledCatalogOverrideGuard;
+
+    impl BundledCatalogOverrideGuard {
+        fn install(executable: &Path, bytes: Vec<u8>) -> Self {
+            if let Some(parent) = executable.parent() {
+                std::fs::create_dir_all(parent).expect("create fake Codex directory");
+            }
+            std::fs::write(executable, b"stable-codex").expect("write fake Codex executable");
+            set_bundled_catalog_override_for_test(
+                crate::cli_manager::CodexLaunchSpec {
+                    executable: executable.to_path_buf(),
+                    runtime_path: OsString::from("test-runtime"),
+                    version: Some("codex-cli test".to_string()),
+                },
+                bytes,
+            );
+            Self
+        }
+    }
+
+    impl Drop for BundledCatalogOverrideGuard {
+        fn drop(&mut self) {
+            clear_bundled_catalog_override_for_test();
+        }
+    }
+
     #[test]
     fn explicit_on_with_owners_projects_the_catalog_and_upgrade_applies() {
         let fixture = DirectCatalogFixture::new(".aio-catalog-explicit-on");
@@ -5698,6 +5724,12 @@ base_url = "http://127.0.0.1:37123/v1"
         assert!(generated.ends_with(GENERATED_CATALOG_FILE_NAME));
         assert!(generated.exists());
 
+        // Forced upgrade reads the bundled Codex catalog. CI runners do not have
+        // the host CLI, so the test supplies the same base catalog through the override.
+        let _bundled = BundledCatalogOverrideGuard::install(
+            &fixture._home.path().join("fake-codex.exe"),
+            rule_base_catalog(),
+        );
         let outcome = crate::app::settings_service::codex_managed_catalog_upgrade_sync(
             &handle,
             crate::app::settings_service::CodexManagedCatalogUpgradeMode::Apply,
