@@ -644,7 +644,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     });
 
     expect(screen.getByText("启用 0 / 共 1 条")).toBeInTheDocument();
-    expect(screen.getByText(/仅对新启动的 Codex 会话生效/)).toBeInTheDocument();
+    expect(
+      screen.getByText("精确覆盖 Codex 模型目录中的名义上下文窗口，仅对新启动的 Codex 会话生效。")
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "管理规则" }));
     fireEvent.click(screen.getByRole("switch", { name: "gpt-5.6-sol启用状态" }));
     fireEvent.click(screen.getByRole("button", { name: "应用更改" }));
