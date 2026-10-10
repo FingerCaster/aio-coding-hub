@@ -313,8 +313,8 @@ describe("native channel automatic capability drafts", () => {
     await act(async () => {
       delayed.resolve(channelDiscovery({ models: [modelSuggestion({ modelId: "old-only" })] }));
     });
+    expect(await screen.findByLabelText("选择来源模型 new-target")).toBeInTheDocument();
     expect(screen.queryByLabelText("选择来源模型 old-only")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("选择来源模型 new-target")).toBeInTheDocument();
   });
   it("does not fill suggestions obtained for a different source revision", async () => {
     vi.mocked(service.nativeChannelModelsDiscover).mockResolvedValue(
